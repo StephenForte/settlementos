@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
-import { isChainReady, loadDeployments, tokenBalance } from "@/lib/chain";
-import { networkInfo } from "@/lib/networks";
+import { accountsFor, isChainReady, loadDeployments, tokenBalance } from "@/lib/chain";
+import { explorerAddressUrl, networkInfo } from "@/lib/networks";
 import { fromBaseUnits } from "@/lib/assets";
 import { Card } from "@/components/ui";
 
@@ -32,21 +32,33 @@ export default async function LiquidityPage() {
 
   const networkSections = await Promise.all(
     Object.entries(dep.networks).map(async ([networkId, net]) => {
-      const tokens = await Promise.all(
-        Object.entries(net.contracts.tokens).map(async ([symbol, t]) => {
-          const raw = await tokenBalance(networkId, t.address, dep.accounts.treasury.address);
-          const balance = fromBaseUnits(raw, t.decimals);
-          const reserved = reservedBy[`${networkId}:${symbol}`] ?? 0;
-          return {
-            symbol,
-            address: t.address,
-            balance,
-            reserved,
-            available: Number(balance) - reserved,
-          };
-        })
-      );
-      return { networkId, info: networkInfo(networkId), settlement: net.contracts.PaymentSettlement, tokens };
+      const treasury = accountsFor(networkId).treasury.address;
+      const section = {
+        networkId,
+        info: networkInfo(networkId),
+        settlement: net.contracts.PaymentSettlement,
+        tokens: [] as { symbol: string; address: string; balance: string; reserved: number; available: number }[],
+        unreachable: false,
+      };
+      try {
+        section.tokens = await Promise.all(
+          Object.entries(net.contracts.tokens).map(async ([symbol, t]) => {
+            const raw = await tokenBalance(networkId, t.address, treasury);
+            const balance = fromBaseUnits(raw, t.decimals);
+            const reserved = reservedBy[`${networkId}:${symbol}`] ?? 0;
+            return {
+              symbol,
+              address: t.address,
+              balance,
+              reserved,
+              available: Number(balance) - reserved,
+            };
+          })
+        );
+      } catch {
+        section.unreachable = true; // e.g. public testnet RPC flaking — keep the page up
+      }
+      return section;
     })
   );
 
@@ -83,10 +95,28 @@ export default async function LiquidityPage() {
           <div className="mb-3 flex items-baseline gap-3">
             <h2 className="text-sm font-semibold text-white">{section.info.label}</h2>
             <span className="text-xs text-slate-500">
-              chainId {section.info.chainId} · simulates {section.info.simulates} · settlement{" "}
-              <span className="font-mono">{section.settlement.slice(0, 10)}…</span>
+              chainId {section.info.chainId} ·{" "}
+              {section.info.simulates ? `simulates ${section.info.simulates}` : "public testnet"} ·
+              settlement{" "}
+              {explorerAddressUrl(section.networkId, section.settlement) ? (
+                <a
+                  href={explorerAddressUrl(section.networkId, section.settlement)!}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-mono text-sky-300 underline decoration-sky-500/40 underline-offset-2 hover:text-sky-200"
+                >
+                  {section.settlement.slice(0, 10)}… ↗
+                </a>
+              ) : (
+                <span className="font-mono">{section.settlement.slice(0, 10)}…</span>
+              )}
             </span>
           </div>
+          {section.unreachable && (
+            <p className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+              RPC unreachable — balances unavailable right now.
+            </p>
+          )}
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             {section.tokens.map((t) => (
               <Card key={t.symbol}>

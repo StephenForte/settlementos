@@ -95,8 +95,12 @@ export async function runComplianceChecks(paymentId: string): Promise<Compliance
     include: { sender: { include: { wallets: true } }, recipient: { include: { wallets: true } } },
   });
 
-  const senderWallet = payment.sender.wallets[0] ?? null;
-  const recipientWallet = payment.recipient.wallets[0] ?? null;
+  // Screen the wallet actually used on each leg's network (entities can have
+  // different addresses per network on real testnets).
+  const walletOn = (wallets: Wallet[], network: string) =>
+    wallets.find((w) => w.network === network) ?? wallets[0] ?? null;
+  const senderWallet = walletOn(payment.sender.wallets, payment.sourceNetwork);
+  const recipientWallet = walletOn(payment.recipient.wallets, payment.destinationNetwork);
   const amount = Number(payment.amount);
 
   const checks: { checkType: string; result: ProviderResult }[] = [

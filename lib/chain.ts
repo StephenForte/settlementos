@@ -1,6 +1,9 @@
 // Multi-network chain adapter (PRD ChainAdapter/AssetAdapter surface, viem).
-// Contract addresses and account roles per network are read from
-// chain/deployments.json, written by scripts/setup.mjs.
+// Contract addresses and account roles are read from chain/deployments.json
+// (local chains, written by scripts/setup.mjs) merged with
+// chain/deployments.base-sepolia.json (real testnet, written by
+// scripts/deploy-base-sepolia.mjs). Real networks carry their own account set;
+// hot keys for them live in .env and are referenced via privateKeyEnv.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -23,37 +26,90 @@ export interface NetworkContracts {
   tokens: Record<string, { address: Address; decimals: number }>;
 }
 
+/** An account role. Either the key is stored inline (local dev chains, generated
+ *  testnet wallets holding faucet dust) or referenced via an env var (funded keys). */
+export interface AccountRef {
+  address: Address;
+  privateKey?: Hex;
+  privateKeyEnv?: string;
+}
+
+export interface NetworkAccounts {
+  operator: AccountRef;
+  treasury: AccountRef;
+  entityWallets: Record<string, AccountRef>;
+}
+
+export interface DeployedNetwork {
+  chainId: number;
+  rpcUrl: string;
+  contracts: NetworkContracts;
+  /** Real networks carry their own account roles; local chains share `accounts`. */
+  accounts?: NetworkAccounts;
+}
+
 export interface Deployments {
-  networks: Record<string, { chainId: number; rpcUrl: string; contracts: NetworkContracts }>;
-  accounts: {
-    operator: { address: Address; privateKey: Hex };
-    treasury: { address: Address; privateKey: Hex };
-    entityWallets: Record<string, { address: Address; privateKey: Hex }>;
-  };
+  networks: Record<string, DeployedNetwork>;
+  /** Shared dev-mnemonic accounts for the local chains (absent if only a real testnet is deployed). */
+  accounts?: NetworkAccounts;
 }
 
 const DEPLOYMENTS_PATH = path.join(process.cwd(), "chain", "deployments.json");
+const SEPOLIA_DEPLOYMENTS_PATH = path.join(process.cwd(), "chain", "deployments.base-sepolia.json");
+
+function readJson(p: string) {
+  return JSON.parse(fs.readFileSync(p, "utf8"));
+}
 
 export function loadDeployments(): Deployments {
-  if (!fs.existsSync(DEPLOYMENTS_PATH)) {
-    throw new Error(
-      "chain/deployments.json not found. Start both chains (npm run chain, npm run chain:polygon) and run: npm run setup"
-    );
-  }
-  const dep = JSON.parse(fs.readFileSync(DEPLOYMENTS_PATH, "utf8"));
-  if (!dep.networks) {
+  const local = fs.existsSync(DEPLOYMENTS_PATH) ? readJson(DEPLOYMENTS_PATH) : null;
+  if (local && !local.networks) {
     throw new Error("deployments.json is single-network (pre-Phase-3). Re-run: npm run setup");
   }
-  return dep;
+  const sepolia = fs.existsSync(SEPOLIA_DEPLOYMENTS_PATH) ? readJson(SEPOLIA_DEPLOYMENTS_PATH) : null;
+  if (!local && !sepolia) {
+    throw new Error(
+      "No deployments found. For local chains: start them (npm run chain, npm run chain:polygon) and run npm run setup. For Base Sepolia: npm run deploy:base-sepolia"
+    );
+  }
+  return {
+    networks: { ...(local?.networks ?? {}), ...(sepolia?.networks ?? {}) },
+    accounts: local?.accounts,
+  };
 }
 
 export function isChainReady(): boolean {
-  if (!fs.existsSync(DEPLOYMENTS_PATH)) return false;
   try {
-    return !!JSON.parse(fs.readFileSync(DEPLOYMENTS_PATH, "utf8")).networks;
+    if (fs.existsSync(DEPLOYMENTS_PATH) && readJson(DEPLOYMENTS_PATH).networks) return true;
+  } catch {
+    /* fall through */
+  }
+  try {
+    return fs.existsSync(SEPOLIA_DEPLOYMENTS_PATH) && !!readJson(SEPOLIA_DEPLOYMENTS_PATH).networks;
   } catch {
     return false;
   }
+}
+
+/** Account roles for a network: its own set if it has one, else the shared local set. */
+export function accountsFor(networkId: string): NetworkAccounts {
+  const dep = loadDeployments();
+  const accounts = dep.networks[networkId]?.accounts ?? dep.accounts;
+  if (!accounts) throw new Error(`No accounts configured for network ${networkId}`);
+  return accounts;
+}
+
+/** Resolve an account's signing key (inline or from the env var it references). */
+export function resolveKey(ref: AccountRef, role: string): Hex {
+  const key = ref.privateKey ?? (ref.privateKeyEnv ? process.env[ref.privateKeyEnv] : undefined);
+  if (!key || !key.startsWith("0x")) {
+    throw new Error(
+      `Missing private key for ${role} (${ref.address}). ${
+        ref.privateKeyEnv ? `Set ${ref.privateKeyEnv} in .env` : "Re-run the deploy script"
+      }`
+    );
+  }
+  return key as Hex;
 }
 
 export function networkContracts(networkId: string): NetworkContracts {
@@ -219,7 +275,8 @@ export async function operatorWrite(
   args: readonly unknown[]
 ): Promise<TxResult> {
   const dep = loadDeployments();
-  const wallet = walletFor(networkId, dep.accounts.operator.privateKey);
+  const operator = accountsFor(networkId).operator;
+  const wallet = walletFor(networkId, resolveKey(operator, `${networkId} operator`));
   const hash = await wallet.writeContract({
     address: dep.networks[networkId].contracts.PaymentSettlement,
     abi: SETTLEMENT_ABI,
@@ -244,7 +301,8 @@ export async function treasuryTokenTransfer(
   const dep = loadDeployments();
   const token = dep.networks[networkId].contracts.tokens[tokenSymbol];
   if (!token) throw new Error(`Token ${tokenSymbol} not deployed on ${networkId}`);
-  const wallet = walletFor(networkId, dep.accounts.treasury.privateKey);
+  const treasury = accountsFor(networkId).treasury;
+  const wallet = walletFor(networkId, resolveKey(treasury, `${networkId} treasury`));
   const hash = await wallet.writeContract({
     address: token.address,
     abi: ERC20_ABI,

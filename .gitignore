@@ -43,5 +43,5 @@ next-env.d.ts
 # local chain + db artifacts
 chain/artifacts
 chain/cache
-chain/deployments.json
+chain/deployments*.json
 prisma/dev.db

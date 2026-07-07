@@ -12,11 +12,18 @@ interface EntityOption {
   kybStatus: string;
 }
 
+interface NetworkOption {
+  id: string;
+  label: string;
+  live: boolean;
+  available: boolean;
+}
+
 const CURRENCIES = ["USD", "JPY", "SGD"];
 const ASSET_FOR: Record<string, string> = { USD: "mockUSDC", JPY: "mockJPY", SGD: "mockSGD" };
-const NETWORK_OPTIONS = [
-  { id: "base-local", label: "Base (local)" },
-  { id: "polygon-local", label: "Polygon Amoy (local)" },
+const DEFAULT_NETWORKS: NetworkOption[] = [
+  { id: "base-local", label: "Base (local)", live: false, available: true },
+  { id: "polygon-local", label: "Polygon Amoy (local)", live: false, available: true },
 ];
 const PURPOSES = [
   "supplier_payment",
@@ -29,6 +36,7 @@ const PURPOSES = [
 export default function NewPaymentPage() {
   const router = useRouter();
   const [entities, setEntities] = useState<EntityOption[]>([]);
+  const [networks, setNetworks] = useState<NetworkOption[]>(DEFAULT_NETWORKS);
   const [form, setForm] = useState({
     sender_id: "",
     recipient_id: "",
@@ -58,6 +66,13 @@ export default function NewPaymentPage() {
           recipient_id: recipient?.externalId ?? "",
         }));
       });
+    fetch("/api/networks")
+      .then((r) => r.json())
+      .then((data) => {
+        const available: NetworkOption[] = (data.networks ?? []).filter((n: NetworkOption) => n.available);
+        if (available.length > 0) setNetworks(available);
+      })
+      .catch(() => {});
   }, []);
 
   function set<K extends keyof typeof form>(key: K, value: string) {
@@ -175,9 +190,10 @@ export default function NewPaymentPage() {
                 value={form.source_network}
                 onChange={(e) => set("source_network", e.target.value)}
               >
-                {NETWORK_OPTIONS.map((n) => (
+                {networks.map((n) => (
                   <option key={n.id} value={n.id}>
                     {n.label}
+                    {n.live ? " — public testnet" : ""}
                   </option>
                 ))}
               </select>
@@ -189,14 +205,22 @@ export default function NewPaymentPage() {
                 value={form.destination_network}
                 onChange={(e) => set("destination_network", e.target.value)}
               >
-                {NETWORK_OPTIONS.map((n) => (
+                {networks.map((n) => (
                   <option key={n.id} value={n.id}>
                     {n.label}
+                    {n.live ? " — public testnet" : ""}
                   </option>
                 ))}
               </select>
               {form.source_network !== form.destination_network && (
                 <p className="mt-1 text-[11px] text-cyan-300">Cross-chain route via simulated bridge</p>
+              )}
+              {networks.some(
+                (n) => n.live && [form.source_network, form.destination_network].includes(n.id)
+              ) && (
+                <p className="mt-1 text-[11px] text-emerald-300">
+                  Real testnet — transactions get public Basescan links
+                </p>
               )}
             </div>
           </div>

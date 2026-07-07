@@ -10,7 +10,8 @@
     "chain": "hardhat node --config hardhat.config.cjs",
     "chain:polygon": "hardhat node --config hardhat.config.polygon.cjs --port 8546",
     "compile": "hardhat compile --config hardhat.config.cjs",
-    "setup": "npm run compile && node scripts/setup.mjs"
+    "setup": "npm run compile && node scripts/setup.mjs",
+    "deploy:base-sepolia": "npm run compile && node --env-file=.env scripts/deploy-base-sepolia.mjs"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",

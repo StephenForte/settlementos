@@ -64,11 +64,25 @@ export function Stat({ label, value, sub }: { label: string; value: string; sub?
   );
 }
 
-export function Hash({ value }: { value: string | null | undefined }) {
+export function Hash({ value, href }: { value: string | null | undefined; href?: string | null }) {
   if (!value) return <span className="text-slate-600">—</span>;
+  const short = `${value.slice(0, 10)}…${value.slice(-8)}`;
+  if (href) {
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="font-mono text-xs text-sky-300 underline decoration-sky-500/40 underline-offset-2 hover:text-sky-200"
+        title={value}
+      >
+        {short} ↗
+      </a>
+    );
+  }
   return (
     <span className="font-mono text-xs text-slate-300" title={value}>
-      {value.slice(0, 10)}…{value.slice(-8)}
+      {short}
     </span>
   );
 }

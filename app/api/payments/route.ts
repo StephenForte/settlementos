@@ -5,6 +5,7 @@ import { audit } from "@/lib/audit";
 import { CURRENCY_TO_ASSET } from "@/lib/assets";
 import { supportedCorridors, corridorCode } from "@/lib/fx";
 import { NETWORKS } from "@/lib/networks";
+import { isChainReady, loadDeployments } from "@/lib/chain";
 
 export async function GET() {
   const payments = await prisma.payment.findMany({
@@ -34,6 +35,20 @@ export async function POST(req: NextRequest) {
       { error: `unknown network — supported: ${Object.keys(NETWORKS).join(", ")}` },
       { status: 400 }
     );
+  }
+  if (isChainReady()) {
+    const deployed = loadDeployments().networks;
+    const missing = [source_network, destination_network].find((n) => !deployed[n]);
+    if (missing) {
+      return NextResponse.json(
+        {
+          error: `network ${missing} has no deployed contracts — ${
+            missing === "base-sepolia" ? "run: npm run deploy:base-sepolia" : "run: npm run setup"
+          }`,
+        },
+        { status: 400 }
+      );
+    }
   }
 
   if (!sender_id || !recipient_id || !amount || !source_currency || !destination_currency) {

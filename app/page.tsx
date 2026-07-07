@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { formatAmount } from "@/lib/assets";
+import { explorerTxUrl } from "@/lib/networks";
 import { usdEquivalent } from "@/lib/fx";
 import { Card, Stat, StatusBadge, Hash } from "@/components/ui";
 
@@ -114,7 +115,7 @@ export default async function DashboardHome() {
                     <StatusBadge status={p.status} />
                   </td>
                   <td className="py-2.5 pr-4">
-                    <Hash value={p.txHash} />
+                    <Hash value={p.txHash} href={explorerTxUrl(p.sourceNetwork, p.txHash)} />
                   </td>
                   <td className="py-2.5 text-right">
                     <Link href={`/payments/${p.id}`} className="text-emerald-400 hover:underline">

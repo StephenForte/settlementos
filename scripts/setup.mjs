@@ -196,6 +196,14 @@ async function main() {
   await prisma.wallet.deleteMany();
   await prisma.entity.deleteMany();
 
+  // If Base Sepolia has been deployed, re-register its entity wallets too
+  // (the DB reset above wiped them; keys/addresses persist in the JSON file).
+  const sepoliaPath = path.join(root, "chain", "deployments.base-sepolia.json");
+  const sepoliaWallets = fs.existsSync(sepoliaPath)
+    ? (JSON.parse(fs.readFileSync(sepoliaPath, "utf8")).networks?.["base-sepolia"]?.accounts
+        ?.entityWallets ?? null)
+    : null;
+
   const networkIds = Object.keys(CHAINS);
   const entities = [
     {
@@ -243,14 +251,17 @@ async function main() {
 
   for (const e of entities) {
     const { wallet: w, ...data } = e;
+    // Same address is registered on every local network (dev accounts are shared);
+    // Base Sepolia gets its own generated address with the same risk profile.
+    const wallets = networkIds.map((network) => ({ ...w, network }));
+    const sepolia = sepoliaWallets?.[e.externalId];
+    if (sepolia) {
+      wallets.push({ ...w, address: sepolia.address, network: "base-sepolia" });
+    }
     await prisma.entity.create({
-      data: {
-        ...data,
-        // Same address is registered on every network (dev accounts are shared).
-        wallets: { create: networkIds.map((network) => ({ ...w, network })) },
-      },
+      data: { ...data, wallets: { create: wallets } },
     });
-    console.log(`  ${e.name} (${e.externalId})`);
+    console.log(`  ${e.name} (${e.externalId})${sepolia ? " + base-sepolia wallet" : ""}`);
   }
 
   await prisma.$disconnect();

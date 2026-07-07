@@ -14,6 +14,7 @@ import { audit } from "./audit";
 import { assertTransition, type PaymentStatus } from "./state";
 import { assetForCurrency, toBaseUnits } from "./assets";
 import {
+  accountsFor,
   loadDeployments,
   onchainPaymentId,
   operatorWrite,
@@ -158,7 +159,7 @@ export async function executePayment(paymentId: string): Promise<Payment> {
     const settleTx = await operatorWrite(sourceNet, "settlePayment", [
       pid,
       routeIdHash,
-      dep.accounts.treasury.address,
+      accountsFor(sourceNet).treasury.address,
       settledUnits,
       destAsset.symbol,
     ]);

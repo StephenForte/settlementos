@@ -5,7 +5,7 @@
 
 import { quoteFx, roundCurrency } from "./fx";
 import { assetForCurrency, fromBaseUnits, toBaseUnits } from "./assets";
-import { isChainReady, loadDeployments, tokenBalance } from "./chain";
+import { accountsFor, isChainReady, loadDeployments, tokenBalance } from "./chain";
 import { networkInfo } from "./networks";
 import { prisma } from "./db";
 
@@ -45,7 +45,7 @@ export async function availableLiquidity(
   if (!net) throw new Error(`Unknown network ${networkId}`);
   const token = net.contracts.tokens[assetSymbol];
   if (!token) throw new Error(`Token ${assetSymbol} not deployed on ${networkId}`);
-  const balance = await tokenBalance(networkId, token.address, dep.accounts.treasury.address);
+  const balance = await tokenBalance(networkId, token.address, accountsFor(networkId).treasury.address);
   const onchain = fromBaseUnits(balance, token.decimals);
 
   const reservations = await prisma.liquidityReservation.findMany({
