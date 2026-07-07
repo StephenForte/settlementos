@@ -1,11 +1,12 @@
-// One-shot local environment setup:
-//   1. Deploys mockUSDC / mockJPY / mockSGD and the PaymentSettlement contract
-//      to the local Hardhat node (Anvil-compatible, chainId 31337).
+// One-shot local environment setup (multi-chain):
+//   1. Deploys MockERC20 tokens + PaymentSettlement to BOTH local chains:
+//        base-local    (127.0.0.1:8545, chainId 31337) — simulates Base Sepolia
+//        polygon-local (127.0.0.1:8546, chainId 31338) — simulates Polygon Amoy
 //   2. Approves assets, funds entity wallets and the settlement treasury.
 //   3. Resets and seeds the SQLite database with demo entities and wallets.
 //   4. Writes chain/deployments.json for the app.
 //
-// Run: npm run setup   (requires `npm run chain` in another terminal)
+// Run: npm run setup   (requires `npm run chain` and `npm run chain:polygon`)
 
 import fs from "node:fs";
 import path from "node:path";
@@ -16,7 +17,29 @@ import { PrismaClient } from "@prisma/client";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
-const RPC_URL = process.env.CHAIN_RPC_URL || "http://127.0.0.1:8545";
+
+const CHAINS = {
+  "base-local": {
+    rpcUrl: process.env.BASE_LOCAL_RPC_URL || "http://127.0.0.1:8545",
+    chainId: 31337,
+    // Full asset set: USD home market + FX inventory.
+    tokens: [
+      ["Mock USD Coin", "mockUSDC", 6],
+      ["Mock JPY Token", "mockJPY", 0],
+      ["Mock SGD Token", "mockSGD", 6],
+    ],
+  },
+  "polygon-local": {
+    rpcUrl: process.env.POLYGON_LOCAL_RPC_URL || "http://127.0.0.1:8546",
+    chainId: 31338,
+    // Asia-corridor destination chain: JPY/SGD payout inventory + USDC for returns.
+    tokens: [
+      ["Mock USD Coin", "mockUSDC", 6],
+      ["Mock JPY Token", "mockJPY", 0],
+      ["Mock SGD Token", "mockSGD", 6],
+    ],
+  },
+};
 
 // Standard Hardhat/Anvil dev mnemonic accounts — local use only.
 const ACCOUNTS = {
@@ -46,108 +69,108 @@ const ACCOUNTS = {
   },
 };
 
-const chain = defineChain({
-  id: 31337,
-  name: "local-anvil",
-  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-  rpcUrls: { default: { http: [RPC_URL] } },
-});
-
-const publicClient = createPublicClient({ chain, transport: http(RPC_URL) });
-
-function wallet(pk) {
-  return createWalletClient({ chain, transport: http(RPC_URL), account: privateKeyToAccount(pk) });
-}
-
 function artifact(name) {
   const p = path.join(root, "chain", "artifacts", "contracts", `${name}.sol`, `${name}.json`);
   return JSON.parse(fs.readFileSync(p, "utf8"));
 }
 
-async function deploy(deployer, name, args) {
-  const art = artifact(name);
-  const hash = await deployer.deployContract({ abi: art.abi, bytecode: art.bytecode, args });
-  const receipt = await publicClient.waitForTransactionReceipt({ hash });
-  console.log(`  ${name}${args.length ? ` (${args[1] ?? ""})` : ""} → ${receipt.contractAddress}`);
-  return { address: receipt.contractAddress, abi: art.abi };
-}
-
-async function main() {
-  console.log(`Connecting to ${RPC_URL} ...`);
-  await publicClient.getBlockNumber().catch(() => {
-    console.error("Local chain not reachable. Start it first: npm run chain");
-    process.exit(1);
+async function setupChain(networkId, cfg) {
+  const chain = defineChain({
+    id: cfg.chainId,
+    name: networkId,
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    rpcUrls: { default: { http: [cfg.rpcUrl] } },
   });
+  const publicClient = createPublicClient({ chain, transport: http(cfg.rpcUrl) });
+  const wallet = (pk) =>
+    createWalletClient({ chain, transport: http(cfg.rpcUrl), account: privateKeyToAccount(pk) });
+
+  const reachable = await publicClient.getChainId().catch(() => null);
+  if (reachable === null) {
+    console.error(`\n${networkId} not reachable at ${cfg.rpcUrl}.`);
+    console.error(
+      networkId === "polygon-local"
+        ? "Start it first: npm run chain:polygon"
+        : "Start it first: npm run chain"
+    );
+    process.exit(1);
+  }
+  if (reachable !== cfg.chainId) {
+    console.error(`\n${networkId}: expected chainId ${cfg.chainId} at ${cfg.rpcUrl}, found ${reachable}.`);
+    process.exit(1);
+  }
 
   const operator = wallet(ACCOUNTS.operator.privateKey);
 
-  console.log("Deploying contracts:");
-  const usdc = await deploy(operator, "MockERC20", ["Mock USD Coin", "mockUSDC", 6]);
-  const jpy = await deploy(operator, "MockERC20", ["Mock JPY Token", "mockJPY", 0]);
-  const sgd = await deploy(operator, "MockERC20", ["Mock SGD Token", "mockSGD", 6]);
-  const settlement = await deploy(operator, "PaymentSettlement", []);
+  async function deploy(name, args) {
+    const art = artifact(name);
+    const hash = await operator.deployContract({ abi: art.abi, bytecode: art.bytecode, args });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    console.log(`  [${networkId}] ${name}${args[1] ? ` (${args[1]})` : ""} → ${receipt.contractAddress}`);
+    return { address: receipt.contractAddress, abi: art.abi };
+  }
 
-  const tokens = {
-    mockUSDC: { address: usdc.address, decimals: 6, contract: usdc },
-    mockJPY: { address: jpy.address, decimals: 0, contract: jpy },
-    mockSGD: { address: sgd.address, decimals: 6, contract: sgd },
-  };
-
-  console.log("Approving settlement assets...");
-  for (const t of Object.values(tokens)) {
-    const hash = await operator.writeContract({
-      address: settlement.address,
-      abi: settlement.abi,
-      functionName: "setApprovedAsset",
-      args: [t.address, true],
-    });
+  async function write(w, address, abi, functionName, args) {
+    const hash = await w.writeContract({ address, abi, functionName, args });
     await publicClient.waitForTransactionReceipt({ hash });
   }
 
-  console.log("Minting balances...");
+  const tokens = {};
+  for (const [name, symbol, decimals] of cfg.tokens) {
+    const t = await deploy("MockERC20", [name, symbol, decimals]);
+    tokens[symbol] = { ...t, decimals };
+  }
+  const settlement = await deploy("PaymentSettlement", []);
+
+  for (const t of Object.values(tokens)) {
+    await write(operator, settlement.address, settlement.abi, "setApprovedAsset", [t.address, true]);
+  }
+
+  // Balances: ACME funds USD on both chains (so either can be a source);
+  // treasury holds settlement liquidity in every asset on both chains.
   const mints = [
-    ["mockUSDC", ACCOUNTS.acme.address, 1_000_000n * 10n ** 6n], // ACME operating balance
-    ["mockUSDC", ACCOUNTS.treasury.address, 500_000n * 10n ** 6n], // treasury USD liquidity
-    ["mockJPY", ACCOUNTS.treasury.address, 100_000_000n], // treasury JPY liquidity (0 decimals)
-    ["mockSGD", ACCOUNTS.treasury.address, 1_000_000n * 10n ** 6n], // treasury SGD liquidity
+    ["mockUSDC", ACCOUNTS.acme.address, 1_000_000n * 10n ** 6n],
+    ["mockUSDC", ACCOUNTS.treasury.address, 500_000n * 10n ** 6n],
+    ["mockJPY", ACCOUNTS.treasury.address, 100_000_000n],
+    ["mockSGD", ACCOUNTS.treasury.address, 1_000_000n * 10n ** 6n],
     ["mockSGD", ACCOUNTS.singapore.address, 200_000n * 10n ** 6n],
     ["mockJPY", ACCOUNTS.tokyo.address, 10_000_000n],
   ];
   for (const [sym, to, amount] of mints) {
-    const hash = await operator.writeContract({
-      address: tokens[sym].address,
-      abi: tokens[sym].contract.abi,
-      functionName: "mint",
-      args: [to, amount],
-    });
-    await publicClient.waitForTransactionReceipt({ hash });
+    if (tokens[sym]) {
+      await write(operator, tokens[sym].address, tokens[sym].abi, "mint", [to, amount]);
+    }
   }
 
-  console.log("Entity wallets approving escrow contract...");
   const MAX = 2n ** 256n - 1n;
   for (const who of ["acme", "tokyo", "singapore", "osaka"]) {
     const w = wallet(ACCOUNTS[who].privateKey);
     for (const t of Object.values(tokens)) {
-      const hash = await w.writeContract({
-        address: t.address,
-        abi: t.contract.abi,
-        functionName: "approve",
-        args: [settlement.address, MAX],
-      });
-      await publicClient.waitForTransactionReceipt({ hash });
+      await write(w, t.address, t.abi, "approve", [settlement.address, MAX]);
     }
   }
 
-  const deployments = {
-    network: "local-anvil",
-    chainId: 31337,
-    rpcUrl: RPC_URL,
+  return {
+    chainId: cfg.chainId,
+    rpcUrl: cfg.rpcUrl,
     contracts: {
       PaymentSettlement: settlement.address,
       tokens: Object.fromEntries(
         Object.entries(tokens).map(([k, v]) => [k, { address: v.address, decimals: v.decimals }])
       ),
     },
+  };
+}
+
+async function main() {
+  console.log("Deploying to all networks:");
+  const networks = {};
+  for (const [networkId, cfg] of Object.entries(CHAINS)) {
+    networks[networkId] = await setupChain(networkId, cfg);
+  }
+
+  const deployments = {
+    networks,
     accounts: {
       operator: { address: ACCOUNTS.operator.address, privateKey: ACCOUNTS.operator.privateKey },
       treasury: { address: ACCOUNTS.treasury.address, privateKey: ACCOUNTS.treasury.privateKey },
@@ -173,6 +196,7 @@ async function main() {
   await prisma.wallet.deleteMany();
   await prisma.entity.deleteMany();
 
+  const networkIds = Object.keys(CHAINS);
   const entities = [
     {
       externalId: "ent_acme_us",
@@ -220,7 +244,11 @@ async function main() {
   for (const e of entities) {
     const { wallet: w, ...data } = e;
     await prisma.entity.create({
-      data: { ...data, wallets: { create: { ...w, network: "local-anvil" } } },
+      data: {
+        ...data,
+        // Same address is registered on every network (dev accounts are shared).
+        wallets: { create: networkIds.map((network) => ({ ...w, network })) },
+      },
     });
     console.log(`  ${e.name} (${e.externalId})`);
   }

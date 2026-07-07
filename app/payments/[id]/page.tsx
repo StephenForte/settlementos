@@ -237,6 +237,18 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
                     )}
                   </div>
                   <p className="mt-1 text-xs leading-relaxed text-slate-400">{r.description}</p>
+                  {r.hops && (
+                    <div className="mt-2 flex flex-wrap items-center gap-1">
+                      {r.hops.map((hop: string, i: number) => (
+                        <Fragment key={i}>
+                          {i > 0 && <span className="text-slate-600">→</span>}
+                          <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300">
+                            {hop}
+                          </span>
+                        </Fragment>
+                      ))}
+                    </div>
+                  )}
                   <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
                     <dt className="text-slate-500">FX rate</dt>
                     <dd className="text-slate-200">
@@ -260,8 +272,18 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
                     <dd className={r.liquidity_available ? "text-emerald-300" : "text-rose-300"}>
                       {r.liquidity_available ? "Available" : "Shortfall"}
                     </dd>
-                    <dt className="text-slate-500">Network</dt>
-                    <dd className="text-slate-200">{r.source_network}</dd>
+                    <dt className="text-slate-500">Route</dt>
+                    <dd className="text-slate-200">
+                      {r.source_network === r.destination_network
+                        ? r.source_network
+                        : `${r.source_network} → ${r.destination_network}`}
+                    </dd>
+                    {r.bridge_fee_bps > 0 && (
+                      <>
+                        <dt className="text-slate-500">Bridge fee</dt>
+                        <dd className="text-slate-200">{r.bridge_fee_bps} bps</dd>
+                      </>
+                    )}
                   </dl>
                 </button>
               );
@@ -319,16 +341,30 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
           </dd>
           <dt className="text-slate-500">Destination asset</dt>
           <dd className="md:col-span-2 text-slate-200">
-            {payment.destinationAsset} → {payment.destinationCurrency} ledger credit
+            {payment.destinationAsset} on {payment.destinationNetwork} → {payment.destinationCurrency}{" "}
+            ledger credit
           </dd>
           <dt className="text-slate-500">Escrow tx</dt>
           <dd className="md:col-span-2">
             <Hash value={payment.txHash} />
+            {payment.txHash && <span className="ml-2 text-xs text-slate-500">{payment.sourceNetwork}</span>}
           </dd>
           <dt className="text-slate-500">Settlement tx</dt>
           <dd className="md:col-span-2">
             <Hash value={payment.settleTxHash} />
+            {payment.settleTxHash && (
+              <span className="ml-2 text-xs text-slate-500">{payment.sourceNetwork}</span>
+            )}
           </dd>
+          {payment.destinationTxHash && (
+            <>
+              <dt className="text-slate-500">Bridge payout tx</dt>
+              <dd className="md:col-span-2">
+                <Hash value={payment.destinationTxHash} />
+                <span className="ml-2 text-xs text-cyan-300">{payment.destinationNetwork}</span>
+              </dd>
+            </>
+          )}
           <dt className="text-slate-500">On-chain payment ID</dt>
           <dd className="md:col-span-2">
             <Hash value={payment.onchainPaymentId} />

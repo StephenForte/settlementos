@@ -3,11 +3,11 @@ import { prisma } from "@/lib/db";
 import { isChainReady, loadDeployments, tokenBalance } from "@/lib/chain";
 import { fromBaseUnits } from "@/lib/assets";
 
-/** Treasury + entity balances by asset, liquidity reservations, and ledger credits. */
+/** Treasury + entity balances by network and asset, reservations, and ledger credits. */
 export async function GET() {
   if (!isChainReady()) {
     return NextResponse.json(
-      { error: "Chain not set up. Run: npm run chain, then npm run setup" },
+      { error: "Chains not set up. Run: npm run chain, npm run chain:polygon, then npm run setup" },
       { status: 503 }
     );
   }
@@ -21,20 +21,27 @@ export async function GET() {
       .map((e) => ({ label: e.name, kind: "entity", address: e.wallets[0].address })),
   ];
 
-  const balances = await Promise.all(
-    holders.map(async (h) => {
-      const perToken: Record<string, string> = {};
-      for (const [symbol, token] of Object.entries(dep.contracts.tokens)) {
-        const raw = await tokenBalance(token.address, h.address as `0x${string}`);
-        perToken[symbol] = fromBaseUnits(raw, token.decimals);
-      }
-      return { ...h, tokens: perToken };
-    })
-  );
+  const networks: Record<
+    string,
+    { balances: { label: string; kind: string; address: string; tokens: Record<string, string> }[] }
+  > = {};
+
+  for (const [networkId, net] of Object.entries(dep.networks)) {
+    const balances = await Promise.all(
+      holders.map(async (h) => {
+        const perToken: Record<string, string> = {};
+        for (const [symbol, token] of Object.entries(net.contracts.tokens)) {
+          const raw = await tokenBalance(networkId, token.address, h.address as `0x${string}`);
+          perToken[symbol] = fromBaseUnits(raw, token.decimals);
+        }
+        return { ...h, tokens: perToken };
+      })
+    );
+    networks[networkId] = { balances };
+  }
 
   const reservations = await prisma.liquidityReservation.findMany({
     where: { status: "RESERVED" },
-    include: { payment: true },
   });
 
   // Amounts are stored as decimal strings, so aggregate in JS rather than SQL.
@@ -51,12 +58,11 @@ export async function GET() {
   });
 
   return NextResponse.json({
-    network: dep.network,
-    settlementContract: dep.contracts.PaymentSettlement,
-    balances,
+    networks,
     reservations: reservations.map((r) => ({
       payment_id: r.paymentId,
       asset: r.asset,
+      network: r.network,
       amount: r.amount,
       status: r.status,
     })),

@@ -1,16 +1,26 @@
 // Payment execution orchestrator. Drives an APPROVED payment through:
-// liquidity reservation → on-chain escrow → confirmation → FX/settlement →
-// payout (ledger credit) → SETTLED, with audit events at every step and
+// liquidity reservation → on-chain escrow (source network) → confirmation →
+// FX/settlement → payout → SETTLED, with audit events at every step and
 // refund-on-failure semantics.
+//
+// Cross-network routes add a simulated bridge leg: after source-chain
+// settlement, the treasury pays out destination-asset tokens to the
+// recipient's wallet ON the destination network (a real ERC-20 transfer on
+// chain 2), giving the payment transaction hashes on both networks.
 
 import type { Payment } from "@prisma/client";
 import { prisma } from "./db";
 import { audit } from "./audit";
 import { assertTransition, type PaymentStatus } from "./state";
 import { assetForCurrency, toBaseUnits } from "./assets";
-import { loadDeployments, onchainPaymentId, operatorWrite } from "./chain";
+import {
+  loadDeployments,
+  onchainPaymentId,
+  operatorWrite,
+  treasuryTokenTransfer,
+} from "./chain";
 import { availableLiquidity, type RouteOption } from "./routing";
-import { keccak256, toHex } from "viem";
+import { keccak256, toHex, type Address } from "viem";
 
 async function setStatus(
   payment: Payment,
@@ -40,8 +50,9 @@ function selectedRoute(payment: Payment): RouteOption {
 }
 
 /**
- * Execute an APPROVED payment end-to-end. Runs synchronously — the local chain
- * confirms in milliseconds. On on-chain failure after escrow, funds are refunded.
+ * Execute an APPROVED payment end-to-end. Runs synchronously — the local
+ * chains confirm in milliseconds. On on-chain failure after escrow, funds are
+ * refunded on the source network.
  */
 export async function executePayment(paymentId: string): Promise<Payment> {
   let payment = await prisma.payment.findUniqueOrThrow({
@@ -54,45 +65,66 @@ export async function executePayment(paymentId: string): Promise<Payment> {
   }
 
   const route = selectedRoute(payment);
+  const sourceNet = route.source_network;
+  const destNet = route.destination_network;
+  const isCrossChain = sourceNet !== destNet;
+
   const dep = loadDeployments();
   const sourceAsset = assetForCurrency(payment.sourceCurrency);
   const destAsset = assetForCurrency(payment.destinationCurrency);
-  const sourceToken = dep.contracts.tokens[sourceAsset.symbol];
+  const sourceToken = dep.networks[sourceNet].contracts.tokens[sourceAsset.symbol];
   const destAmount = route.estimated_destination_amount;
 
-  const senderWallet = payment.sender.wallets[0];
-  const recipientWallet = payment.recipient.wallets[0];
+  const walletOn = (wallets: { network: string; address: string }[], networkId: string) =>
+    wallets.find((w) => w.network === networkId) ?? wallets[0];
+  const senderWallet = walletOn(payment.sender.wallets, sourceNet);
+  const recipientWallet = walletOn(payment.recipient.wallets, destNet);
   if (!senderWallet || !recipientWallet) throw new Error("Sender and recipient must have registered wallets");
 
-  // 1. Reserve destination-side liquidity.
-  const liq = await availableLiquidity(destAsset.symbol);
+  // The route decides the actual destination network (fallback routes settle on source).
+  if (payment.destinationNetwork !== destNet) {
+    payment = {
+      ...payment,
+      ...(await prisma.payment.update({
+        where: { id: payment.id },
+        data: { destinationNetwork: destNet },
+      })),
+    };
+  }
+
+  // 1. Reserve destination-side liquidity on the destination network.
+  const liq = await availableLiquidity(destAsset.symbol, destNet);
   if (Number(liq.available) < Number(destAmount)) {
-    const failureReason = `Insufficient ${destAsset.symbol} liquidity: need ${destAmount}, available ${liq.available}`;
+    const failureReason = `Insufficient ${destAsset.symbol} liquidity on ${destNet}: need ${destAmount}, available ${liq.available}`;
     await setStatus(payment, "FAILED", { failureReason });
-    throw new Error(`Insufficient liquidity for ${destAsset.symbol}`);
+    throw new Error(failureReason);
   }
   await prisma.liquidityReservation.upsert({
     where: { paymentId: payment.id },
     create: {
       paymentId: payment.id,
       asset: destAsset.symbol,
-      network: route.destination_network,
+      network: destNet,
       amount: destAmount,
     },
-    update: { asset: destAsset.symbol, amount: destAmount, status: "RESERVED" },
+    update: { asset: destAsset.symbol, network: destNet, amount: destAmount, status: "RESERVED" },
   });
   payment = {
     ...payment,
-    ...(await setStatus(payment, "LIQUIDITY_RESERVED", {}, { reservedAmount: destAmount, asset: destAsset.symbol })),
+    ...(await setStatus(payment, "LIQUIDITY_RESERVED", {}, {
+      reservedAmount: destAmount,
+      asset: destAsset.symbol,
+      network: destNet,
+    })),
   };
 
   const pid = onchainPaymentId(payment.id);
   const routeIdHash = keccak256(toHex(route.route_id));
 
   try {
-    // 2. Escrow source funds on-chain.
+    // 2. Escrow source funds on the source network.
     const amountUnits = toBaseUnits(payment.amount, sourceToken.decimals);
-    const initTx = await operatorWrite("initiatePayment", [
+    const initTx = await operatorWrite(sourceNet, "initiatePayment", [
       pid,
       senderWallet.address,
       recipientWallet.address,
@@ -106,23 +138,24 @@ export async function executePayment(paymentId: string): Promise<Payment> {
       ...(await setStatus(payment, "SUBMITTED_ONCHAIN", {
         txHash: initTx.hash,
         onchainPaymentId: pid,
-      })),
+      }, { network: sourceNet })),
     };
 
     // 3. Confirmation (receipt already awaited by operatorWrite).
     payment = {
       ...payment,
       ...(await setStatus(payment, "CONFIRMED_ONCHAIN", {}, {
+        network: sourceNet,
         blockNumber: initTx.blockNumber.toString(),
         gasUsed: initTx.gasUsed.toString(),
       })),
     };
 
-    // 4. FX conversion + on-chain settlement: release escrow to the treasury,
+    // 4. FX conversion + source-chain settlement: release escrow to the treasury,
     //    recording the destination leg on the settlement contract.
-    const destToken = dep.contracts.tokens[destAsset.symbol];
-    const settledUnits = toBaseUnits(destAmount, destToken.decimals);
-    const settleTx = await operatorWrite("settlePayment", [
+    const destTokenOnDest = dep.networks[destNet].contracts.tokens[destAsset.symbol];
+    const settledUnits = toBaseUnits(destAmount, destTokenOnDest.decimals);
+    const settleTx = await operatorWrite(sourceNet, "settlePayment", [
       pid,
       routeIdHash,
       dep.accounts.treasury.address,
@@ -135,11 +168,42 @@ export async function executePayment(paymentId: string): Promise<Payment> {
         settleTxHash: settleTx.hash,
         fxRate: route.estimated_fx_rate,
         destinationAmount: destAmount,
-      })),
+      }, { network: sourceNet })),
     };
 
-    // 5. Payout leg (simulated fiat rail): credit the recipient's local-currency ledger.
+    // 5. Payout leg.
     payment = { ...payment, ...(await setStatus(payment, "PAYOUT_PENDING")) };
+
+    if (isCrossChain) {
+      // Simulated bridge: treasury releases destination-asset tokens to the
+      // recipient's wallet on the destination network.
+      const bridgeTx = await treasuryTokenTransfer(
+        destNet,
+        destAsset.symbol,
+        recipientWallet.address as Address,
+        settledUnits
+      );
+      payment = {
+        ...payment,
+        ...(await prisma.payment.update({
+          where: { id: payment.id },
+          data: { destinationTxHash: bridgeTx.hash },
+        })),
+      };
+      await audit(
+        "bridge.destination_payout",
+        {
+          network: destNet,
+          asset: destAsset.symbol,
+          amount: destAmount,
+          to: recipientWallet.address,
+          txHash: bridgeTx.hash,
+        },
+        payment.id
+      );
+    }
+
+    // Simulated fiat rail: credit the recipient's local-currency ledger.
     await prisma.ledgerCredit.create({
       data: {
         paymentId: payment.id,
@@ -167,12 +231,12 @@ export async function executePayment(paymentId: string): Promise<Payment> {
       .update({ where: { paymentId: payment.id }, data: { status: "RELEASED" } })
       .catch(() => {});
 
-    // If funds were escrowed, refund on-chain.
+    // If funds were escrowed on the source network, refund on-chain.
     if (["SUBMITTED_ONCHAIN", "CONFIRMED_ONCHAIN"].includes(payment.status)) {
       try {
-        await operatorWrite("failAndRefund", [pid, reason.slice(0, 200)]);
-        await audit("payment.onchain_refund", { reason }, payment.id);
-        const failed = await prisma.payment.update({
+        await operatorWrite(sourceNet, "failAndRefund", [pid, reason.slice(0, 200)]);
+        await audit("payment.onchain_refund", { network: sourceNet, reason }, payment.id);
+        await prisma.payment.update({
           where: { id: payment.id },
           data: { status: "FAILED", failureReason: reason },
         });
@@ -182,7 +246,7 @@ export async function executePayment(paymentId: string): Promise<Payment> {
           data: { status: "REFUNDED" },
         });
         await audit("payment.status.refunded", {}, payment.id);
-        return refunded ?? failed;
+        return refunded;
       } catch (refundErr) {
         await audit(
           "payment.refund_failed",

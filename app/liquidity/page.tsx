@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/db";
 import { isChainReady, loadDeployments, tokenBalance } from "@/lib/chain";
+import { networkInfo } from "@/lib/networks";
 import { fromBaseUnits } from "@/lib/assets";
-import { Card, Stat } from "@/components/ui";
+import { Card } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +11,8 @@ export default async function LiquidityPage() {
     return (
       <Card title="Liquidity & Treasury">
         <p className="text-sm text-amber-300">
-          Chain not set up. Run <code className="font-mono">npm run chain</code> then{" "}
+          Chains not set up. Run <code className="font-mono">npm run chain</code>,{" "}
+          <code className="font-mono">npm run chain:polygon</code>, then{" "}
           <code className="font-mono">npm run setup</code>.
         </p>
       </Card>
@@ -18,23 +20,35 @@ export default async function LiquidityPage() {
   }
 
   const dep = loadDeployments();
-  const tokens = Object.entries(dep.contracts.tokens);
-
-  const treasury = await Promise.all(
-    tokens.map(async ([symbol, t]) => {
-      const raw = await tokenBalance(t.address, dep.accounts.treasury.address);
-      return { symbol, address: t.address, balance: fromBaseUnits(raw, t.decimals) };
-    })
-  );
 
   const activeReservations = await prisma.liquidityReservation.findMany({
     where: { status: "RESERVED" },
-    include: { payment: true },
   });
-  const reservedByAsset: Record<string, number> = {};
+  const reservedBy: Record<string, number> = {};
   for (const r of activeReservations) {
-    reservedByAsset[r.asset] = (reservedByAsset[r.asset] ?? 0) + Number(r.amount);
+    const key = `${r.network}:${r.asset}`;
+    reservedBy[key] = (reservedBy[key] ?? 0) + Number(r.amount);
   }
+
+  const networkSections = await Promise.all(
+    Object.entries(dep.networks).map(async ([networkId, net]) => {
+      const tokens = await Promise.all(
+        Object.entries(net.contracts.tokens).map(async ([symbol, t]) => {
+          const raw = await tokenBalance(networkId, t.address, dep.accounts.treasury.address);
+          const balance = fromBaseUnits(raw, t.decimals);
+          const reserved = reservedBy[`${networkId}:${symbol}`] ?? 0;
+          return {
+            symbol,
+            address: t.address,
+            balance,
+            reserved,
+            available: Number(balance) - reserved,
+          };
+        })
+      );
+      return { networkId, info: networkInfo(networkId), settlement: net.contracts.PaymentSettlement, tokens };
+    })
+  );
 
   const pendingOut = await prisma.payment.findMany({
     where: {
@@ -60,42 +74,48 @@ export default async function LiquidityPage() {
       <header>
         <h1 className="text-2xl font-semibold text-white">Liquidity & Treasury</h1>
         <p className="mt-1 text-sm text-slate-400">
-          Settlement treasury balances on {dep.network} · contract{" "}
-          <span className="font-mono text-xs">{dep.contracts.PaymentSettlement}</span>
+          Settlement treasury balances across {networkSections.length} EVM networks.
         </p>
       </header>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        {treasury.map((t) => {
-          const reserved = reservedByAsset[t.symbol] ?? 0;
-          const available = Number(t.balance) - reserved;
-          return (
-            <Card key={t.symbol}>
-              <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">{t.symbol}</p>
-              <p className="mt-2 text-2xl font-semibold text-white">
-                {Number(t.balance).toLocaleString("en-US")}
-              </p>
-              <dl className="mt-3 space-y-1 text-xs">
-                <div className="flex justify-between">
-                  <dt className="text-slate-500">Reserved</dt>
-                  <dd className={reserved > 0 ? "text-indigo-300" : "text-slate-400"}>
-                    {reserved.toLocaleString("en-US")}
-                  </dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt className="text-slate-500">Available</dt>
-                  <dd className={available < 0 ? "text-rose-300" : "text-emerald-300"}>
-                    {available.toLocaleString("en-US")}
-                  </dd>
-                </div>
-              </dl>
-              <p className="mt-3 truncate font-mono text-[10px] text-slate-600" title={t.address}>
-                {t.address}
-              </p>
-            </Card>
-          );
-        })}
-      </div>
+      {networkSections.map((section) => (
+        <div key={section.networkId}>
+          <div className="mb-3 flex items-baseline gap-3">
+            <h2 className="text-sm font-semibold text-white">{section.info.label}</h2>
+            <span className="text-xs text-slate-500">
+              chainId {section.info.chainId} · simulates {section.info.simulates} · settlement{" "}
+              <span className="font-mono">{section.settlement.slice(0, 10)}…</span>
+            </span>
+          </div>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            {section.tokens.map((t) => (
+              <Card key={t.symbol}>
+                <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">{t.symbol}</p>
+                <p className="mt-2 text-2xl font-semibold text-white">
+                  {Number(t.balance).toLocaleString("en-US")}
+                </p>
+                <dl className="mt-3 space-y-1 text-xs">
+                  <div className="flex justify-between">
+                    <dt className="text-slate-500">Reserved</dt>
+                    <dd className={t.reserved > 0 ? "text-indigo-300" : "text-slate-400"}>
+                      {t.reserved.toLocaleString("en-US")}
+                    </dd>
+                  </div>
+                  <div className="flex justify-between">
+                    <dt className="text-slate-500">Available</dt>
+                    <dd className={t.available < 0 ? "text-rose-300" : "text-emerald-300"}>
+                      {t.available.toLocaleString("en-US")}
+                    </dd>
+                  </div>
+                </dl>
+                <p className="mt-3 truncate font-mono text-[10px] text-slate-600" title={t.address}>
+                  {t.address}
+                </p>
+              </Card>
+            ))}
+          </div>
+        </div>
+      ))}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Pending Outgoing Payments">
@@ -126,7 +146,7 @@ export default async function LiquidityPage() {
                 <li key={r.id} className="flex justify-between">
                   <span className="font-mono text-xs text-slate-300">{r.paymentId}</span>
                   <span className="text-indigo-300">
-                    {Number(r.amount).toLocaleString("en-US")} {r.asset}
+                    {Number(r.amount).toLocaleString("en-US")} {r.asset} · {r.network}
                   </span>
                 </li>
               ))}

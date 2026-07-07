@@ -23,8 +23,11 @@ export async function GET() {
     "destination_amount",
     "destination_currency",
     "platform_fee",
+    "source_network",
+    "destination_network",
     "escrow_tx_hash",
     "settlement_tx_hash",
+    "destination_payout_tx_hash",
     "ledger_credit_amount",
   ];
 
@@ -50,8 +53,11 @@ export async function GET() {
       p.destinationAmount ?? "",
       p.destinationCurrency,
       fee,
+      p.sourceNetwork,
+      p.destinationNetwork,
       p.txHash ?? "",
       p.settleTxHash ?? "",
+      p.destinationTxHash ?? "",
       credit || "",
     ]
       .map(esc)

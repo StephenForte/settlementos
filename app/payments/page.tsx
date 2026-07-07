@@ -51,6 +51,11 @@ export default async function PaymentsPage() {
                   <td className="py-2.5 pr-4 text-slate-400">{p.referenceId || "—"}</td>
                   <td className="py-2.5 pr-4 text-slate-300">
                     {p.sourceCurrency} → {p.destinationCurrency}
+                    <div className="text-[10px] text-slate-500">
+                      {p.sourceNetwork === p.destinationNetwork
+                        ? p.sourceNetwork
+                        : `${p.sourceNetwork} ⇢ ${p.destinationNetwork}`}
+                    </div>
                   </td>
                   <td className="py-2.5 pr-4 text-slate-200">
                     {formatAmount(p.amount, p.sourceCurrency)} {p.sourceCurrency}

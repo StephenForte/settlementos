@@ -1,7 +1,6 @@
-// Chain adapter for the local EVM settlement network (Hardhat node, Anvil-compatible).
-// Implements the PRD's ChainAdapter/AssetAdapter surface with viem. Contract
-// addresses and account roles are read from chain/deployments.json, written by
-// scripts/setup.mjs.
+// Multi-network chain adapter (PRD ChainAdapter/AssetAdapter surface, viem).
+// Contract addresses and account roles per network are read from
+// chain/deployments.json, written by scripts/setup.mjs.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -14,17 +13,18 @@ import {
   toHex,
   type Address,
   type Hex,
+  type PublicClient,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { NETWORKS, networkInfo } from "./networks";
+
+export interface NetworkContracts {
+  PaymentSettlement: Address;
+  tokens: Record<string, { address: Address; decimals: number }>;
+}
 
 export interface Deployments {
-  network: string;
-  chainId: number;
-  rpcUrl: string;
-  contracts: {
-    PaymentSettlement: Address;
-    tokens: Record<string, { address: Address; decimals: number }>;
-  };
+  networks: Record<string, { chainId: number; rpcUrl: string; contracts: NetworkContracts }>;
   accounts: {
     operator: { address: Address; privateKey: Hex };
     treasury: { address: Address; privateKey: Hex };
@@ -37,31 +37,60 @@ const DEPLOYMENTS_PATH = path.join(process.cwd(), "chain", "deployments.json");
 export function loadDeployments(): Deployments {
   if (!fs.existsSync(DEPLOYMENTS_PATH)) {
     throw new Error(
-      "chain/deployments.json not found. Start the local chain (npm run chain) and run: npm run setup"
+      "chain/deployments.json not found. Start both chains (npm run chain, npm run chain:polygon) and run: npm run setup"
     );
   }
-  return JSON.parse(fs.readFileSync(DEPLOYMENTS_PATH, "utf8"));
+  const dep = JSON.parse(fs.readFileSync(DEPLOYMENTS_PATH, "utf8"));
+  if (!dep.networks) {
+    throw new Error("deployments.json is single-network (pre-Phase-3). Re-run: npm run setup");
+  }
+  return dep;
 }
 
 export function isChainReady(): boolean {
-  return fs.existsSync(DEPLOYMENTS_PATH);
+  if (!fs.existsSync(DEPLOYMENTS_PATH)) return false;
+  try {
+    return !!JSON.parse(fs.readFileSync(DEPLOYMENTS_PATH, "utf8")).networks;
+  } catch {
+    return false;
+  }
 }
 
-const RPC_URL = process.env.CHAIN_RPC_URL || "http://127.0.0.1:8545";
+export function networkContracts(networkId: string): NetworkContracts {
+  const dep = loadDeployments();
+  const net = dep.networks[networkId];
+  if (!net) throw new Error(`Network ${networkId} not in deployments.json — re-run npm run setup`);
+  return net.contracts;
+}
 
-export const localChain = defineChain({
-  id: 31337,
-  name: "Local Anvil (Base Sepolia-compatible)",
-  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-  rpcUrls: { default: { http: [RPC_URL] } },
-});
+function viemChain(networkId: string) {
+  const info = networkInfo(networkId);
+  return defineChain({
+    id: info.chainId,
+    name: info.label,
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    rpcUrls: { default: { http: [info.rpcUrl] } },
+  });
+}
 
-export const publicClient = createPublicClient({ chain: localChain, transport: http(RPC_URL) });
+const publicClients: Record<string, PublicClient> = {};
 
-export function walletFor(privateKey: Hex) {
+export function publicClientFor(networkId: string): PublicClient {
+  if (!publicClients[networkId]) {
+    const info = networkInfo(networkId);
+    publicClients[networkId] = createPublicClient({
+      chain: viemChain(networkId),
+      transport: http(info.rpcUrl),
+    });
+  }
+  return publicClients[networkId];
+}
+
+export function walletFor(networkId: string, privateKey: Hex) {
+  const info = networkInfo(networkId);
   return createWalletClient({
-    chain: localChain,
-    transport: http(RPC_URL),
+    chain: viemChain(networkId),
+    transport: http(info.rpcUrl),
     account: privateKeyToAccount(privateKey),
   });
 }
@@ -73,6 +102,16 @@ export const ERC20_ABI = [
     stateMutability: "view",
     inputs: [{ name: "owner", type: "address" }],
     outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "transfer",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "to", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [{ type: "bool" }],
   },
   {
     type: "function",
@@ -148,8 +187,12 @@ export function onchainPaymentId(paymentId: string): Hex {
   return keccak256(toHex(paymentId));
 }
 
-export async function tokenBalance(token: Address, owner: Address): Promise<bigint> {
-  return publicClient.readContract({
+export async function tokenBalance(
+  networkId: string,
+  token: Address,
+  owner: Address
+): Promise<bigint> {
+  return publicClientFor(networkId).readContract({
     address: token,
     abi: ERC20_ABI,
     functionName: "balanceOf",
@@ -163,21 +206,52 @@ export interface TxResult {
   gasUsed: bigint;
 }
 
-/** Submit a settlement-contract write as the operator and wait for confirmation. */
+async function confirm(networkId: string, hash: Hex): Promise<TxResult> {
+  const receipt = await publicClientFor(networkId).waitForTransactionReceipt({ hash });
+  if (receipt.status !== "success") throw new Error(`Transaction ${hash} reverted on ${networkId}`);
+  return { hash, blockNumber: receipt.blockNumber, gasUsed: receipt.gasUsed };
+}
+
+/** Submit a settlement-contract write as the operator on the given network. */
 export async function operatorWrite(
+  networkId: string,
   functionName: "initiatePayment" | "settlePayment" | "cancelPayment" | "failAndRefund",
   args: readonly unknown[]
 ): Promise<TxResult> {
   const dep = loadDeployments();
-  const wallet = walletFor(dep.accounts.operator.privateKey);
+  const wallet = walletFor(networkId, dep.accounts.operator.privateKey);
   const hash = await wallet.writeContract({
-    address: dep.contracts.PaymentSettlement,
+    address: dep.networks[networkId].contracts.PaymentSettlement,
     abi: SETTLEMENT_ABI,
     functionName,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     args: args as any,
   });
-  const receipt = await publicClient.waitForTransactionReceipt({ hash });
-  if (receipt.status !== "success") throw new Error(`Transaction ${hash} reverted`);
-  return { hash, blockNumber: receipt.blockNumber, gasUsed: receipt.gasUsed };
+  return confirm(networkId, hash);
 }
+
+/**
+ * Simulated bridge payout leg: the treasury releases destination-asset tokens to
+ * the recipient's wallet on the destination network. Stands in for a real bridge
+ * adapter (which would lock/burn on source and mint/release on destination).
+ */
+export async function treasuryTokenTransfer(
+  networkId: string,
+  tokenSymbol: string,
+  to: Address,
+  amount: bigint
+): Promise<TxResult> {
+  const dep = loadDeployments();
+  const token = dep.networks[networkId].contracts.tokens[tokenSymbol];
+  if (!token) throw new Error(`Token ${tokenSymbol} not deployed on ${networkId}`);
+  const wallet = walletFor(networkId, dep.accounts.treasury.privateKey);
+  const hash = await wallet.writeContract({
+    address: token.address,
+    abi: ERC20_ABI,
+    functionName: "transfer",
+    args: [to, amount],
+  });
+  return confirm(networkId, hash);
+}
+
+export { NETWORKS };

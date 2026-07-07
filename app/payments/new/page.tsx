@@ -14,6 +14,10 @@ interface EntityOption {
 
 const CURRENCIES = ["USD", "JPY", "SGD"];
 const ASSET_FOR: Record<string, string> = { USD: "mockUSDC", JPY: "mockJPY", SGD: "mockSGD" };
+const NETWORK_OPTIONS = [
+  { id: "base-local", label: "Base (local)" },
+  { id: "polygon-local", label: "Polygon Amoy (local)" },
+];
 const PURPOSES = [
   "supplier_payment",
   "intercompany_transfer",
@@ -31,6 +35,8 @@ export default function NewPaymentPage() {
     amount: "100000.00",
     source_currency: "USD",
     destination_currency: "JPY",
+    source_network: "base-local",
+    destination_network: "polygon-local",
     purpose: "supplier_payment",
     reference_id: "INV-2026-001",
     memo: "",
@@ -158,6 +164,40 @@ export default function NewPaymentPage() {
               <p className="mt-1 text-[11px] text-slate-500">
                 Recipient credited in {form.destination_currency}
               </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className={labelClass}>Source Chain</label>
+              <select
+                className={inputClass}
+                value={form.source_network}
+                onChange={(e) => set("source_network", e.target.value)}
+              >
+                {NETWORK_OPTIONS.map((n) => (
+                  <option key={n.id} value={n.id}>
+                    {n.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className={labelClass}>Destination Chain</label>
+              <select
+                className={inputClass}
+                value={form.destination_network}
+                onChange={(e) => set("destination_network", e.target.value)}
+              >
+                {NETWORK_OPTIONS.map((n) => (
+                  <option key={n.id} value={n.id}>
+                    {n.label}
+                  </option>
+                ))}
+              </select>
+              {form.source_network !== form.destination_network && (
+                <p className="mt-1 text-[11px] text-cyan-300">Cross-chain route via simulated bridge</p>
+              )}
             </div>
           </div>
 

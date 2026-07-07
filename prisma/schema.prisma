@@ -29,7 +29,7 @@ model Wallet {
   id          String   @id @default(cuid())
   entityId    String
   address     String
-  network     String   @default("local-anvil")
+  network     String   @default("base-local")
   label       String   @default("")
   allowlisted Boolean  @default(false)
   riskScore   Int      @default(0) // 0-100, mock wallet screening score
@@ -50,8 +50,8 @@ model Payment {
   destinationCurrency String
   sourceAsset         String
   destinationAsset    String
-  sourceNetwork       String   @default("local-anvil")
-  destinationNetwork  String   @default("local-anvil")
+  sourceNetwork       String   @default("base-local")
+  destinationNetwork  String   @default("base-local")
   purpose             String   @default("")
   referenceId         String   @default("")
   memo                String   @default("")
@@ -61,8 +61,9 @@ model Payment {
   destinationAmount   String?
   feeJson             String? // JSON fee breakdown
   onchainPaymentId    String? // bytes32 id used on the settlement contract
-  txHash              String? // initiate/escrow tx
-  settleTxHash        String?
+  txHash              String? // initiate/escrow tx on source network
+  settleTxHash        String? // settlement/release tx on source network
+  destinationTxHash   String? // bridge payout tx on destination network (cross-chain routes)
   failureReason       String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt

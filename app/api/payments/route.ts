@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { CURRENCY_TO_ASSET } from "@/lib/assets";
 import { supportedCorridors, corridorCode } from "@/lib/fx";
+import { NETWORKS } from "@/lib/networks";
 
 export async function GET() {
   const payments = await prisma.payment.findMany({
@@ -21,10 +22,19 @@ export async function POST(req: NextRequest) {
     amount,
     source_currency,
     destination_currency,
+    source_network = "base-local",
+    destination_network = "base-local",
     purpose = "",
     reference_id = "",
     memo = "",
   } = body;
+
+  if (!NETWORKS[source_network] || !NETWORKS[destination_network]) {
+    return NextResponse.json(
+      { error: `unknown network — supported: ${Object.keys(NETWORKS).join(", ")}` },
+      { status: 400 }
+    );
+  }
 
   if (!sender_id || !recipient_id || !amount || !source_currency || !destination_currency) {
     return NextResponse.json(
@@ -66,6 +76,8 @@ export async function POST(req: NextRequest) {
       destinationCurrency: destination_currency,
       sourceAsset,
       destinationAsset: destAsset,
+      sourceNetwork: source_network,
+      destinationNetwork: destination_network,
       purpose,
       referenceId: reference_id,
       memo,
@@ -73,7 +85,13 @@ export async function POST(req: NextRequest) {
   });
   await audit(
     "payment.created",
-    { sender: sender_id, recipient: recipient_id, amount, corridor: `${source_currency}-${destination_currency}` },
+    {
+      sender: sender_id,
+      recipient: recipient_id,
+      amount,
+      corridor: `${source_currency}-${destination_currency}`,
+      route: `${source_network} → ${destination_network}`,
+    },
     id
   );
 

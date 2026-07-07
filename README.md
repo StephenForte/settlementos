@@ -17,9 +17,10 @@ audit trail plus a reconciliation export.
 |---|---|
 | Frontend + API | Next.js (App Router) + Tailwind, REST route handlers |
 | Database | SQLite via Prisma (entities, payments, compliance checks, audit log, liquidity reservations, ledger credits) |
-| Chain | Local Hardhat node (Anvil-compatible, chainId 31337); config included for Base Sepolia |
-| Contracts | Solidity 0.8.24 — `MockERC20` (mockUSDC/mockJPY/mockSGD) + `PaymentSettlement` escrow |
-| Chain client | viem |
+| Chains | Two local Hardhat nodes: `base-local` (31337, simulates Base Sepolia) and `polygon-local` (31338, simulates Polygon Amoy); config included for real Base Sepolia |
+| Contracts | Solidity 0.8.24 — `MockERC20` (mockUSDC/mockJPY/mockSGD) + `PaymentSettlement` escrow, deployed to both networks |
+| Chain client | viem, via a network-registry chain adapter ([lib/chain.ts](lib/chain.ts), [lib/networks.ts](lib/networks.ts)) |
+| Bridge | Simulated: source-chain escrow + FX, then treasury pays out destination-asset tokens to the recipient wallet on the destination chain (real ERC-20 tx on chain 2) |
 | Compliance | Mock providers (KYB, sanctions, wallet risk, transaction risk, corridor risk) with PASS / FAIL / MANUAL_REVIEW outcomes |
 
 ### Payment lifecycle
@@ -38,10 +39,11 @@ Transitions are enforced by a state machine ([lib/state.ts](lib/state.ts)).
 ```bash
 npm install
 
-# 1. Local EVM chain (keep running)
-npm run chain
+# 1. Local EVM chains (keep both running)
+npm run chain            # base-local    → 127.0.0.1:8545, chainId 31337
+npm run chain:polygon    # polygon-local → 127.0.0.1:8546, chainId 31338
 
-# 2. Deploy contracts + seed demo entities (rerun any time to reset)
+# 2. Deploy contracts to both chains + seed demo entities (rerun any time to reset)
 npm run setup
 
 # 3. App
@@ -61,13 +63,19 @@ Open http://localhost:3000.
    transaction risk, corridor); payment escrows mockUSDC on-chain, settles, and
    credits ¥ to the recipient ledger. Every state transition is audit-logged with
    real transaction hashes.
-5. **Manual review path** — send `300000.00` USD to *Osaka Parts Co* (KYB pending,
+5. **Cross-chain route** — create a payment with source chain *Base (local)* and
+   destination chain *Polygon Amoy (local)*. The recommended **BRIDGE_AND_SETTLE**
+   route escrows mockUSDC on Base, runs the simulated bridge, and pays out mockJPY
+   to the recipient's wallet **on the Polygon chain** — the payment detail page
+   shows transaction hashes on both networks, plus a single-chain fallback route.
+6. **Manual review path** — send `300000.00` USD to *Osaka Parts Co* (KYB pending,
    wallet not allowlisted, amount above the $250k threshold). The payment parks in
    the **Compliance Queue**; approve it as a reviewer, then execute.
-6. **Liquidity & Treasury** — live on-chain treasury balances, reservations, and
-   the tokenized T-bill placeholder (disabled, institutional-only, per PRD).
-7. **Export reconciliation CSV** from the dashboard; show the audit chain
-   "INTACT" badge on the Compliance page (hash-chained, tamper-evident).
+7. **Liquidity & Treasury** — live on-chain treasury balances per network,
+   reservations, and the tokenized T-bill placeholder (disabled, per PRD).
+8. **Export reconciliation CSV** from the dashboard (now includes per-network tx
+   hashes); show the audit chain "INTACT" badge on the Compliance page
+   (hash-chained, tamper-evident).
 
 Demo entities seeded by `npm run setup`:
 
@@ -106,6 +114,8 @@ curl -X POST http://localhost:3000/api/payments \
     "amount": "100000.00",
     "source_currency": "USD",
     "destination_currency": "JPY",
+    "source_network": "base-local",
+    "destination_network": "polygon-local",
     "purpose": "supplier_payment",
     "reference_id": "INV-2026-001"
   }'
@@ -136,5 +146,6 @@ funded keys and a rework of the account roles.)
 ## Out of scope (by design, per PRD)
 
 Real funds, fiat on/off ramps, custody, native token, consumer remittance, DeFi
-yield, bridges, Solana. Compliance providers are mocks; FX and payout are
-simulated.
+yield, real bridges, Solana. Compliance providers are mocks; FX, payout, and the
+cross-chain bridge are simulated (the bridge leg is a treasury-funded payout on
+the destination chain, not a lock-and-mint bridge).
