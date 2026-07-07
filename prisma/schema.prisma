@@ -1,0 +1,131 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Entity {
+  id                String   @id @default(cuid())
+  externalId        String   @unique
+  name              String
+  type              String   @default("BUSINESS")
+  country           String
+  role              String   @default("BOTH") // SENDER | RECIPIENT | BOTH
+  kybStatus         String   @default("PENDING") // PASSED | PENDING | FAILED
+  riskRating        String   @default("LOW") // LOW | MEDIUM | HIGH
+  approvedCorridors String   @default("[]") // JSON array of "USD-JPY" style corridor codes
+  createdAt         DateTime @default(now())
+
+  wallets          Wallet[]
+  paymentsSent     Payment[]      @relation("sender")
+  paymentsReceived Payment[]      @relation("recipient")
+  ledgerCredits    LedgerCredit[]
+}
+
+model Wallet {
+  id          String   @id @default(cuid())
+  entityId    String
+  address     String
+  network     String   @default("local-anvil")
+  label       String   @default("")
+  allowlisted Boolean  @default(false)
+  riskScore   Int      @default(0) // 0-100, mock wallet screening score
+  createdAt   DateTime @default(now())
+
+  entity Entity @relation(fields: [entityId], references: [id])
+
+  @@unique([address, network])
+}
+
+model Payment {
+  id                  String   @id
+  status              String   @default("DRAFT")
+  senderId            String
+  recipientId         String
+  amount              String // decimal string in source currency units
+  sourceCurrency      String
+  destinationCurrency String
+  sourceAsset         String
+  destinationAsset    String
+  sourceNetwork       String   @default("local-anvil")
+  destinationNetwork  String   @default("local-anvil")
+  purpose             String   @default("")
+  referenceId         String   @default("")
+  memo                String   @default("")
+  quoteJson           String? // JSON array of route options
+  selectedRouteId     String?
+  fxRate              String?
+  destinationAmount   String?
+  feeJson             String? // JSON fee breakdown
+  onchainPaymentId    String? // bytes32 id used on the settlement contract
+  txHash              String? // initiate/escrow tx
+  settleTxHash        String?
+  failureReason       String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  sender    Entity @relation("sender", fields: [senderId], references: [id])
+  recipient Entity @relation("recipient", fields: [recipientId], references: [id])
+
+  complianceChecks ComplianceCheck[]
+  auditEvents      AuditEvent[]
+  ledgerCredits    LedgerCredit[]
+  reservation      LiquidityReservation?
+}
+
+model ComplianceCheck {
+  id          String   @id @default(cuid())
+  paymentId   String
+  provider    String
+  checkType   String // KYB_SENDER | KYC_RECIPIENT | SANCTIONS | WALLET_RISK | TX_RISK | CORRIDOR_RISK
+  status      String // PASS | FAIL | MANUAL_REVIEW | EXEMPT_TESTNET
+  score       Int      @default(0)
+  reasonCodes String   @default("[]")
+  createdAt   DateTime @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id])
+}
+
+// Append-only, hash-chained audit log. Each event's hash covers its content plus
+// the previous event's hash, so tampering is detectable.
+model AuditEvent {
+  id        Int      @id @default(autoincrement())
+  paymentId String?
+  actor     String   @default("system")
+  action    String
+  detail    String   @default("{}")
+  prevHash  String
+  hash      String
+  createdAt DateTime @default(now())
+
+  payment Payment? @relation(fields: [paymentId], references: [id])
+}
+
+// Simulated fiat payout leg: recipient's local-currency ledger balance.
+model LedgerCredit {
+  id        String   @id @default(cuid())
+  paymentId String
+  entityId  String
+  currency  String
+  amount    String
+  createdAt DateTime @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id])
+  entity  Entity  @relation(fields: [entityId], references: [id])
+}
+
+model LiquidityReservation {
+  id        String   @id @default(cuid())
+  paymentId String   @unique
+  asset     String
+  network   String
+  amount    String
+  status    String   @default("RESERVED") // RESERVED | CONSUMED | RELEASED
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  payment Payment @relation(fields: [paymentId], references: [id])
+}
