@@ -47,10 +47,10 @@ const ENTITY_PROFILES = {
 };
 
 // Gas dust targets. Base Sepolia gas is fractions of a gwei, so these cover
-// hundreds of approvals/payouts. Top-ups only happen when below the target.
-const ENTITY_GAS_TARGET = parseEther("0.0005");
-const TREASURY_GAS_TARGET = parseEther("0.002");
-const MIN_DEPLOYER_BALANCE = parseEther("0.01");
+// dozens of approvals/payouts. Top-ups only happen when below the target.
+const ENTITY_GAS_TARGET = parseEther("0.0002");
+const TREASURY_GAS_TARGET = parseEther("0.001");
+const MIN_DEPLOYER_BALANCE = parseEther("0.005");
 
 function artifact(name) {
   const p = path.join(root, "chain", "artifacts", "contracts", `${name}.sol`, `${name}.json`);

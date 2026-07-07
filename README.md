@@ -141,7 +141,7 @@ every transaction to [Basescan](https://sepolia.basescan.org). Setup:
 
 1. **Deployer key** — generate a fresh key (never reuse a mainnet key) and put it
    in `.env` as `DEPLOYER_PRIVATE_KEY`. This key is the settlement **operator**.
-2. **Gas** — fund the deployer address with ~0.02 Base Sepolia ETH from a faucet:
+2. **Gas** — fund the deployer address with ≥0.005 Base Sepolia ETH (0.01+ is comfortable) from a faucet:
    [Coinbase CDP faucet](https://portal.cdp.coinbase.com/products/faucet) (free) or
    [Alchemy faucet](https://www.alchemy.com/faucets/base-sepolia). Only gas is
    needed — the settlement assets are self-deployed mock tokens.
