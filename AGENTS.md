@@ -56,6 +56,7 @@ re-registers Base Sepolia wallets and never touches the public testnet deploymen
 | [scripts/deploy-base-sepolia.mjs](scripts/deploy-base-sepolia.mjs) | Real testnet deploy: env deployer key, generated dust wallets, DB registration |
 | `app/api/*` | REST route handlers (thin; logic lives in lib/) |
 | `contracts/` | Solidity 0.8.24: `MockERC20` (permissionless mint, by design), `PaymentSettlement` escrow |
+| `tests/` | Vitest suite: `unit/` (pure), `db/` (compliance, audit chain), `integration/` (executor E2E, contract, API). Fixture bootstrap in `global-setup.ts` + `helpers/` |
 
 ## Invariants — do not break these
 
