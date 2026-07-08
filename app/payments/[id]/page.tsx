@@ -44,6 +44,7 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
   }, [id]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount populates state
     refresh();
   }, [refresh]);
 

@@ -11,7 +11,9 @@
     "chain:polygon": "hardhat node --config hardhat.config.polygon.cjs --port 8546",
     "compile": "hardhat compile --config hardhat.config.cjs",
     "setup": "npm run compile && node scripts/setup.mjs",
-    "deploy:base-sepolia": "npm run compile && node --env-file=.env scripts/deploy-base-sepolia.mjs"
+    "deploy:base-sepolia": "npm run compile && node --env-file=.env scripts/deploy-base-sepolia.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
@@ -30,6 +32,7 @@
     "eslint-config-next": "16.2.10",
     "hardhat": "^2.28.6",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.10"
   }
 }

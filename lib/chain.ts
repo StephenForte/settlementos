@@ -54,8 +54,10 @@ export interface Deployments {
   accounts?: NetworkAccounts;
 }
 
-const DEPLOYMENTS_PATH = path.join(process.cwd(), "chain", "deployments.json");
-const SEPOLIA_DEPLOYMENTS_PATH = path.join(process.cwd(), "chain", "deployments.base-sepolia.json");
+// Overridable so tests can point at an isolated fixture dir instead of chain/.
+const CHAIN_DIR = process.env.SETTLEMENTOS_CHAIN_DIR || path.join(process.cwd(), "chain");
+const DEPLOYMENTS_PATH = path.join(CHAIN_DIR, "deployments.json");
+const SEPOLIA_DEPLOYMENTS_PATH = path.join(CHAIN_DIR, "deployments.base-sepolia.json");
 
 function readJson(p: string) {
   return JSON.parse(fs.readFileSync(p, "utf8"));

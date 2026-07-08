@@ -52,6 +52,10 @@ npm run dev
 
 Open http://localhost:3000.
 
+```bash
+npm test   # self-contained: builds its own chains + DB under tests/.tmp
+```
+
 ## Demo script (~5 minutes)
 
 1. **Dashboard** — settled volume, in-flight payments, compliance alerts.

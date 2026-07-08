@@ -23,14 +23,21 @@ npm run chain:polygon     # polygon-local → :8546, chainId 31338
 npm run setup             # deploy to both local chains + reset/seed DB (the reset button)
 npm run dev               # app on :3000
 npm run deploy:base-sepolia   # real testnet deploy (needs funded DEPLOYER_PRIVATE_KEY in .env)
+npm test                      # full suite — no chains/DB needed, builds its own fixture
 npx tsc --noEmit && npm run lint
 ```
 
-**There are no automated tests yet.** Verify changes by exercising the real flow:
-`POST /api/payments` → `/quote` → `/execute` via curl (see README "API"), then
-check the UI. A settled payment should show real tx hashes and an intact audit
-trail. `npm run setup` resets DB + local chains at any time; it re-registers
-Base Sepolia wallets and never touches the public testnet deployment.
+**Tests**: `npm test` is fully self-contained — it compiles contracts, boots two
+Hardhat nodes on test-only ports (9545/9546), deploys to them, and builds a fresh
+SQLite DB under `tests/.tmp/` (never touching dev chains, `chain/deployments*.json`,
+or the dev DB). Layers: `tests/unit/` (state machine, FX, base units, explorer
+URLs), `tests/db/` (compliance matrix, audit-chain tamper detection),
+`tests/integration/` (executor E2E on-chain, PaymentSettlement contract behavior,
+API route validation). CI runs typecheck + lint + tests on every push/PR
+(`.github/workflows/ci.yml`). **Add tests for new lifecycle, compliance, or
+chain behavior** — and still smoke-test UI-visible changes by hand via the flow
+in README "API". `npm run setup` resets DB + local chains at any time; it
+re-registers Base Sepolia wallets and never touches the public testnet deployment.
 
 ## Architecture map
 

@@ -10,9 +10,13 @@ AGENTS.md above. README.md has full docs, DEMO.md the demo script. The PRD is at
 - Phases 1–4 complete: single-chain settlement; FX/routing/compliance/liquidity;
   multi-chain demo (base-local 31337 + polygon-local 31338, simulated bridge);
   real Base Sepolia (84532) with public Basescan links.
-- Tests: none yet — a likely next phase. Candidates discussed with Stephen:
-  second real testnet (Polygon Amoy 80002 — per-network plumbing already
-  supports it), real compliance-provider sandbox, test suite.
+- Phase 5 complete: vitest suite (71 tests — unit/DB/on-chain integration, see
+  AGENTS.md "Tests") + GitHub Actions CI. Lint, tsc, and tests all green.
+- NEXT (agreed, 2026-07-09): compliance-provider sandbox — OpenSanctions for
+  sanctions + Chainalysis free API for wallet screening, behind the existing
+  ProviderResult interface, env-driven with mock fallback, fail-safe to
+  MANUAL_REVIEW on provider errors, raw response persisted on ComplianceCheck.
+  Stephen is opening the vendor accounts; keep KYB mocked.
 
 ## Base Sepolia (live)
 - Deployed 2026-07-07, verified with a real settled payment.

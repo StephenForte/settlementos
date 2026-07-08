@@ -45,3 +45,6 @@ chain/artifacts
 chain/cache
 chain/deployments*.json
 prisma/dev.db
+
+# test fixtures
+tests/.tmp
