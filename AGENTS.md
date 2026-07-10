@@ -11,9 +11,10 @@ This version has breaking changes — APIs, conventions, and file structure may 
 EVM stablecoin settlement MVP: payment orchestration for cross-border B2B
 settlement over stablecoin rails — route quoting, compliance gate, on-chain
 escrow, simulated FX/bridge/payout, hash-chained audit trail. Full docs in
-[README.md](README.md), demo run-of-show in [DEMO.md](DEMO.md), PRD at
-`~/Downloads/settlementos_evm_stablecoin_settlement_prd.md`. Testnet demo only:
-mock assets, simulated FX, no real funds.
+[README.md](README.md), demo run-of-show in [DEMO.md](DEMO.md), product
+requirements + roadmap in [PRD.md](PRD.md) (canonical — a copy may exist on
+Stephen's Desktop; the repo version wins). Testnet demo only: mock assets,
+simulated FX, no real funds.
 
 ## Run & verify
 

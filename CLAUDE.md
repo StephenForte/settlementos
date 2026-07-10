@@ -3,8 +3,9 @@
 # SettlementOS — project status notes
 
 Engineering guide (architecture, run/verify, invariants, gotchas) lives in
-AGENTS.md above. README.md has full docs, DEMO.md the demo script. The PRD is at
-~/Downloads/settlementos_evm_stablecoin_settlement_prd.md.
+AGENTS.md above. README.md has full docs, DEMO.md the demo script, PRD.md the
+product requirements + phase roadmap (canonical; updated 2026-07-08 with
+implementation status and the JLTXX-inspired tokenized-MMF phase).
 
 ## State (2026-07-08)
 - Phases 1–4 complete: single-chain settlement; FX/routing/compliance/liquidity;
