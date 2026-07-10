@@ -14,7 +14,7 @@ The MVP described in this PRD is **built and running**. Code: [github.com/Stephe
 | 6 | Compliance provider sandbox (OpenSanctions + Chainalysis) | 🔜 Next |
 | 7 | Second real testnet (Polygon Amoy) — public cross-chain demo | Planned |
 | 8 | Tokenized MMF / overnight liquidity parking (JLTXX-inspired, see §24) | Planned |
-| 9 | Regulatory & partner package (original Phase 4 deliverables) | Planned |
+| 9 | Production hardening (AUDIT.md remediation) + regulatory & partner package | Planned |
 
 Live on Base Sepolia (chainId 84532): `PaymentSettlement` at
 [`0x9d8b8b7c476ab02306046f3da719d380fa0456aa`](https://sepolia.basescan.org/address/0x9d8b8b7c476ab02306046f3da719d380fa0456aa);
@@ -1398,15 +1398,42 @@ Activate the §24 treasury placeholder as a working simulation — JLTXX-inspire
 (see §24 for the full design). Institutions park idle settlement balances in a
 tokenized money-market fund overnight, in anticipation of corridor moves.
 
-### Phase 9: Regulatory / Partner Package
+### Phase 9: Production Hardening + Regulatory / Partner Package
 
-(Original "Phase 4" — unchanged.)
+**Track A — Production hardening.** Scope comes from the 2026-07-09 security,
+accuracy, and maintainability audit (`AUDIT.md` in the repo — full findings,
+refactor plan, and priorities). Remediation in the audit's recommended order:
+
+1. Authentication, authorization, tenant isolation, and safe error handling
+   (today every API route is open; the audit actor must come from an
+   authenticated identity, not the request body)
+2. Atomic, idempotent lifecycle execution — compare-and-swap status
+   transitions, per-payment execution lease, liquidity reserved in the same
+   transaction that claims the lease; concurrent-execution tests
+3. Post-settlement compensation design — a settlement saga with a
+   treasury-funded refund path for destination-leg failures that occur after
+   source-chain settlement
+4. Fixed-precision monetary model — strict amount validation (reject rather
+   than truncate excess precision), no JS `Number` in quoting/liquidity/fee
+   math, canonical decimal handling end to end
+5. Key custody — managed signer/KMS for operator and treasury keys, no
+   retained entity keys, exact short-lived approvals instead of unlimited
+   allowances
+6. Audit-chain anchoring (audit event written atomically with the domain
+   change, signed checkpoints), security headers/rate limits/pagination,
+   batched RPC reads
+
+**Track B — Regulatory / partner package.** (Original "Phase 4" — unchanged.)
 
 - Polished demo + this PRD
 - Technical architecture deck
 - Regulatory design memo, legal classification memo
 - Partner integration memo, corridor strategy memo
 - Real-money pilot options memo
+
+The audit deliberately measures the gap between "credible demo" and
+"operational system" — Track A closes that gap; Track B is the story told to
+regulators and partners about how it gets closed.
 
 ## 30. Recommended MVP Cut
 
