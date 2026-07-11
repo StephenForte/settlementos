@@ -32,7 +32,8 @@ npx tsc --noEmit && npm run lint
 Hardhat nodes on test-only ports (9545/9546), deploys to them, and builds a fresh
 SQLite DB under `tests/.tmp/` (never touching dev chains, `chain/deployments*.json`,
 or the dev DB). Layers: `tests/unit/` (state machine, FX, base units, explorer
-URLs), `tests/db/` (compliance matrix, audit-chain tamper detection),
+URLs, provider adapters with stubbed fetch), `tests/db/` (compliance matrix —
+mock and real-provider modes, audit-chain tamper detection),
 `tests/integration/` (executor E2E on-chain, PaymentSettlement contract behavior,
 API route validation). CI runs typecheck + lint + tests on every push/PR
 (`.github/workflows/ci.yml`). **Add tests for new lifecycle, compliance, or
@@ -50,7 +51,8 @@ re-registers Base Sepolia wallets and never touches the public testnet deploymen
 | [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: liquidity reservation, escrow, FX, payout, refund-on-failure |
 | [lib/routing.ts](lib/routing.ts) | Route quotes (instant/batched/bridged), treasury liquidity checks |
 | [lib/fx.ts](lib/fx.ts) | Simulated FX: static mid rates, spread + tiered slippage, platform fee |
-| [lib/compliance.ts](lib/compliance.ts) | Mock providers (KYB, sanctions, wallet/tx/corridor risk) → PASS/FAIL/MANUAL_REVIEW |
+| [lib/compliance.ts](lib/compliance.ts) | Compliance gate (KYB, sanctions, wallet/tx/corridor risk) → PASS/FAIL/MANUAL_REVIEW. Sanctions + wallet screening dispatch to real providers when env config is set (`OPENSANCTIONS_API_KEY`, `CHAINALYSIS_ORACLE_RPC_URL`), mocks otherwise |
+| `lib/providers/` | Real vendor adapters: OpenSanctions (sanctions match API), Chainalysis sanctions oracle (keyless on-chain `isSanctioned()` read for wallet screening). **Fail-safe: any provider error/timeout → MANUAL_REVIEW, never fail-open.** Verbatim provider evidence persisted on `ComplianceCheck.rawResponse` |
 | [lib/audit.ts](lib/audit.ts) | Append-only hash-chained audit log + chain verifier |
 | [lib/assets.ts](lib/assets.ts) | Asset metadata, currency↔token mapping, base-unit conversion |
 | [scripts/setup.mjs](scripts/setup.mjs) | Local deploy + DB seed (dev-mnemonic accounts, local only) |
@@ -82,6 +84,11 @@ re-registers Base Sepolia wallets and never touches the public testnet deploymen
 - **Public RPC resilience**: anything that reads a real-network RPC must degrade
   gracefully (see balances route / liquidity page pattern) — one flaky endpoint
   must not 500 a whole page.
+- **Compliance fail-safe**: a screening that cannot be performed (provider
+  error, timeout, malformed response) resolves MANUAL_REVIEW — never PASS.
+  Mocks stay the default when no provider env keys are set, so demos work
+  offline; real-provider results must persist the verbatim vendor response on
+  `ComplianceCheck.rawResponse` (audit evidence).
 - **API shape**: JSON request/response fields are `snake_case`; Prisma models are
   `camelCase`. Keep route handlers thin.
 

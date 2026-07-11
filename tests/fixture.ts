@@ -19,6 +19,12 @@ export const FIXTURE_ENV = {
   SETTLEMENTOS_CHAIN_DIR: CHAIN_DIR,
   BASE_LOCAL_RPC_URL: BASE_RPC,
   POLYGON_LOCAL_RPC_URL: POLYGON_RPC,
+  // Compliance providers must never go live in tests — Vitest loads the dev
+  // .env into process.env, so pin these off; provider tests stub them back on.
+  OPENSANCTIONS_API_KEY: "",
+  CHAINALYSIS_ORACLE_RPC_URL: "",
+  CHAINALYSIS_ORACLE_ADDRESS: "",
+  COMPLIANCE_PROVIDER_TIMEOUT_MS: "",
 };
 
 // Standard Hardhat dev-mnemonic accounts — same roles as scripts/setup.mjs.

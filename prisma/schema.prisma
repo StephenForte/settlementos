@@ -85,6 +85,7 @@ model ComplianceCheck {
   status      String // PASS | FAIL | MANUAL_REVIEW | EXEMPT_TESTNET
   score       Int      @default(0)
   reasonCodes String   @default("[]")
+  rawResponse String? // verbatim provider response (JSON) — audit evidence; null for mocks
   createdAt   DateTime @default(now())
 
   payment Payment @relation(fields: [paymentId], references: [id])

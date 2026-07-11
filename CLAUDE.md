@@ -7,17 +7,28 @@ AGENTS.md above. README.md has full docs, DEMO.md the demo script, PRD.md the
 product requirements + phase roadmap (canonical; updated 2026-07-08 with
 implementation status and the JLTXX-inspired tokenized-MMF phase).
 
-## State (2026-07-08)
+## State (2026-07-10)
 - Phases 1–4 complete: single-chain settlement; FX/routing/compliance/liquidity;
   multi-chain demo (base-local 31337 + polygon-local 31338, simulated bridge);
   real Base Sepolia (84532) with public Basescan links.
-- Phase 5 complete: vitest suite (71 tests — unit/DB/on-chain integration, see
-  AGENTS.md "Tests") + GitHub Actions CI. Lint, tsc, and tests all green.
-- NEXT (agreed, 2026-07-09): compliance-provider sandbox — OpenSanctions for
-  sanctions + Chainalysis free API for wallet screening, behind the existing
-  ProviderResult interface, env-driven with mock fallback, fail-safe to
-  MANUAL_REVIEW on provider errors, raw response persisted on ComplianceCheck.
-  Stephen is opening the vendor accounts; keep KYB mocked.
+- Phase 5 complete: vitest suite (unit/DB/on-chain integration, see AGENTS.md
+  "Tests") + GitHub Actions CI. Lint, tsc, and tests all green.
+- Phase 6 complete (2026-07-10): compliance-provider sandbox — OpenSanctions
+  (sanctions match API) + Chainalysis sanctions oracle (keyless on-chain
+  `isSanctioned()` wallet screening — the free HTTP API's signup no longer
+  exists, so we read the public contract instead) in `lib/providers/`,
+  env-driven dispatch with mock fallback (`OPENSANCTIONS_API_KEY` /
+  `CHAINALYSIS_ORACLE_RPC_URL` in .env), fail-safe to MANUAL_REVIEW, raw
+  provider evidence persisted on `ComplianceCheck.rawResponse`. Suite now 91
+  tests; FIXTURE_ENV pins provider env off so tests stay hermetic (Vitest
+  loads dev .env). Both providers smoke-tested LIVE (2026-07-10): oracle on
+  Ethereum mainnet (Chatex SDN address → true, vitalik.eth → false);
+  OpenSanctions match with Stephen's trial key (gmail-registered) — Rosneft
+  score=1 match=true, clean name 0 results. .env has both
+  `CHAINALYSIS_ORACLE_RPC_URL` and `OPENSANCTIONS_API_KEY`, so dev-server
+  compliance runs are now real for sanctions + wallet checks. KYB stays
+  mocked.
+- NEXT: Phase 7 (Polygon Amoy deploy) per PRD.
 
 ## Base Sepolia (live)
 - Deployed 2026-07-07, verified with a real settled payment.
