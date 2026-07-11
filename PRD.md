@@ -1374,16 +1374,17 @@ Mitigation:
 - 71 vitest tests: unit (state machine, FX, base units), DB (compliance matrix, audit-chain tamper detection), integration (executor E2E on-chain, contract invariants, API validation)
 - Fully self-contained fixture (own Hardhat nodes + throwaway DB); GitHub Actions CI on every push/PR
 
-### Phase 6: Compliance Provider Sandbox — 🔜 NEXT
+### Phase 6: Compliance Provider Sandbox — ✅ DONE 2026-07-10
 
-Replace two mocks with real vendor sandboxes behind the existing `ProviderResult` interface:
+Two mocks replaced with real vendor sandboxes behind the existing `ProviderResult` interface (`lib/providers/`):
 
-- **Sanctions → OpenSanctions API**: real consolidated OFAC/EU/UN screening of entity names
-- **Wallet risk → Chainalysis screening API** (free tier): real sanctioned-address detection
-- Env-driven provider registry with mock fallback (demo never breaks offline)
-- Fail-safe policy: provider error/timeout → MANUAL_REVIEW, never fail-open
-- Persist raw provider responses on `ComplianceCheck` for audit evidence
+- **Sanctions → OpenSanctions match API**: real consolidated OFAC/EU/UN screening of both parties' names (`match` → FAIL, near-threshold score → MANUAL_REVIEW)
+- **Wallet risk → Chainalysis sanctions oracle**: real sanctioned-address detection via the free public smart contract (`isSanctioned(address)`, keyless — the free HTTP API's self-service signup no longer exists); platform policy (registration/allowlist) still gates before the oracle read
+- Env-driven dispatch with mock fallback — each provider switches on independently via `OPENSANCTIONS_API_KEY` / `CHAINALYSIS_ORACLE_RPC_URL`; without them the deterministic mocks run, so the demo never breaks offline
+- Fail-safe policy: provider error/timeout/malformed response → MANUAL_REVIEW, never fail-open
+- Raw provider responses (and failure details) persisted on `ComplianceCheck.rawResponse` for audit evidence
 - KYB stays mocked (sandbox onboarding cost exceeds demo value for now)
+- 20 new tests (adapter mapping incl. on-chain ABI round-trip against a stubbed RPC, fail-safe, registry dispatch, raw-evidence persistence) — suite now 91; oracle verified live on Ethereum mainnet
 
 ### Phase 7: Second Real Testnet — Polygon Amoy
 

@@ -21,7 +21,7 @@ audit trail plus a reconciliation export.
 | Contracts | Solidity 0.8.24 — `MockERC20` (mockUSDC/mockJPY/mockSGD) + `PaymentSettlement` escrow, deployed to both networks |
 | Chain client | viem, via a network-registry chain adapter ([lib/chain.ts](lib/chain.ts), [lib/networks.ts](lib/networks.ts)) |
 | Bridge | Simulated: source-chain escrow + FX, then treasury pays out destination-asset tokens to the recipient wallet on the destination chain (real ERC-20 tx on chain 2) |
-| Compliance | Mock providers (KYB, sanctions, wallet risk, transaction risk, corridor risk) with PASS / FAIL / MANUAL_REVIEW outcomes |
+| Compliance | KYB, sanctions, wallet risk, transaction risk, corridor risk with PASS / FAIL / MANUAL_REVIEW outcomes. Sanctions + wallet screening run against real vendor sandboxes (OpenSanctions, Chainalysis) when env keys are set; mocks otherwise |
 
 ### Payment lifecycle
 
@@ -129,14 +129,52 @@ curl -X POST http://localhost:3000/api/payments \
 
 Every execution runs the full provider set and persists results:
 
-- **KYB/KYC** — entity onboarding status
-- **Sanctions** — screening placeholder
-- **Wallet risk** — allowlist + risk score (>40 review, >70 fail)
-- **Transaction risk** — USD-equivalent >$250k manual review, >$1M fail
-- **Corridor risk** — corridor must be pre-approved for both entities
+- **KYB/KYC** — entity onboarding status (mock)
+- **Sanctions** — real OpenSanctions screening when configured, mock otherwise (see below)
+- **Wallet risk** — allowlist policy, then real Chainalysis sanctions-oracle screening when configured, risk-score mock otherwise
+- **Transaction risk** — USD-equivalent >$250k manual review, >$1M fail (mock)
+- **Corridor risk** — corridor must be pre-approved for both entities (mock)
 
 Any FAIL → `REJECTED`. Any MANUAL_REVIEW → parked for a reviewer decision.
 The audit log is append-only and hash-chained; `GET /api/audit` verifies the chain.
+
+### Real provider sandboxes (optional)
+
+Two checks can run against real vendor services instead of mocks. Each switches
+on independently via `.env` — with nothing set the deterministic mocks run, so
+the demo never breaks offline:
+
+```bash
+# SANCTIONS → OpenSanctions match API (consolidated OFAC/EU/UN).
+# Self-service key: https://www.opensanctions.org/account/
+OPENSANCTIONS_API_KEY=...
+
+# WALLET_RISK → Chainalysis sanctions oracle: a free public smart contract
+# (isSanctioned(address)), read over any mainnet RPC — no API key or Chainalysis
+# account needed. Any public Ethereum RPC works, e.g.:
+CHAINALYSIS_ORACLE_RPC_URL=https://ethereum-rpc.publicnode.com
+
+# optional overrides
+OPENSANCTIONS_API_URL=https://api.opensanctions.org
+# Oracle contract. Default 0x40C57923924B5c5c5455c48D93317139ADDaC8fb covers
+# Ethereum/Polygon/BNB/Avalanche/Optimism/Arbitrum/Fantom/Celo/Blast; if you
+# point the RPC at Base mainnet instead, set:
+# CHAINALYSIS_ORACLE_ADDRESS=0x3A91A31cB3dC49b4db9Ce721F50a9D076c8D739B
+COMPLIANCE_PROVIDER_TIMEOUT_MS=5000
+```
+
+Sanctions designations are per address, not per chain, so the oracle chain is
+independent of the payment's network — screening a Base Sepolia wallet against
+the Ethereum-mainnet oracle is correct.
+
+Behavior with real providers (`lib/providers/`):
+
+- **Fail-safe** — provider error, timeout, or malformed response → `MANUAL_REVIEW`
+  with `provider_error` reason codes. Screening never fails open.
+- **Audit evidence** — the verbatim vendor response (or the failure detail) is
+  persisted on each `ComplianceCheck` row as `rawResponse`.
+- **Platform policy still applies** — unregistered / non-allowlisted wallets go
+  to manual review before any vendor is called.
 
 ## Base Sepolia (real public testnet)
 
@@ -167,6 +205,8 @@ bridge between them (simulated bridge, real transactions on both networks).
 ## Out of scope (by design, per PRD)
 
 Real funds, fiat on/off ramps, custody, native token, consumer remittance, DeFi
-yield, real bridges, Solana. Compliance providers are mocks; FX, payout, and the
-cross-chain bridge are simulated (the bridge leg is a treasury-funded payout on
-the destination chain, not a lock-and-mint bridge).
+yield, real bridges, Solana. KYB, transaction-risk, and corridor compliance
+providers are mocks (sanctions and wallet screening can use real vendor
+sandboxes — see "Real provider sandboxes"); FX, payout, and the cross-chain
+bridge are simulated (the bridge leg is a treasury-funded payout on the
+destination chain, not a lock-and-mint bridge).

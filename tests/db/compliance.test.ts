@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { prisma } from "@/lib/db";
 import { runComplianceChecks } from "@/lib/compliance";
 import { createDraftPayment } from "../helpers/payments";
@@ -208,5 +208,74 @@ describe("compliance gate", () => {
       ).id
     );
     expect(statusOf(risky.checks, "WALLET_RISK_RECIPIENT")).toBe("FAIL");
+  });
+});
+
+describe("compliance gate — real-provider mode (Phase 6)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("persists raw vendor responses on ComplianceCheck as audit evidence", async () => {
+    vi.stubEnv("OPENSANCTIONS_API_KEY", "test-key");
+    vi.stubEnv("CHAINALYSIS_ORACLE_RPC_URL", "http://oracle-rpc.test");
+    // One stub serves both vendors: the OpenSanctions match call by URL, and
+    // the oracle's JSON-RPC reads (eth_call → isSanctioned=false) by method.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (String(url).includes("/match/"))
+          return new Response(
+            JSON.stringify({ responses: { sender: { results: [] }, recipient: { results: [] } } }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        const req = JSON.parse(init!.body as string);
+        const reqs: { id: number; method: string }[] = Array.isArray(req) ? req : [req];
+        const replies = reqs.map((r) => ({
+          jsonrpc: "2.0",
+          id: r.id,
+          result: r.method === "eth_call" ? `0x${"0".repeat(64)}` : "0x10",
+        }));
+        return new Response(JSON.stringify(Array.isArray(req) ? replies : replies[0]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      })
+    );
+
+    const payment = await createDraftPayment();
+    const outcome = await runComplianceChecks(payment.id);
+    expect(outcome.overall).toBe("APPROVED");
+
+    const persisted = await prisma.complianceCheck.findMany({ where: { paymentId: payment.id } });
+    const sanctions = persisted.find((c) => c.checkType === "SANCTIONS");
+    expect(sanctions?.provider).toBe("opensanctions");
+    expect(JSON.parse(sanctions!.rawResponse!)).toHaveProperty("responses");
+
+    for (const c of persisted.filter((p) => p.checkType.startsWith("WALLET_RISK"))) {
+      expect(c.provider).toBe("chainalysis_oracle");
+      expect(JSON.parse(c.rawResponse!)).toMatchObject({ is_sanctioned: false });
+    }
+
+    // Mocked checks carry no vendor evidence.
+    expect(persisted.find((c) => c.checkType === "KYB_SENDER")?.rawResponse).toBeNull();
+  });
+
+  it("fails safe to MANUAL_REVIEW (never fail-open) when a provider is down", async () => {
+    vi.stubEnv("OPENSANCTIONS_API_KEY", "test-key");
+    vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new Error("ETIMEDOUT"))));
+
+    const payment = await createDraftPayment();
+    const outcome = await runComplianceChecks(payment.id);
+
+    expect(outcome.overall).toBe("MANUAL_REVIEW");
+    expect(statusOf(outcome.checks, "SANCTIONS")).toBe("MANUAL_REVIEW");
+    expect(reasonsOf(outcome.checks, "SANCTIONS")).toContain("provider_error");
+
+    const persisted = await prisma.complianceCheck.findFirst({
+      where: { paymentId: payment.id, checkType: "SANCTIONS" },
+    });
+    expect(JSON.parse(persisted!.rawResponse!).error).toBe("ETIMEDOUT");
   });
 });
