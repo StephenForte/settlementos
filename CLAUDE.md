@@ -7,7 +7,7 @@ AGENTS.md above. README.md has full docs, DEMO.md the demo script, PRD.md the
 product requirements + phase roadmap (canonical; updated 2026-07-08 with
 implementation status and the JLTXX-inspired tokenized-MMF phase).
 
-## State (2026-07-10)
+## State (2026-07-13)
 - Phases 1–4 complete: single-chain settlement; FX/routing/compliance/liquidity;
   multi-chain demo (base-local 31337 + polygon-local 31338, simulated bridge);
   real Base Sepolia (84532) with public Basescan links.
@@ -28,7 +28,17 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
   `CHAINALYSIS_ORACLE_RPC_URL` and `OPENSANCTIONS_API_KEY`, so dev-server
   compliance runs are now real for sanctions + wallet checks. KYB stays
   mocked.
-- NEXT: Phase 7 (Polygon Amoy deploy) per PRD.
+- Phase 7 code complete (2026-07-13, branch phase-7-polygon-amoy): polygon-amoy
+  (80002) in the network registry, `loadDeployments()` generalized to one
+  `deployments.<id>.json` overlay per live network, parameterized
+  `scripts/deploy-testnet.mjs` (replaces deploy-base-sepolia.mjs; per-network
+  gas-dust targets — Amoy enforces ~30 gwei so dust is ~100× Base Sepolia's),
+  setup.mjs re-registers all live-network wallets. Suite now 93 tests.
+- NEXT: fund deployer 0x5128889F20Ec13e0Be38b2BeBC568594159B652d with ≥0.4 POL
+  on Polygon Amoy (faucet.polygon.technology / Alchemy), then
+  `npm run deploy:polygon-amoy` and verify with a bridged
+  base-sepolia → polygon-amoy payment (public explorer links on both chains).
+  Then Phase 8 (tokenized MMF) per PRD.
 
 ## Base Sepolia (live)
 - Deployed 2026-07-07, verified with a real settled payment.

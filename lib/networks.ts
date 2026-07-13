@@ -1,5 +1,6 @@
 // Network registry. The two local Hardhat nodes stand in for real L2 testnets;
-// base-sepolia is the real public testnet (deployed via npm run deploy:base-sepolia).
+// base-sepolia and polygon-amoy are the real public testnets (deployed via
+// npm run deploy:base-sepolia / deploy:polygon-amoy).
 // This module is client-safe — no node imports, no secrets (non-public env vars
 // resolve to their defaults in the browser bundle).
 
@@ -14,6 +15,8 @@ export interface NetworkInfo {
   explorerUrl?: string;
   /** True for real public networks (as opposed to local simulation chains). */
   live?: boolean;
+  /** Native gas currency symbol (defaults to ETH). */
+  nativeSymbol?: string;
 }
 
 export const NETWORKS: Record<string, NetworkInfo> = {
@@ -39,7 +42,21 @@ export const NETWORKS: Record<string, NetworkInfo> = {
     explorerUrl: "https://sepolia.basescan.org",
     live: true,
   },
+  "polygon-amoy": {
+    id: "polygon-amoy",
+    label: "Polygon Amoy",
+    chainId: 80002,
+    rpcUrl: process.env.POLYGON_AMOY_RPC_URL || "https://rpc-amoy.polygon.technology",
+    explorerUrl: "https://amoy.polygonscan.com",
+    live: true,
+    nativeSymbol: "POL",
+  },
 };
+
+/** Real public networks (deployments live in chain/deployments.<id>.json overlays). */
+export const LIVE_NETWORK_IDS = Object.values(NETWORKS)
+  .filter((n) => n.live)
+  .map((n) => n.id);
 
 export const NETWORK_IDS = Object.keys(NETWORKS);
 

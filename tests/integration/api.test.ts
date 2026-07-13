@@ -30,7 +30,7 @@ const VALID = {
 };
 
 describe("GET /api/networks", () => {
-  it("reports local networks as available and base-sepolia as not deployed in tests", async () => {
+  it("reports local networks as available and the real testnets as not deployed in tests", async () => {
     const res = await networksGET();
     const { networks } = await res.json();
 
@@ -41,6 +41,11 @@ describe("GET /api/networks", () => {
       available: false,
       live: true,
       explorer_url: "https://sepolia.basescan.org",
+    });
+    expect(byId["polygon-amoy"]).toMatchObject({
+      available: false,
+      live: true,
+      explorer_url: "https://amoy.polygonscan.com",
     });
   });
 });
@@ -67,10 +72,14 @@ describe("POST /api/payments", () => {
   });
 
   it("rejects registered-but-undeployed networks with a actionable hint", async () => {
-    // base-sepolia is in the registry but not in the test fixture's deployments.
+    // The real testnets are in the registry but not in the test fixture's deployments.
     const res = await paymentsPOST(postJson({ ...VALID, destination_network: "base-sepolia" }));
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/no deployed contracts.*deploy:base-sepolia/);
+
+    const amoy = await paymentsPOST(postJson({ ...VALID, destination_network: "polygon-amoy" }));
+    expect(amoy.status).toBe(400);
+    expect((await amoy.json()).error).toMatch(/no deployed contracts.*deploy:polygon-amoy/);
   });
 
   it("rejects missing required fields", async () => {

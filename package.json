@@ -11,7 +11,8 @@
     "chain:polygon": "hardhat node --config hardhat.config.polygon.cjs --port 8546",
     "compile": "hardhat compile --config hardhat.config.cjs",
     "setup": "npm run compile && node scripts/setup.mjs",
-    "deploy:base-sepolia": "npm run compile && node --env-file=.env scripts/deploy-base-sepolia.mjs",
+    "deploy:base-sepolia": "npm run compile && node --env-file=.env scripts/deploy-testnet.mjs base-sepolia",
+    "deploy:polygon-amoy": "npm run compile && node --env-file=.env scripts/deploy-testnet.mjs polygon-amoy",
     "test": "vitest run",
     "test:watch": "vitest"
   },

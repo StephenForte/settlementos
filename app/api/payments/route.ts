@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error: `network ${missing} has no deployed contracts — ${
-            missing === "base-sepolia" ? "run: npm run deploy:base-sepolia" : "run: npm run setup"
+            NETWORKS[missing]?.live ? `run: npm run deploy:${missing}` : "run: npm run setup"
           }`,
         },
         { status: 400 }

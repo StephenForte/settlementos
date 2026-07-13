@@ -1,9 +1,9 @@
 // Multi-network chain adapter (PRD ChainAdapter/AssetAdapter surface, viem).
 // Contract addresses and account roles are read from chain/deployments.json
-// (local chains, written by scripts/setup.mjs) merged with
-// chain/deployments.base-sepolia.json (real testnet, written by
-// scripts/deploy-base-sepolia.mjs). Real networks carry their own account set;
-// hot keys for them live in .env and are referenced via privateKeyEnv.
+// (local chains, written by scripts/setup.mjs) merged with one
+// chain/deployments.<network>.json overlay per live network (real testnets,
+// written by scripts/deploy-testnet.mjs). Real networks carry their own account
+// set; hot keys for them live in .env and are referenced via privateKeyEnv.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -19,7 +19,7 @@ import {
   type PublicClient,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { NETWORKS, networkInfo } from "./networks";
+import { LIVE_NETWORK_IDS, NETWORKS, networkInfo } from "./networks";
 
 export interface NetworkContracts {
   PaymentSettlement: Address;
@@ -57,7 +57,7 @@ export interface Deployments {
 // Overridable so tests can point at an isolated fixture dir instead of chain/.
 const CHAIN_DIR = process.env.SETTLEMENTOS_CHAIN_DIR || path.join(process.cwd(), "chain");
 const DEPLOYMENTS_PATH = path.join(CHAIN_DIR, "deployments.json");
-const SEPOLIA_DEPLOYMENTS_PATH = path.join(CHAIN_DIR, "deployments.base-sepolia.json");
+const liveOverlayPath = (networkId: string) => path.join(CHAIN_DIR, `deployments.${networkId}.json`);
 
 function readJson(p: string) {
   return JSON.parse(fs.readFileSync(p, "utf8"));
@@ -68,29 +68,29 @@ export function loadDeployments(): Deployments {
   if (local && !local.networks) {
     throw new Error("deployments.json is single-network (pre-Phase-3). Re-run: npm run setup");
   }
-  const sepolia = fs.existsSync(SEPOLIA_DEPLOYMENTS_PATH) ? readJson(SEPOLIA_DEPLOYMENTS_PATH) : null;
-  if (!local && !sepolia) {
+  const overlays = LIVE_NETWORK_IDS.map(liveOverlayPath)
+    .filter((p) => fs.existsSync(p))
+    .map(readJson);
+  if (!local && overlays.length === 0) {
     throw new Error(
-      "No deployments found. For local chains: start them (npm run chain, npm run chain:polygon) and run npm run setup. For Base Sepolia: npm run deploy:base-sepolia"
+      "No deployments found. For local chains: start them (npm run chain, npm run chain:polygon) and run npm run setup. For a real testnet: npm run deploy:base-sepolia or deploy:polygon-amoy"
     );
   }
   return {
-    networks: { ...(local?.networks ?? {}), ...(sepolia?.networks ?? {}) },
+    networks: Object.assign({}, local?.networks ?? {}, ...overlays.map((o) => o.networks ?? {})),
     accounts: local?.accounts,
   };
 }
 
 export function isChainReady(): boolean {
-  try {
-    if (fs.existsSync(DEPLOYMENTS_PATH) && readJson(DEPLOYMENTS_PATH).networks) return true;
-  } catch {
-    /* fall through */
+  for (const p of [DEPLOYMENTS_PATH, ...LIVE_NETWORK_IDS.map(liveOverlayPath)]) {
+    try {
+      if (fs.existsSync(p) && readJson(p).networks) return true;
+    } catch {
+      /* try the next file */
+    }
   }
-  try {
-    return fs.existsSync(SEPOLIA_DEPLOYMENTS_PATH) && !!readJson(SEPOLIA_DEPLOYMENTS_PATH).networks;
-  } catch {
-    return false;
-  }
+  return false;
 }
 
 /** Account roles for a network: its own set if it has one, else the shared local set. */
@@ -126,7 +126,7 @@ function viemChain(networkId: string) {
   return defineChain({
     id: info.chainId,
     name: info.label,
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    nativeCurrency: { name: info.nativeSymbol ?? "Ether", symbol: info.nativeSymbol ?? "ETH", decimals: 18 },
     rpcUrls: { default: { http: [info.rpcUrl] } },
   });
 }
