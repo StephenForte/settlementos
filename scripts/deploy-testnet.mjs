@@ -1,19 +1,22 @@
-// Deploy SettlementOS contracts to REAL Base Sepolia (chainId 84532).
+// Deploy SettlementOS contracts to a REAL public testnet (Base Sepolia or
+// Polygon Amoy — pick via argv, both wired up as npm scripts).
 //
 //   1. Deploys MockERC20 tokens + PaymentSettlement using DEPLOYER_PRIVATE_KEY
 //      (the deployer doubles as the settlement operator).
 //   2. Generates local entity wallets + a treasury wallet (reused across re-runs),
-//      funds them with dust ETH from the deployer, and pre-approves the
+//      funds them with dust gas from the deployer, and pre-approves the
 //      settlement contract for each token.
 //   3. Mints demo token balances (same distribution as the local chains).
-//   4. Writes chain/deployments.base-sepolia.json (gitignored — contains the
+//   4. Writes chain/deployments.<network>.json (gitignored — contains the
 //      generated dust-wallet keys; the funded deployer key stays in .env only).
 //   5. Registers the entity wallets in the app database (if entities are seeded).
 //
-// Run: npm run deploy:base-sepolia          (loads .env via node --env-file)
-// Requires: DEPLOYER_PRIVATE_KEY in .env, funded with ~0.02 Base Sepolia ETH.
-// Optional: BASE_SEPOLIA_RPC_URL (default https://sepolia.base.org),
-//           TREASURY_PRIVATE_KEY (default: generated + stored in the JSON above).
+// Run: npm run deploy:base-sepolia | npm run deploy:polygon-amoy
+//      (both load .env via node --env-file)
+// Requires: DEPLOYER_PRIVATE_KEY in .env, funded with the network's native gas
+//           token (same key works on every EVM chain).
+// Optional: <NETWORK>_RPC_URL override, TREASURY_PRIVATE_KEY (default:
+//           generated + stored in the JSON above).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -25,11 +28,53 @@ import { PrismaClient } from "@prisma/client";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
 
-const NETWORK_ID = "base-sepolia";
-const CHAIN_ID = 84532;
-const RPC_URL = process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org";
-const EXPLORER = "https://sepolia.basescan.org";
-const OUT_PATH = path.join(root, "chain", "deployments.base-sepolia.json");
+// Gas-dust targets are per network: Base Sepolia gas is fractions of a gwei,
+// while Polygon Amoy enforces a ~30 gwei floor (~100× pricier per tx), so Amoy
+// targets are proportionally higher. Top-ups only happen when below target.
+const NETWORK_CONFIGS = {
+  "base-sepolia": {
+    chainId: 84532,
+    name: "Base Sepolia",
+    currency: "ETH",
+    rpcEnv: "BASE_SEPOLIA_RPC_URL",
+    defaultRpc: "https://sepolia.base.org",
+    explorer: "https://sepolia.basescan.org",
+    entityGasTarget: parseEther("0.0002"),
+    treasuryGasTarget: parseEther("0.001"),
+    minDeployerBalance: parseEther("0.005"),
+    faucets: [
+      "  https://portal.cdp.coinbase.com/products/faucet  (Coinbase, free)",
+      "  https://www.alchemy.com/faucets/base-sepolia",
+    ],
+  },
+  "polygon-amoy": {
+    chainId: 80002,
+    name: "Polygon Amoy",
+    currency: "POL",
+    rpcEnv: "POLYGON_AMOY_RPC_URL",
+    defaultRpc: "https://rpc-amoy.polygon.technology",
+    explorer: "https://amoy.polygonscan.com",
+    entityGasTarget: parseEther("0.02"),
+    treasuryGasTarget: parseEther("0.05"),
+    minDeployerBalance: parseEther("0.4"),
+    faucets: [
+      "  https://faucet.polygon.technology  (official)",
+      "  https://www.alchemy.com/faucets/polygon-amoy",
+    ],
+  },
+};
+
+const NETWORK_ID = process.argv[2];
+const CFG = NETWORK_CONFIGS[NETWORK_ID];
+if (!CFG) {
+  console.error(
+    `Usage: node scripts/deploy-testnet.mjs <network>\nSupported: ${Object.keys(NETWORK_CONFIGS).join(", ")}`
+  );
+  process.exit(1);
+}
+const RPC_URL = process.env[CFG.rpcEnv] || CFG.defaultRpc;
+const EXPLORER = CFG.explorer;
+const OUT_PATH = path.join(root, "chain", `deployments.${NETWORK_ID}.json`);
 
 const TOKENS = [
   ["Mock USD Coin", "mockUSDC", 6],
@@ -46,12 +91,6 @@ const ENTITY_PROFILES = {
   ent_osaka_parts: { label: "Osaka Parts wallet (unverified)", allowlisted: false, riskScore: 55 },
 };
 
-// Gas dust targets. Base Sepolia gas is fractions of a gwei, so these cover
-// dozens of approvals/payouts. Top-ups only happen when below the target.
-const ENTITY_GAS_TARGET = parseEther("0.0002");
-const TREASURY_GAS_TARGET = parseEther("0.001");
-const MIN_DEPLOYER_BALANCE = parseEther("0.005");
-
 function artifact(name) {
   const p = path.join(root, "chain", "artifacts", "contracts", `${name}.sol`, `${name}.json`);
   return JSON.parse(fs.readFileSync(p, "utf8"));
@@ -67,16 +106,17 @@ async function main() {
   if (!deployerKey || !deployerKey.startsWith("0x")) {
     fail(
       "DEPLOYER_PRIVATE_KEY is not set in .env.\n" +
-        "Generate a fresh key (never reuse a mainnet key) and fund it with ~0.02 Base Sepolia ETH:\n" +
-        "  https://portal.cdp.coinbase.com/products/faucet  (Coinbase, free)\n" +
-        "  https://www.alchemy.com/faucets/base-sepolia"
+        `Generate a fresh key (never reuse a mainnet key) and fund it with ~${formatEther(
+          CFG.minDeployerBalance
+        )} ${CFG.currency} on ${CFG.name}:\n` +
+        CFG.faucets.join("\n")
     );
   }
 
   const chain = defineChain({
-    id: CHAIN_ID,
-    name: "Base Sepolia",
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    id: CFG.chainId,
+    name: CFG.name,
+    nativeCurrency: { name: CFG.currency, symbol: CFG.currency, decimals: 18 },
     rpcUrls: { default: { http: [RPC_URL] } },
   });
   const publicClient = createPublicClient({ chain, transport: http(RPC_URL) });
@@ -84,19 +124,18 @@ async function main() {
     createWalletClient({ chain, transport: http(RPC_URL), account: privateKeyToAccount(pk) });
 
   const onchainId = await publicClient.getChainId().catch(() => null);
-  if (onchainId === null) fail(`Base Sepolia RPC not reachable at ${RPC_URL}`);
-  if (onchainId !== CHAIN_ID) fail(`Expected chainId ${CHAIN_ID} at ${RPC_URL}, found ${onchainId}`);
+  if (onchainId === null) fail(`${CFG.name} RPC not reachable at ${RPC_URL}`);
+  if (onchainId !== CFG.chainId) fail(`Expected chainId ${CFG.chainId} at ${RPC_URL}, found ${onchainId}`);
 
   const deployer = walletFor(deployerKey);
   const deployerAddr = deployer.account.address;
   const balance = await publicClient.getBalance({ address: deployerAddr });
-  console.log(`Deployer ${deployerAddr} — ${formatEther(balance)} ETH on Base Sepolia`);
-  if (balance < MIN_DEPLOYER_BALANCE) {
+  console.log(`Deployer ${deployerAddr} — ${formatEther(balance)} ${CFG.currency} on ${CFG.name}`);
+  if (balance < CFG.minDeployerBalance) {
     fail(
-      `Deployer balance too low (need ≥ ${formatEther(MIN_DEPLOYER_BALANCE)} ETH for deploy + wallet funding).\n` +
+      `Deployer balance too low (need ≥ ${formatEther(CFG.minDeployerBalance)} ${CFG.currency} for deploy + wallet funding).\n` +
         `Fund ${deployerAddr} from a faucet:\n` +
-        "  https://portal.cdp.coinbase.com/products/faucet  (Coinbase, free)\n" +
-        "  https://www.alchemy.com/faucets/base-sepolia"
+        CFG.faucets.join("\n")
     );
   }
 
@@ -126,17 +165,17 @@ async function main() {
   // Fund treasury + entity wallets with gas dust for approvals/payouts.
   console.log("\nFunding role wallets with gas dust:");
   const fundTargets = [
-    { label: "treasury", address: treasuryAddr, target: TREASURY_GAS_TARGET },
+    { label: "treasury", address: treasuryAddr, target: CFG.treasuryGasTarget },
     ...Object.entries(entityWallets).map(([id, w]) => ({
       label: id,
       address: w.address,
-      target: ENTITY_GAS_TARGET,
+      target: CFG.entityGasTarget,
     })),
   ];
   for (const t of fundTargets) {
     const bal = await publicClient.getBalance({ address: t.address });
     if (bal >= t.target) {
-      console.log(`  ${t.label} ${t.address} already funded (${formatEther(bal)} ETH)`);
+      console.log(`  ${t.label} ${t.address} already funded (${formatEther(bal)} ${CFG.currency})`);
       continue;
     }
     await send(
@@ -221,7 +260,7 @@ async function main() {
   const deployments = {
     networks: {
       [NETWORK_ID]: {
-        chainId: CHAIN_ID,
+        chainId: CFG.chainId,
         rpcUrl: RPC_URL,
         explorerUrl: EXPLORER,
         contracts: {
@@ -249,7 +288,7 @@ async function main() {
   fs.writeFileSync(OUT_PATH, JSON.stringify(deployments, null, 2));
   console.log(`\nWrote ${path.relative(root, OUT_PATH)}`);
 
-  // Register the entity wallets in the app DB so payments can use base-sepolia.
+  // Register the entity wallets in the app DB so payments can use this network.
   const prisma = new PrismaClient();
   let registered = 0;
   for (const [externalId, w] of Object.entries(entityWallets)) {
@@ -272,16 +311,16 @@ async function main() {
   await prisma.$disconnect();
   if (registered === 0) {
     console.log(
-      "\nNote: no entities in the database yet — run `npm run setup` (it also registers these Base Sepolia wallets)."
+      `\nNote: no entities in the database yet — run \`npm run setup\` (it also registers these ${CFG.name} wallets).`
     );
   } else {
     console.log(`Registered ${registered} entity wallets in the database for ${NETWORK_ID}.`);
   }
 
   const remaining = await publicClient.getBalance({ address: deployerAddr });
-  console.log(`\nDone. Deployer gas remaining: ${formatEther(remaining)} ETH`);
+  console.log(`\nDone. Deployer gas remaining: ${formatEther(remaining)} ${CFG.currency}`);
   console.log(`PaymentSettlement: ${EXPLORER}/address/${settlement.address}`);
-  console.log("Start the app (npm run dev) and pick Base Sepolia as source + destination chain.");
+  console.log(`Start the app (npm run dev) and pick ${CFG.name} as source and/or destination chain.`);
 }
 
 main().catch((err) => {

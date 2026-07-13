@@ -196,13 +196,16 @@ async function main() {
   await prisma.wallet.deleteMany();
   await prisma.entity.deleteMany();
 
-  // If Base Sepolia has been deployed, re-register its entity wallets too
-  // (the DB reset above wiped them; keys/addresses persist in the JSON file).
-  const sepoliaPath = path.join(root, "chain", "deployments.base-sepolia.json");
-  const sepoliaWallets = fs.existsSync(sepoliaPath)
-    ? (JSON.parse(fs.readFileSync(sepoliaPath, "utf8")).networks?.["base-sepolia"]?.accounts
-        ?.entityWallets ?? null)
-    : null;
+  // If real testnets have been deployed, re-register their entity wallets too
+  // (the DB reset above wiped them; keys/addresses persist in the JSON files).
+  const LIVE_NETWORK_IDS = ["base-sepolia", "polygon-amoy"];
+  const liveWallets = {}; // networkId → { externalId → { address } }
+  for (const id of LIVE_NETWORK_IDS) {
+    const p = path.join(root, "chain", `deployments.${id}.json`);
+    if (!fs.existsSync(p)) continue;
+    const w = JSON.parse(fs.readFileSync(p, "utf8")).networks?.[id]?.accounts?.entityWallets;
+    if (w) liveWallets[id] = w;
+  }
 
   const networkIds = Object.keys(CHAINS);
   const entities = [
@@ -252,16 +255,19 @@ async function main() {
   for (const e of entities) {
     const { wallet: w, ...data } = e;
     // Same address is registered on every local network (dev accounts are shared);
-    // Base Sepolia gets its own generated address with the same risk profile.
+    // each real testnet gets its own generated address with the same risk profile.
     const wallets = networkIds.map((network) => ({ ...w, network }));
-    const sepolia = sepoliaWallets?.[e.externalId];
-    if (sepolia) {
-      wallets.push({ ...w, address: sepolia.address, network: "base-sepolia" });
+    const liveNets = [];
+    for (const [network, byEntity] of Object.entries(liveWallets)) {
+      const lw = byEntity[e.externalId];
+      if (!lw) continue;
+      wallets.push({ ...w, address: lw.address, network });
+      liveNets.push(network);
     }
     await prisma.entity.create({
       data: { ...data, wallets: { create: wallets } },
     });
-    console.log(`  ${e.name} (${e.externalId})${sepolia ? " + base-sepolia wallet" : ""}`);
+    console.log(`  ${e.name} (${e.externalId})${liveNets.length ? ` + ${liveNets.join(", ")} wallet` : ""}`);
   }
 
   await prisma.$disconnect();

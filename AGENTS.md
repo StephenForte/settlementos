@@ -24,6 +24,7 @@ npm run chain:polygon     # polygon-local → :8546, chainId 31338
 npm run setup             # deploy to both local chains + reset/seed DB (the reset button)
 npm run dev               # app on :3000
 npm run deploy:base-sepolia   # real testnet deploy (needs funded DEPLOYER_PRIVATE_KEY in .env)
+npm run deploy:polygon-amoy   # same, for Polygon Amoy (deployer needs POL there)
 npm test                      # full suite — no chains/DB needed, builds its own fixture
 npx tsc --noEmit && npm run lint
 ```
@@ -39,13 +40,13 @@ API route validation). CI runs typecheck + lint + tests on every push/PR
 (`.github/workflows/ci.yml`). **Add tests for new lifecycle, compliance, or
 chain behavior** — and still smoke-test UI-visible changes by hand via the flow
 in README "API". `npm run setup` resets DB + local chains at any time; it
-re-registers Base Sepolia wallets and never touches the public testnet deployment.
+re-registers real-testnet wallets and never touches the public testnet deployments.
 
 ## Architecture map
 
 | Module | Responsibility |
 |---|---|
-| [lib/networks.ts](lib/networks.ts) | Network registry (local sims + real base-sepolia), explorer URL helpers. **Client-safe — no node imports, no secrets.** |
+| [lib/networks.ts](lib/networks.ts) | Network registry (local sims + real base-sepolia and polygon-amoy), explorer URL helpers. **Client-safe — no node imports, no secrets.** |
 | [lib/chain.ts](lib/chain.ts) | viem chain adapter. Loads/merges `chain/deployments*.json`, per-network accounts via `accountsFor()`, contract ABIs, `operatorWrite()`, `treasuryTokenTransfer()` |
 | [lib/state.ts](lib/state.ts) | Payment lifecycle state machine; `assertTransition()` enforces legal moves |
 | [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: liquidity reservation, escrow, FX, payout, refund-on-failure |
@@ -56,7 +57,7 @@ re-registers Base Sepolia wallets and never touches the public testnet deploymen
 | [lib/audit.ts](lib/audit.ts) | Append-only hash-chained audit log + chain verifier |
 | [lib/assets.ts](lib/assets.ts) | Asset metadata, currency↔token mapping, base-unit conversion |
 | [scripts/setup.mjs](scripts/setup.mjs) | Local deploy + DB seed (dev-mnemonic accounts, local only) |
-| [scripts/deploy-base-sepolia.mjs](scripts/deploy-base-sepolia.mjs) | Real testnet deploy: env deployer key, generated dust wallets, DB registration |
+| [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy via argv): env deployer key, per-network gas-dust targets, generated dust wallets, DB registration |
 | `app/api/*` | REST route handlers (thin; logic lives in lib/) |
 | `contracts/` | Solidity 0.8.24: `MockERC20` (permissionless mint, by design), `PaymentSettlement` escrow |
 | `tests/` | Vitest suite: `unit/` (pure), `db/` (compliance, audit chain), `integration/` (executor E2E, contract, API). Fixture bootstrap in `global-setup.ts` + `helpers/` |
@@ -95,15 +96,18 @@ re-registers Base Sepolia wallets and never touches the public testnet deploymen
 ## Gotchas
 
 - `npm run setup` **wipes the database** (payments, audit log, entities) and
-  redeploys the local chains. Base Sepolia contracts/wallets survive; its entity
-  wallets are re-registered from `chain/deployments.base-sepolia.json`.
-- `chain/deployments.json` (local) and `chain/deployments.base-sepolia.json`
-  (real testnet) are merged at read time by `loadDeployments()`. The app only
-  offers networks present in the merged result (`/api/networks`).
-- Local chains mine instantly; Base Sepolia has ~2s blocks. Execution is
-  synchronous by design (a settled payment ≈ 8–10s on the real testnet).
-- Re-running `deploy:base-sepolia` deploys **fresh contracts** but reuses the
-  generated treasury/entity wallets (and their gas dust).
+  redeploys the local chains. Real-testnet contracts/wallets survive; their entity
+  wallets are re-registered from `chain/deployments.<network>.json`.
+- `chain/deployments.json` (local) and one `chain/deployments.<network>.json`
+  overlay per live network (real testnets) are merged at read time by
+  `loadDeployments()`. The app only offers networks present in the merged result
+  (`/api/networks`).
+- Local chains mine instantly; Base Sepolia and Polygon Amoy have ~2s blocks.
+  Execution is synchronous by design (a settled payment ≈ 8–10s on a real testnet).
+- Re-running `deploy:base-sepolia` / `deploy:polygon-amoy` deploys **fresh
+  contracts** but reuses the generated treasury/entity wallets (and their gas dust).
+- Polygon Amoy enforces a ~30 gwei minimum gas price (Base Sepolia is sub-gwei),
+  so Amoy gas-dust targets in the deploy script are ~100× higher.
 - Two Hardhat configs: `hardhat.config.cjs` (+ `.polygon.cjs` for chainId 31338).
   Artifacts land in `chain/artifacts/` (gitignored); `npm run compile` before
   anything that reads them.

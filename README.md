@@ -17,7 +17,7 @@ audit trail plus a reconciliation export.
 |---|---|
 | Frontend + API | Next.js (App Router) + Tailwind, REST route handlers |
 | Database | SQLite via Prisma (entities, payments, compliance checks, audit log, liquidity reservations, ledger credits) |
-| Chains | Two local Hardhat nodes: `base-local` (31337, simulates Base Sepolia) and `polygon-local` (31338, simulates Polygon Amoy), plus real `base-sepolia` (84532) with public Basescan links — see [Base Sepolia](#base-sepolia-real-public-testnet) |
+| Chains | Two local Hardhat nodes: `base-local` (31337, simulates Base Sepolia) and `polygon-local` (31338, simulates Polygon Amoy), plus real `base-sepolia` (84532) and `polygon-amoy` (80002) with public explorer links — see [Real public testnets](#real-public-testnets-base-sepolia--polygon-amoy) |
 | Contracts | Solidity 0.8.24 — `MockERC20` (mockUSDC/mockJPY/mockSGD) + `PaymentSettlement` escrow, deployed to both networks |
 | Chain client | viem, via a network-registry chain adapter ([lib/chain.ts](lib/chain.ts), [lib/networks.ts](lib/networks.ts)) |
 | Bridge | Simulated: source-chain escrow + FX, then treasury pays out destination-asset tokens to the recipient wallet on the destination chain (real ERC-20 tx on chain 2) |
@@ -176,31 +176,43 @@ Behavior with real providers (`lib/providers/`):
 - **Platform policy still applies** — unregistered / non-allowlisted wallets go
   to manual review before any vendor is called.
 
-## Base Sepolia (real public testnet)
+## Real public testnets (Base Sepolia + Polygon Amoy)
 
-The same contracts deploy to real Base Sepolia (chainId 84532), and the UI links
-every transaction to [Basescan](https://sepolia.basescan.org). Setup:
+The same contracts deploy to real Base Sepolia (chainId 84532) and real Polygon
+Amoy (chainId 80002); the UI links every transaction to
+[Basescan](https://sepolia.basescan.org) / [Amoy Polygonscan](https://amoy.polygonscan.com).
+Setup (per network):
 
 1. **Deployer key** — generate a fresh key (never reuse a mainnet key) and put it
-   in `.env` as `DEPLOYER_PRIVATE_KEY`. This key is the settlement **operator**.
-2. **Gas** — fund the deployer address with ≥0.005 Base Sepolia ETH (0.01+ is comfortable) from a faucet:
-   [Coinbase CDP faucet](https://portal.cdp.coinbase.com/products/faucet) (free) or
-   [Alchemy faucet](https://www.alchemy.com/faucets/base-sepolia). Only gas is
-   needed — the settlement assets are self-deployed mock tokens.
-3. **Deploy** — `npm run deploy:base-sepolia`. The script deploys the tokens +
+   in `.env` as `DEPLOYER_PRIVATE_KEY`. This key is the settlement **operator**
+   and works on both networks.
+2. **Gas** — fund the deployer address with the network's native gas token. Only
+   gas is needed — the settlement assets are self-deployed mock tokens.
+   - Base Sepolia: ≥0.005 ETH (0.01+ is comfortable) from the
+     [Coinbase CDP faucet](https://portal.cdp.coinbase.com/products/faucet) (free) or
+     [Alchemy faucet](https://www.alchemy.com/faucets/base-sepolia).
+   - Polygon Amoy: ≥0.4 POL from the
+     [official Polygon faucet](https://faucet.polygon.technology) or
+     [Alchemy faucet](https://www.alchemy.com/faucets/polygon-amoy). Amoy
+     enforces a ~30 gwei gas floor, so everything costs ~100× more gas-wise
+     than Base Sepolia — the deploy script's dust targets account for this.
+3. **Deploy** — `npm run deploy:base-sepolia` or `npm run deploy:polygon-amoy`
+   (both call `scripts/deploy-testnet.mjs`). The script deploys the tokens +
    `PaymentSettlement`, generates local treasury/entity wallets (funding each with
-   dust ETH for approvals), mints demo balances, registers the wallets in the DB,
-   and writes `chain/deployments.base-sepolia.json` (gitignored — it holds the
+   dust gas for approvals), mints demo balances, registers the wallets in the DB,
+   and writes `chain/deployments.<network>.json` (gitignored — it holds the
    generated dust-wallet keys; the funded deployer key stays in `.env` only).
    Re-runs reuse the generated wallets.
 
-Then `npm run dev` and pick **Base Sepolia** as source + destination chain — the
-payment detail page shows public Basescan links for the escrow and settlement
-transactions. Optional env: `BASE_SEPOLIA_RPC_URL` (defaults to the public
-`https://sepolia.base.org`) and `TREASURY_PRIVATE_KEY` (defaults to a generated
-wallet). Local chains and Base Sepolia coexist: `npm run setup` re-registers the
-Base Sepolia entity wallets after every DB reset, and cross-chain routes can
-bridge between them (simulated bridge, real transactions on both networks).
+Then `npm run dev` and pick **Base Sepolia** or **Polygon Amoy** as source and/or
+destination chain — the payment detail page shows public explorer links for the
+escrow and settlement transactions. With both deployed, a bridged
+Base Sepolia → Polygon Amoy payment gets public explorer links on *two* chains
+for one payment. Optional env: `BASE_SEPOLIA_RPC_URL` / `POLYGON_AMOY_RPC_URL`
+(default to the public RPCs) and `TREASURY_PRIVATE_KEY` (defaults to a generated
+wallet). Local chains and the real testnets coexist: `npm run setup` re-registers
+the testnet entity wallets after every DB reset, and cross-chain routes can
+bridge between any pair (simulated bridge, real transactions on both networks).
 
 ## Out of scope (by design, per PRD)
 

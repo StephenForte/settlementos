@@ -1,6 +1,6 @@
 # PRD: EVM-Based Stablecoin Settlement Infrastructure MVP
 
-## Implementation Status (living section — updated 2026-07-08)
+## Implementation Status (living section — updated 2026-07-13)
 
 The MVP described in this PRD is **built and running**. Code: [github.com/StephenForte/settlementos](https://github.com/StephenForte/settlementos) (Next.js App Router + Prisma/SQLite + viem + Hardhat, Solidity 0.8.24). Engineering guide in `AGENTS.md`, demo run-of-show in `DEMO.md`.
 
@@ -11,8 +11,8 @@ The MVP described in this PRD is **built and running**. Code: [github.com/Stephe
 | 3 | Multi-chain demo: two local chains + simulated bridge, per-network tx tracking | ✅ Done |
 | 4 | **Real Base Sepolia deployment** with public Basescan links | ✅ Done 2026-07-07 |
 | 5 | Test suite (71 tests: unit / DB / on-chain integration) + GitHub Actions CI | ✅ Done 2026-07-08 |
-| 6 | Compliance provider sandbox (OpenSanctions + Chainalysis) | 🔜 Next |
-| 7 | Second real testnet (Polygon Amoy) — public cross-chain demo | Planned |
+| 6 | Compliance provider sandbox (OpenSanctions + Chainalysis) | ✅ Done 2026-07-10 |
+| 7 | Second real testnet (Polygon Amoy) — public cross-chain demo | 🔨 Code done 2026-07-13; deploy awaits Amoy POL |
 | 8 | Tokenized MMF / overnight liquidity parking (JLTXX-inspired, see §24) | Planned |
 | 9 | Production hardening (AUDIT.md remediation) + regulatory & partner package | Planned |
 
