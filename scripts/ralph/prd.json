@@ -50,8 +50,8 @@
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Done 2026-07-14. setup.mjs + tests/helpers/deploy.ts deploy TokenizedMMF(mockUSDC) on both local chains, mint its 50k mockUSDC yield buffer, and have the treasury approve the fund (subscribe pulls via transferFrom). deployments.json carries contracts.TokenizedMMF per network. lib/chain.ts exposes MMF_ABI, MMF_INDEX_SCALE, and mmfAddress(networkId) -> Address | undefined (never throws; real testnets have no fund). 3 wiring tests added to tests/integration/mmf.test.ts; suite 100 -> 103. Verified npm run setup end to end on fresh local chains and the app serving /api/networks + /liquidity."
     },
     {
       "id": "US-004",

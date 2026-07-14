@@ -34,6 +34,19 @@ Started: Tue Jul 14 07:44:50 PDT 2026
 - `npm run setup` needs BOTH local chains up (8545 + 8546) or it exits. To verify it
   without destroying the user's dev state: back up `chain/deployments.json` and
   `prisma/dev.db`, start the chains, run setup, then kill the chains and restore.
+- Contract deploys are wired in TWO places that must stay in sync: `setupChain()` in
+  `scripts/setup.mjs` (dev chains) and `deployChain()` in `tests/helpers/deploy.ts`
+  (test fixture). Anything a new contract needs to be usable — token approvals,
+  minted balances — belongs in both, and its address goes in the returned
+  `contracts` object so it lands in deployments.json.
+- `lib/chain.ts` ABI exports are `as const`, so viem narrows `functionName` to a
+  literal union. A test helper taking `functionName: string` will NOT typecheck
+  against them — type the param as the union (or cast the ABI to `Abi`).
+- Optional per-network contracts resolve through a lookup that returns `undefined`
+  instead of throwing (`mmfAddress`), because live testnets legitimately lack them.
+  Follow that shape for anything deployed only on some networks.
+- The dev server may find :3000 taken and fall back to :3001 — read the actual port
+  out of the dev log before curling it.
 
 ## 2026-07-14 07:53 - US-001 (TokenizedMMF Solidity contract)
 - Implemented `contracts/TokenizedMMF.sol`: permissioned share fund holding one ERC-20.
@@ -102,4 +115,49 @@ Started: Tue Jul 14 07:44:50 PDT 2026
   - TreasuryPosition intentionally has NO entityId (the platform treasury parks; the
     entity only supplies the opt-in guardrail at the API layer, per US-007). Don't add
     a relation unless a later story actually needs per-entity positions.
+---
+
+## 2026-07-14 08:10 - US-003 (Deploy TokenizedMMF locally and wire it into lib/chain.ts)
+- `scripts/setup.mjs`: deploys `TokenizedMMF(mockUSDC)` on both local chains alongside
+  PaymentSettlement, mints the fund a 50,000 mockUSDC yield buffer (`MMF_YIELD_BUFFER`),
+  has the treasury `approve` the fund for MAX (subscribe pulls via transferFrom), and
+  records `contracts.TokenizedMMF` per network in chain/deployments.json.
+- `tests/helpers/deploy.ts`: the same three steps in `deployChain()`, exporting
+  `MMF_YIELD_BUFFER` so tests can assert against it. The fixture fund is what the app
+  layer (lib/chain) resolves, so US-004+ integration tests can park through it.
+- `lib/chain.ts`: `NetworkContracts.TokenizedMMF?: Address`; new `MMF_ABI` (subscribe,
+  redeem, accrue + the views), `MMF_INDEX_SCALE` (1e18), and
+  `mmfAddress(networkId): Address | undefined` — returns undefined for live testnets and
+  unknown ids rather than throwing, so callers degrade instead of 500ing.
+- `tests/integration/mmf.test.ts`: kept the 7 behavior tests on a throwaway MMF instance
+  (their index/share assertions must not be perturbed by other suites) and added a
+  "deployment wiring" block (3 tests) against the FIXTURE fund: address resolves per local
+  network / undefined elsewhere, fund is backed by that network's mockUSDC at par with the
+  buffer funded, and a treasury subscribe→redeem succeeds (proving the approval), leaving
+  the shared fund back at par with zero shares.
+- `AGENTS.md`: architecture-map rows for lib/chain + setup.mjs, plus gotchas (buffer +
+  approval must exist at every deploy target; mmfAddress returns undefined by design).
+- Files changed: scripts/setup.mjs, tests/helpers/deploy.ts, lib/chain.ts,
+  tests/integration/mmf.test.ts, AGENTS.md.
+- Checks: 103 tests pass (was 100), `npx tsc --noEmit` clean, `npm run lint` clean. Also
+  ran `npm run setup` against freshly-started local chains: MMF deployed on both, index at
+  par, yieldBuffer = 50000000000, treasury allowance MAX, and the app served /api/networks
+  (all 4 networks) + /liquidity 200. Dev chains killed and dev.db/deployments.json restored.
+- **Learnings for future iterations:**
+  - The shared FIXTURE fund is stateful across test files (`fileParallelism: false`, so
+    files run sequentially and share the chains + DB). If you mutate it — subscribe or
+    especially `accrue`, which is irreversible by design — either restore par/zero-shares
+    at the end of your test or deploy a throwaway instance. Never assume the fixture fund
+    is at index 1e18 unless you just checked.
+  - viem `as const` ABIs narrow `functionName` to a literal union: `readContract` with a
+    `functionName: string` param fails tsc. Type the helper's param as the union.
+  - Local deploy addresses are nonce-derived, so base-local and polygon-local end up with
+    the SAME MMF address. Don't let a test pass by reading the wrong network's fund —
+    assert per-network via `networkContracts(networkId)`.
+  - `MMF_YIELD_BUFFER` (50k mockUSDC) bounds how much simulated yield can ever be redeemed
+    across all positions on a chain. If a future story accrues aggressively, top it up in
+    both deploy paths or `redeem` will revert on an insufficient ERC-20 balance.
+  - Still owed before park/recall works end to end (US-004/005): `operatorWrite()` is hard-
+    wired to PaymentSettlement's address + ABI and its `functionName` union — parking needs
+    an MMF-targeted equivalent (or a generalized operatorWrite) rather than a reuse of it.
 ---
