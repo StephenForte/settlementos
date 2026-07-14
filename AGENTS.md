@@ -61,6 +61,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy via argv): env deployer key, per-network gas-dust targets, generated dust wallets, DB registration |
 | `app/api/*` | REST route handlers (thin; logic lives in lib/) |
 | `app/api/treasury/*` | MMF routes: `park`, `recall`, `positions` (GET, derived value per position), `accrue`. `errors.ts` holds the single `TreasuryErrorCode` → HTTP status table — add a code there when you add one to lib/treasury |
+| `app/liquidity/` | Treasury dashboard. `page.tsx` is a server component (all chain/DB reads, per-network sections); `mmf-card.tsx` is the `"use client"` MMF card — park form, per-position Recall, Accrue demo control — which POSTs to the treasury routes and then `router.refresh()`es |
 | `contracts/` | Solidity 0.8.24: `MockERC20` (permissionless mint, by design), `PaymentSettlement` escrow, `TokenizedMMF` (operator-gated share fund for parked treasury liquidity; monotonic index, no cross-calls with escrow) |
 | `tests/` | Vitest suite: `unit/` (pure), `db/` (compliance, audit chain), `integration/` (executor E2E, contract, API). Fixture bootstrap in `global-setup.ts` + `helpers/` |
 
@@ -142,6 +143,12 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   with `mmfAddress(networkId)` from `lib/chain.ts`, which returns `undefined` (never
   throws) where no fund exists — real testnets included. Treat "no MMF here" as a
   normal state to degrade to, not an error.
+- Interactive pages keep chain/DB reads in the **server** component and pass plain
+  serializable props to a `"use client"` child that owns the buttons (see
+  `app/liquidity/`). The child POSTs to an API route, then calls `router.refresh()`,
+  which re-renders the server parent and flows **new props** down — so never copy a
+  server prop into `useState`, or the view goes stale after a mutation. (The payment
+  pages predate this and fetch client-side instead; both patterns exist.)
 - Addresses read back from a contract are EIP-55 checksummed, but
   `chain/deployments*.json` stores them lowercase. Lowercase both sides before
   comparing, or the assertion fails on case alone.
