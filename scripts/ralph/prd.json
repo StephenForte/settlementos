@@ -117,8 +117,8 @@
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Done 2026-07-14. app/api/treasury/{park,recall,positions,accrue}/route.ts, all snake_case and thin (they validate the body, then delegate to lib/treasury). app/api/treasury/errors.ts holds the single TreasuryErrorCode -> HTTP table: NOT_ELIGIBLE 403, POSITION_NOT_FOUND 404, INSUFFICIENT_FREE_BALANCE/POSITION_NOT_ACTIVE 409, the rest 400. GET /positions derives value per position (one index read per network, RPC failure or a missing fund degrades to null rather than 500ing). tests/integration/treasury-api.test.ts adds 6 tests; suite 116 -> 124. Also hardened tests/db/treasury.test.ts: its par-exact assertions now derive from the live index, since the new accrue-route test means any file can leave the shared fixture fund above par."
     },
     {
       "id": "US-008",

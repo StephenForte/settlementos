@@ -67,9 +67,13 @@ describe("treasury parking", () => {
     const parked = toBaseUnits("50000.00", USDC_DECIMALS);
     expect(result.assetAmount).toBe(parked);
     expect(result.txHash).toMatch(/^0x[0-9a-f]{64}$/);
-    // Shares are minted at the live index: shares x index / 1e18 == the asset parked.
+    // Shares are minted at the live index: shares x index / 1e18 == the asset parked,
+    // up to a base unit of floor-division dust once the index is above par. (Another
+    // suite may have accrued this shared fund already — accrual is irreversible.)
     expect(result.shares).toBeGreaterThan(0n);
-    expect((result.shares * result.indexAtEntry) / 10n ** 18n).toBe(parked);
+    const minted = valueOfShares(result.shares, result.indexAtEntry);
+    expect(minted).toBeLessThanOrEqual(parked);
+    expect(minted).toBeGreaterThanOrEqual(parked - 1n);
 
     const position = await prisma.treasuryPosition.findUniqueOrThrow({ where: { id: result.positionId } });
     expect(position).toMatchObject({
@@ -171,23 +175,28 @@ describe("treasury recall", () => {
 
     const result = await recall(parked.positionId);
 
-    // Index never moved, so the redemption returns exactly the principal.
+    // The index never moved between park and recall, so redemption returns the
+    // principal — exactly at par, and short by at most a base unit of floor dust if
+    // an earlier suite already accrued this shared fund.
     expect(result.positionId).toBe(parked.positionId);
     expect(result.shares).toBe(parked.shares);
     expect(result.indexAtExit).toBe(parked.indexAtEntry);
-    expect(result.assetAmount).toBe(parked.assetAmount);
+    expect(result.assetAmount).toBe(valueOfShares(parked.shares, parked.indexAtEntry));
+    expect(result.assetAmount).toBeLessThanOrEqual(parked.assetAmount);
+    expect(result.assetAmount).toBeGreaterThanOrEqual(parked.assetAmount - 1n);
     expect(result.txHash).toMatch(/^0x[0-9a-f]{64}$/);
     expect(result.txHash).not.toBe(parked.txHash);
 
     // The asset came back out of the fund and into the treasury wallet.
-    expect(await tokenBalance(NETWORK, usdc, treasuryAddress())).toBe(treasuryBefore);
-    expect(await tokenBalance(NETWORK, usdc, fund)).toBe(fundAfterPark - parked.assetAmount);
+    const dust = parked.assetAmount - result.assetAmount;
+    expect(await tokenBalance(NETWORK, usdc, treasuryAddress())).toBe(treasuryBefore - dust);
+    expect(await tokenBalance(NETWORK, usdc, fund)).toBe(fundAfterPark - result.assetAmount);
     expect(await sharesHeld()).toBe(0n);
 
     // ...and is available liquidity again.
     const liquidityAfter = await availableLiquidity("mockUSDC", NETWORK);
-    expect(liquidityAfter.available).toBe(liquidityBefore.available);
-    expect(liquidityAfter.onchain).toBe(liquidityBefore.onchain);
+    expect(Number(liquidityAfter.available)).toBeCloseTo(Number(liquidityBefore.available), 5);
+    expect(Number(liquidityAfter.onchain)).toBeCloseTo(Number(liquidityBefore.onchain), 5);
 
     // The row is updated in place, never deleted — append-only position history.
     const position = await prisma.treasuryPosition.findUniqueOrThrow({ where: { id: parked.positionId } });
@@ -209,7 +218,7 @@ describe("treasury recall", () => {
       network: NETWORK,
       asset: "mockUSDC",
       shares: parked.shares.toString(),
-      amount: "25000",
+      amount: fromBaseUnits(result.assetAmount, USDC_DECIMALS),
       principal: "25000",
       yield: "0",
       indexAtExit: parked.indexAtEntry.toString(),

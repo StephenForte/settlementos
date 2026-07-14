@@ -65,7 +65,16 @@ Started: Tue Jul 14 07:44:50 PDT 2026
 - MMF accrual is IRREVERSIBLE (the contract's index is monotonic). Any suite that
   accrues the shared fixture fund leaves it above par forever, so tests must assert
   invariants (index >= par, shares = value/index, round-trip >= principal) rather than
-  par-equality, and a test file that accrues should do it in its LAST block.
+  par-equality, and a test file that accrues should do it in its LAST block. Vitest
+  file order is sequential but NOT alphabetical, so never rely on "my file runs last":
+  derive expected amounts from the LIVE index (`valueOfShares(shares, index)` is exactly
+  what `redeem` pays), not from par.
+- API routes: `route.ts` is the only routable filename, so shared glue colocates fine
+  under `app/api/**` (e.g. `app/api/treasury/errors.ts` maps `TreasuryErrorCode` ->
+  HTTP status in one place). Keep HTTP concerns out of lib/; keep handlers thin.
+- Route tests import the handler directly (`import { POST } from "@/app/api/.../route"`)
+  and call it with a `NextRequest` — no HTTP server. A constructed Request with a body
+  needs the `{ duplex: "half" }` cast (undici).
 
 ## 2026-07-14 07:53 - US-001 (TokenizedMMF Solidity contract)
 - Implemented `contracts/TokenizedMMF.sol`: permissioned share fund holding one ERC-20.
@@ -314,4 +323,55 @@ Started: Tue Jul 14 07:44:50 PDT 2026
     INVALID_AMOUNT, INVALID_RATE, INSUFFICIENT_FREE_BALANCE, NOT_ELIGIBLE, POSITION_NOT_FOUND,
     POSITION_NOT_ACTIVE. `currentIndexOf()` + `valueOfShares()` are what GET /api/treasury/positions
     should use for "current value per position" (one index read per network, not per row).
+---
+
+## 2026-07-14 08:32 - US-007 (Treasury API routes: park, recall, positions, accrue)
+- Four route handlers under `app/api/treasury/`, all snake_case in and out, all thin
+  (validate the body, delegate to lib/treasury, map the typed error):
+  - `POST park` { network, asset, amount, entity_id } -> { position_id, status, tx_hash,
+    shares, index_at_entry }. entity_id is REQUIRED here (the lib arg is optional) so the
+    institutional-only guardrail is always enforced server-side.
+  - `POST recall` { position_id } -> { position_id, status, tx_hash, shares, amount,
+    index_at_exit }.
+  - `GET positions` -> positions newest-first with a DERIVED current_value / accrued_yield
+    (shares x the fund's live index). One index read per network, not per row; a RECALLED
+    row reports null for the live fields.
+  - `POST accrue` { network } -> { network, old_index, new_index, annual_rate_bps, tx_hash }.
+- `app/api/treasury/errors.ts`: the single TreasuryErrorCode -> HTTP status table —
+  NOT_ELIGIBLE 403, POSITION_NOT_FOUND 404, INSUFFICIENT_FREE_BALANCE + POSITION_NOT_ACTIVE
+  409, NO_FUND / UNSUPPORTED_ASSET / INVALID_AMOUNT / INVALID_RATE 400, anything else 500.
+  Response shape is `{ error, code }`, so `{ error }` still matches the other routes.
+- `tests/integration/treasury-api.test.ts` (new, 6 tests): eligible park round-trip,
+  403 for a non-eligible/unknown entity with no row left behind, 400 matrix (missing fields,
+  unknown network, bad amounts, unbacked asset, no-fund network), 409 over-park,
+  park -> positions -> recall -> positions (row flips in place, both tx hashes, live fields
+  null once RECALLED), recall 400/404/409, and the accrue happy path + validation.
+- `tests/db/treasury.test.ts` hardened: its par-exact assertions now derive from the live
+  index (see learnings) — behaviour unchanged at par, correct once the fund is above it.
+- Files changed: app/api/treasury/{errors.ts,park/route.ts,recall/route.ts,
+  positions/route.ts,accrue/route.ts} (new), tests/integration/treasury-api.test.ts (new),
+  tests/db/treasury.test.ts, AGENTS.md (architecture-map row + test-order gotcha).
+- Checks: 124 tests pass (was 116), `npx tsc --noEmit` clean, `npm run lint` clean. No UI in
+  this story (US-009 owns the Liquidity page), so no browser verification was needed; the
+  routes are exercised by invoking the handlers directly, the house pattern in
+  tests/integration/api.test.ts.
+- **Learnings for future iterations:**
+  - **Vitest file order is NOT alphabetical** (sequential, but the sequencer orders files
+    itself), so "my accruing file runs last" is not a guarantee you can lean on. Once ANY
+    file accrues the shared fixture fund, every other file may see an above-par index.
+    Fix is to derive expectations from the live index — `valueOfShares(shares, index)` is
+    the exact amount `redeem` pays — instead of asserting par-derived constants. Only
+    genuine token movements (subscribe pulls exactly `assetAmount`) stay exact.
+  - Non-route files colocate fine under `app/api/**` — only `route.ts` is routable, so
+    `app/api/treasury/errors.ts` is a normal module. Put cross-route glue there rather than
+    leaking HTTP concerns into lib/.
+  - Route tests import the handler (`import { POST } from "@/app/api/.../route"`) and call it
+    with a `NextRequest`; the `{ duplex: "half" }` cast in the postJson helper is required by
+    undici whenever the constructed Request has a body.
+  - Any route test that parks must `unwind()` (redeem all treasury shares + delete the file's
+    position rows) exactly like tests/db/treasury.test.ts — the fixture fund and the treasury
+    balance are shared across files.
+  - US-008 (auto-recall in the executor) can reuse the same typed errors; US-009's UI can hit
+    these four routes directly — `GET /api/treasury/positions` already returns everything the
+    card needs (parked value, shares, current index, accrued yield, status).
 ---

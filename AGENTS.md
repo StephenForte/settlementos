@@ -60,6 +60,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [scripts/setup.mjs](scripts/setup.mjs) | Local deploy (tokens, escrow, TokenizedMMF + its yield buffer and treasury approval) + DB seed (dev-mnemonic accounts, local only) |
 | [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy via argv): env deployer key, per-network gas-dust targets, generated dust wallets, DB registration |
 | `app/api/*` | REST route handlers (thin; logic lives in lib/) |
+| `app/api/treasury/*` | MMF routes: `park`, `recall`, `positions` (GET, derived value per position), `accrue`. `errors.ts` holds the single `TreasuryErrorCode` → HTTP status table — add a code there when you add one to lib/treasury |
 | `contracts/` | Solidity 0.8.24: `MockERC20` (permissionless mint, by design), `PaymentSettlement` escrow, `TokenizedMMF` (operator-gated share fund for parked treasury liquidity; monotonic index, no cross-calls with escrow) |
 | `tests/` | Vitest suite: `unit/` (pure), `db/` (compliance, audit chain), `integration/` (executor E2E, contract, API). Fixture bootstrap in `global-setup.ts` + `helpers/` |
 
@@ -123,7 +124,9 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   good: after one, a park→recall round-trip returns *more* than the principal (assert
   `>=`, not `==`), floor division can shave a base unit of dust off a re-subscribed
   position, and tests sharing the fixture fund must assert index/share invariants rather
-  than par.
+  than par. Vitest does not guarantee file order (it is sequential, not alphabetical), so
+  *any* test file that accrues raises the index for every other file: derive expected
+  amounts from the live index (`valueOfShares(shares, index)`), never from par.
 - The MMF is deployed **per network** and only on the local chains today. Resolve it
   with `mmfAddress(networkId)` from `lib/chain.ts`, which returns `undefined` (never
   throws) where no fund exists — real testnets included. Treat "no MMF here" as a
