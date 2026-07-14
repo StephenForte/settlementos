@@ -47,7 +47,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | Module | Responsibility |
 |---|---|
 | [lib/networks.ts](lib/networks.ts) | Network registry (local sims + real base-sepolia and polygon-amoy), explorer URL helpers. **Client-safe — no node imports, no secrets.** |
-| [lib/chain.ts](lib/chain.ts) | viem chain adapter. Loads/merges `chain/deployments*.json`, per-network accounts via `accountsFor()`, contract ABIs, `operatorWrite()`, `treasuryTokenTransfer()` |
+| [lib/chain.ts](lib/chain.ts) | viem chain adapter. Loads/merges `chain/deployments*.json`, per-network accounts via `accountsFor()`, contract ABIs (`SETTLEMENT_ABI`, `MMF_ABI`), `operatorWrite()`, `treasuryTokenTransfer()`, `mmfAddress()` (undefined where no fund is deployed) |
 | [lib/state.ts](lib/state.ts) | Payment lifecycle state machine; `assertTransition()` enforces legal moves |
 | [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: liquidity reservation, escrow, FX, payout, refund-on-failure |
 | [lib/routing.ts](lib/routing.ts) | Route quotes (instant/batched/bridged), treasury liquidity checks |
@@ -56,7 +56,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | `lib/providers/` | Real vendor adapters: OpenSanctions (sanctions match API), Chainalysis sanctions oracle (keyless on-chain `isSanctioned()` read for wallet screening). **Fail-safe: any provider error/timeout → MANUAL_REVIEW, never fail-open.** Verbatim provider evidence persisted on `ComplianceCheck.rawResponse` |
 | [lib/audit.ts](lib/audit.ts) | Append-only hash-chained audit log + chain verifier |
 | [lib/assets.ts](lib/assets.ts) | Asset metadata, currency↔token mapping, base-unit conversion |
-| [scripts/setup.mjs](scripts/setup.mjs) | Local deploy + DB seed (dev-mnemonic accounts, local only) |
+| [scripts/setup.mjs](scripts/setup.mjs) | Local deploy (tokens, escrow, TokenizedMMF + its yield buffer and treasury approval) + DB seed (dev-mnemonic accounts, local only) |
 | [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy via argv): env deployer key, per-network gas-dust targets, generated dust wallets, DB registration |
 | `app/api/*` | REST route handlers (thin; logic lives in lib/) |
 | `contracts/` | Solidity 0.8.24: `MockERC20` (permissionless mint, by design), `PaymentSettlement` escrow, `TokenizedMMF` (operator-gated share fund for parked treasury liquidity; monotonic index, no cross-calls with escrow) |
@@ -102,7 +102,14 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 - Advancing the MMF index does **not** add asset to the fund: simulated yield is
   paid out of a buffer that must be funded separately (mint mock asset to the MMF
   address). An underfunded buffer makes `redeem` revert rather than shortchange a
-  redeemer — fund it wherever the MMF is deployed.
+  redeemer — fund it wherever the MMF is deployed. `scripts/setup.mjs` and the test
+  fixture each mint a 50,000 mockUSDC buffer and have the **treasury approve the fund**
+  (`subscribe` pulls via `transferFrom`); a new deploy target must do both or parking
+  reverts.
+- The MMF is deployed **per network** and only on the local chains today. Resolve it
+  with `mmfAddress(networkId)` from `lib/chain.ts`, which returns `undefined` (never
+  throws) where no fund exists — real testnets included. Treat "no MMF here" as a
+  normal state to degrade to, not an error.
 - Addresses read back from a contract are EIP-55 checksummed, but
   `chain/deployments*.json` stores them lowercase. Lowercase both sides before
   comparing, or the assertion fails on case alone.

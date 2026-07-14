@@ -14,6 +14,9 @@ const TOKENS: [string, string, number][] = [
   ["Mock SGD Token", "mockSGD", 6],
 ];
 
+/** Pre-funded mockUSDC held by the MMF to pay simulated yield (mirrors scripts/setup.mjs). */
+export const MMF_YIELD_BUFFER = 50_000n * 10n ** 6n;
+
 export function artifact(name: string): { abi: Abi; bytecode: Hex } {
   const p = path.join(ROOT, "chain", "artifacts", "contracts", `${name}.sol`, `${name}.json`);
   return JSON.parse(fs.readFileSync(p, "utf8"));
@@ -71,6 +74,7 @@ export async function deployChain(rpcUrl: string, chainId: number) {
     tokens[symbol] = { ...(await deploy("MockERC20", [name, symbol, decimals])), decimals };
   }
   const settlement = await deploy("PaymentSettlement", []);
+  const mmf = await deploy("TokenizedMMF", [tokens.mockUSDC.address]);
 
   for (const t of Object.values(tokens)) {
     await write(operator, settlement.address, settlement.abi, "setApprovedAsset", [t.address, true]);
@@ -83,6 +87,8 @@ export async function deployChain(rpcUrl: string, chainId: number) {
     ["mockSGD", ACCOUNTS.treasury.address, 1_000_000n * 10n ** 6n],
     ["mockSGD", ACCOUNTS.singapore.address, 200_000n * 10n ** 6n],
     ["mockJPY", ACCOUNTS.tokyo.address, 10_000_000n],
+    // Buffer the MMF draws on to pay simulated yield (accrual mints no asset).
+    ["mockUSDC", mmf.address, MMF_YIELD_BUFFER],
   ];
   for (const [symbol, to, amount] of mints) {
     await write(operator, tokens[symbol].address, tokens[symbol].abi, "mint", [to, amount]);
@@ -95,12 +101,16 @@ export async function deployChain(rpcUrl: string, chainId: number) {
       await write(w, t.address, t.abi, "approve", [settlement.address, MAX]);
     }
   }
+  // The treasury parks into the MMF, which pulls the asset via transferFrom.
+  const treasury = walletFor(ACCOUNTS.treasury.privateKey);
+  await write(treasury, tokens.mockUSDC.address, tokens.mockUSDC.abi, "approve", [mmf.address, MAX]);
 
   return {
     chainId,
     rpcUrl,
     contracts: {
       PaymentSettlement: settlement.address,
+      TokenizedMMF: mmf.address,
       tokens: Object.fromEntries(
         Object.entries(tokens).map(([k, v]) => [k, { address: v.address, decimals: v.decimals }])
       ),

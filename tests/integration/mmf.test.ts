@@ -1,14 +1,22 @@
 // TokenizedMMF contract behavior, driven directly with viem against the base-local
-// test node. Covers the share-index invariants the treasury module will rely on.
+// test node, plus the deployment wiring the treasury module reads (lib/chain).
 //
-// The MMF is deployed fresh here (backed by the fixture's mockUSDC) rather than read
-// from deployments.json — wiring it into the fixture comes with the treasury module.
+// The behavior tests deploy a throwaway MMF so their index/share assertions cannot be
+// disturbed by other suites; the wiring tests use the fixture's deployed fund and
+// leave it at par with no shares outstanding.
 
 import { describe, it, expect, beforeAll } from "vitest";
 import type { Address, Abi } from "viem";
-import { networkContracts } from "@/lib/chain";
+import {
+  networkContracts,
+  mmfAddress,
+  publicClientFor,
+  tokenBalance,
+  MMF_ABI,
+  MMF_INDEX_SCALE,
+} from "@/lib/chain";
 import { BASE_RPC, ACCOUNTS } from "../fixture";
-import { clientsFor, artifact } from "../helpers/deploy";
+import { clientsFor, artifact, MMF_YIELD_BUFFER } from "../helpers/deploy";
 
 const SCALE = 10n ** 18n;
 const PARK = 100_000n * 10n ** 6n; // 100,000 mockUSDC
@@ -143,5 +151,60 @@ describe("TokenizedMMF", () => {
       await sharesOf(ACCOUNTS.treasury.address),
     ]);
     expect(await usdcBalance(settlement)).toBe(escrowBefore);
+  });
+});
+
+// The fund the app actually talks to: deployed by the fixture (mirroring npm run setup)
+// and resolved through lib/chain rather than a locally-held address.
+describe("TokenizedMMF deployment wiring", () => {
+  it("resolves a fund address on every local network, and undefined where none is deployed", () => {
+    for (const networkId of ["base-local", "polygon-local"]) {
+      expect(mmfAddress(networkId)).toMatch(/^0x[0-9a-fA-F]{40}$/);
+      expect(mmfAddress(networkId)).toBe(networkContracts(networkId).TokenizedMMF);
+    }
+    // Real testnets have no fund deployed, and an unknown id is not an error either:
+    // "no MMF here" is a normal state the treasury UI/API degrades to.
+    expect(mmfAddress("base-sepolia")).toBeUndefined();
+    expect(mmfAddress("not-a-network")).toBeUndefined();
+  });
+
+  it("is backed by the network's mockUSDC, at par, with a funded yield buffer", async () => {
+    for (const networkId of ["base-local", "polygon-local"]) {
+      const fund = mmfAddress(networkId)!;
+      const usdcOnNet = networkContracts(networkId).tokens.mockUSDC.address;
+      const client = publicClientFor(networkId);
+      const call = (functionName: "asset" | "currentIndex" | "yieldBuffer") =>
+        client.readContract({ address: fund, abi: MMF_ABI, functionName }) as Promise<unknown>;
+
+      expect(String(await call("asset")).toLowerCase()).toBe(usdcOnNet.toLowerCase());
+      expect(await call("currentIndex")).toBe(MMF_INDEX_SCALE);
+      expect(await call("yieldBuffer")).toBe(MMF_YIELD_BUFFER);
+      expect(await tokenBalance(networkId, usdcOnNet, fund)).toBe(MMF_YIELD_BUFFER);
+    }
+  });
+
+  it("accepts a subscribe from the treasury — the fixture's approval is in place", async () => {
+    const fund = mmfAddress("base-local")!;
+    const usdcOnNet = networkContracts("base-local").tokens.mockUSDC.address;
+    const treasuryBefore = await tokenBalance("base-local", usdcOnNet, ACCOUNTS.treasury.address);
+
+    await send(ACCOUNTS.operator.privateKey, fund, MMF_ABI as unknown as Abi, "subscribe", [
+      ACCOUNTS.treasury.address,
+      PARK,
+    ]);
+    const shares = (await clients.publicClient.readContract({
+      address: fund,
+      abi: MMF_ABI,
+      functionName: "sharesOf",
+      args: [ACCOUNTS.treasury.address],
+    })) as bigint;
+    expect(shares).toBe(PARK); // at par, 1 share per asset base unit
+
+    // Leave the shared fixture fund as we found it: par, no shares outstanding.
+    await send(ACCOUNTS.operator.privateKey, fund, MMF_ABI as unknown as Abi, "redeem", [
+      ACCOUNTS.treasury.address,
+      shares,
+    ]);
+    expect(await tokenBalance("base-local", usdcOnNet, ACCOUNTS.treasury.address)).toBe(treasuryBefore);
   });
 });
