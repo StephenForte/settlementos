@@ -118,6 +118,9 @@ export const ENTITIES = [
     kybStatus: "PASSED",
     riskRating: "LOW",
     approvedCorridors: JSON.stringify(["USD-JPY", "USD-SGD"]),
+    // The one institution cleared for tokenized-MMF parking (Phase 8).
+    mmfEligible: true,
+    mmfOptIn: true,
     wallet: { address: ACCOUNTS.acme.address, label: "ACME operating wallet", allowlisted: true, riskScore: 5 },
   },
   {

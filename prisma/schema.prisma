@@ -17,6 +17,8 @@ model Entity {
   kybStatus         String   @default("PENDING") // PASSED | PENDING | FAILED
   riskRating        String   @default("LOW") // LOW | MEDIUM | HIGH
   approvedCorridors String   @default("[]") // JSON array of "USD-JPY" style corridor codes
+  mmfEligible       Boolean  @default(false) // institutional-only gate for tokenized-MMF parking
+  mmfOptIn          Boolean  @default(false) // explicit opt-in; both must be true to park
   createdAt         DateTime @default(now())
 
   wallets          Wallet[]
@@ -117,6 +119,23 @@ model LedgerCredit {
 
   payment Payment @relation(fields: [paymentId], references: [id])
   entity  Entity  @relation(fields: [entityId], references: [id])
+}
+
+// A parked treasury position in the tokenized MMF. Append-only history: recall
+// flips status and stamps the recall tx, it never deletes the row. Current value
+// is always derived (shares x live contract index), never stored here.
+model TreasuryPosition {
+  id            String    @id @default(cuid())
+  network       String // network id, e.g. "base-local"
+  asset         String // token symbol, e.g. "mockUSDC"
+  shares        String // MMF shares, base units (decimal string of a bigint)
+  assetAmountIn String // asset parked at entry, base units
+  indexAtEntry  String // MMF share index at entry, 1e18-scaled
+  status        String    @default("ACTIVE") // ACTIVE | RECALLED
+  txHashPark    String
+  txHashRecall  String?
+  createdAt     DateTime  @default(now())
+  recalledAt    DateTime?
 }
 
 model LiquidityReservation {

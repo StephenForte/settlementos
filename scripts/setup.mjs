@@ -188,6 +188,8 @@ async function main() {
   console.log("Seeding database...");
   const prisma = new PrismaClient();
   // Fresh chain state → fresh app state, in FK dependency order.
+  // Parked MMF positions point at contracts that no longer exist after redeploy.
+  await prisma.treasuryPosition.deleteMany();
   await prisma.ledgerCredit.deleteMany();
   await prisma.liquidityReservation.deleteMany();
   await prisma.complianceCheck.deleteMany();
@@ -217,6 +219,9 @@ async function main() {
       kybStatus: "PASSED",
       riskRating: "LOW",
       approvedCorridors: JSON.stringify(["USD-JPY", "USD-SGD"]),
+      // The one institution cleared for tokenized-MMF parking (Phase 8).
+      mmfEligible: true,
+      mmfOptIn: true,
       wallet: { address: ACCOUNTS.acme.address, label: "ACME operating wallet", allowlisted: true, riskScore: 5 },
     },
     {

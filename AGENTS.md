@@ -107,9 +107,16 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   `chain/deployments*.json` stores them lowercase. Lowercase both sides before
   comparing, or the assertion fails on case alone.
 
-- `npm run setup` **wipes the database** (payments, audit log, entities) and
-  redeploys the local chains. Real-testnet contracts/wallets survive; their entity
-  wallets are re-registered from `chain/deployments.<network>.json`.
+- `npm run setup` **wipes the database** (payments, audit log, entities, parked MMF
+  positions) and redeploys the local chains. Real-testnet contracts/wallets survive;
+  their entity wallets are re-registered from `chain/deployments.<network>.json`.
+- There is **no Prisma migrations directory** — the schema is applied with
+  `prisma db push`, which `npm run setup` runs (alongside `prisma generate`) before
+  seeding. After editing `prisma/schema.prisma`, `npm run setup` is what brings the
+  dev DB and client in sync; the test fixture pushes the schema itself in
+  `tests/global-setup.ts`. Seeded demo entities are defined **twice** — in
+  `scripts/setup.mjs` and in `ENTITIES` in `tests/helpers/deploy.ts` — keep the two
+  in sync when adding entity fields.
 - `chain/deployments.json` (local) and one `chain/deployments.<network>.json`
   overlay per live network (real testnets) are merged at read time by
   `loadDeployments()`. The app only offers networks present in the merged result
