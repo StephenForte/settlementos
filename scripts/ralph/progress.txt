@@ -512,3 +512,48 @@ Started: Tue Jul 14 07:44:50 PDT 2026
     assertion (balanceOf(TokenizedMMF) rises while balanceOf(PaymentSettlement) is unchanged
     across park/recall) and a single ordered park → accrue → recall audit-chain test.
 ---
+
+## 2026-07-14 08:52 - US-010 (End-to-end guardrail and segregation tests)
+- `tests/integration/treasury-guardrails.test.ts` (new, 3 tests) — the consolidation
+  story: the properties a compliance reviewer needs, asserted in one file.
+  1. **Institutional-only guardrail.** ACME (the one seeded mmfEligible+mmfOptIn
+     entity) has its opt-in revoked in a try/finally, so the opt-in dimension itself
+     is exercised rather than only the never-cleared counterparty: `park({entityId})`
+     rejects with TreasuryError NOT_ELIGIBLE and `POST /api/treasury/park` returns 403.
+     A never-cleared entity (ent_tokyo_supplier) is refused too. Afterwards: zero
+     position rows, zero shares — a refused park leaves nothing behind.
+  2. **Reserved liquidity is untouchable.** Everything but 500 mockUSDC is RESERVED
+     against an in-flight payment; parking 600 fails at the lib layer
+     (INSUFFICIENT_FREE_BALANCE) and via the API (409), and the treasury's token
+     balance is byte-for-byte unchanged.
+  3. **Segregation + ordered audit chain.** park 80k -> accrueDaily -> recall, with
+     `balanceOf(PaymentSettlement)` snapshotted before and re-asserted after EVERY
+     step: the escrow is never on the path. balanceOf(TokenizedMMF) rises by exactly
+     the principal on park, is untouched by accrual (an index bump moves no asset),
+     and falls by principal + yield on recall, which lands in the treasury wallet.
+     The three TREASURY_* audit actions come back from the log in exactly the order
+     they happened (queried by id > a pre-flight watermark), the recall event carries
+     the derived yield and exit index, `verifyAuditChain()` is `{ valid: true }`, and
+     the position row is RECALLED in place with both tx hashes.
+- Files changed: tests/integration/treasury-guardrails.test.ts (new), AGENTS.md (the
+  Tests paragraph now names the MMF guardrail/segregation layer).
+- Checks: 131 tests pass (was 128), `npx tsc --noEmit` clean, `npm run lint` clean.
+  No skipped treasury tests. No lib/contract/UI change in this story, so nothing to
+  verify in a browser.
+- **Learnings for future iterations:**
+  - To test a guardrail that the fixture seeds as *satisfied*, flip the seeded entity's
+    flag inside a `try/finally` and restore it — the fixture DB is shared across files
+    and a leaked `mmfOptIn: false` would fail every later park.
+  - Segregation is cheap to assert and worth asserting at every step, not just at the
+    end: snapshot `balanceOf(PaymentSettlement)` up front and re-check it after park,
+    after accrue, and after recall. Accrual in particular moves NO asset — only the
+    index — and a test that only checks the endpoints would not catch a cross-call.
+  - Audit-ordering assertions should anchor on a watermark (`id > lastIdBeforeTest`)
+    rather than `findFirst({orderBy: {id: "desc"}})` per action: the log is shared with
+    every other suite, so a per-action "latest row" lookup can silently read another
+    file's event.
+  - Phase 8 is COMPLETE: all ten stories pass. The MMF is local-chains-only by design
+    (`mmfAddress()` returns undefined on the real testnets); deploying a fund to
+    base-sepolia/polygon-amoy would need the yield buffer minted and the treasury
+    approval granted there too (see the US-003 learnings), and is the natural next step.
+---

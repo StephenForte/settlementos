@@ -36,7 +36,7 @@ or the dev DB). Layers: `tests/unit/` (state machine, FX, base units, explorer
 URLs, provider adapters with stubbed fetch), `tests/db/` (compliance matrix —
 mock and real-provider modes, audit-chain tamper detection),
 `tests/integration/` (executor E2E on-chain, PaymentSettlement contract behavior,
-API route validation). CI runs typecheck + lint + tests on every push/PR
+API route validation, MMF guardrails + escrow segregation). CI runs typecheck + lint + tests on every push/PR
 (`.github/workflows/ci.yml`). **Add tests for new lifecycle, compliance, or
 chain behavior** — and still smoke-test UI-visible changes by hand via the flow
 in README "API". `npm run setup` resets DB + local chains at any time; it

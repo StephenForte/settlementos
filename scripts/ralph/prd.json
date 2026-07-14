@@ -168,8 +168,8 @@
         "Typecheck passes"
       ],
       "priority": 10,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Done 2026-07-14. tests/integration/treasury-guardrails.test.ts (new, 3 tests) consolidates the compliance-facing properties: (1) an entity with mmfOptIn=false is refused at the lib layer AND by POST /api/treasury/park (403), with no position row, no shares, no audit event — ACME's opt-in is revoked in a try/finally so the opt-in dimension itself is exercised, not just the never-cleared counterparty; (2) liquidity RESERVED against an in-flight payment cannot be parked (lib TreasuryError + API 409) and the asset never leaves the treasury wallet; (3) a park -> accrue -> recall flow asserts SEGREGATION on-chain (balanceOf(TokenizedMMF) rises by the principal, balanceOf(PaymentSettlement) is unchanged at every step, and recall pays principal + yield back to the treasury without the escrow ever being on the path) and that TREASURY_PARKED, TREASURY_ACCRUED, TREASURY_RECALLED land on the hash chain in that order with verifyAuditChain() INTACT and the position row flipped in place. Suite 128 -> 131 green, tsc + lint clean, nothing skipped."
     }
   ]
 }
