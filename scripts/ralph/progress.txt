@@ -23,6 +23,17 @@ Started: Tue Jul 14 07:44:50 PDT 2026
 - Solidity contracts follow one house style: `admin` + `operators` mapping,
   `onlyAdmin`/`onlyOperator` modifiers, constructor makes the deployer both, short
   lowercase revert strings ("not operator").
+- No Prisma migrations directory: the schema is applied with `prisma db push`.
+  `npm run setup` runs `prisma generate && prisma db push` before seeding, so after
+  editing prisma/schema.prisma that is the command that syncs the dev DB + client.
+  The test fixture pushes the schema itself in tests/global-setup.ts, so `npm test`
+  picks up schema changes with no extra step.
+- Demo entities are seeded in TWO places that must stay in sync: `scripts/setup.mjs`
+  (dev DB) and `ENTITIES` in `tests/helpers/deploy.ts` (test fixture). Adding an
+  Entity field means editing both.
+- `npm run setup` needs BOTH local chains up (8545 + 8546) or it exits. To verify it
+  without destroying the user's dev state: back up `chain/deployments.json` and
+  `prisma/dev.db`, start the chains, run setup, then kill the chains and restore.
 
 ## 2026-07-14 07:53 - US-001 (TokenizedMMF Solidity contract)
 - Implemented `contracts/TokenizedMMF.sol`: permissioned share fund holding one ERC-20.
@@ -55,4 +66,40 @@ Started: Tue Jul 14 07:44:50 PDT 2026
     shares == base units only hold BEFORE the first accrual — order matters within a file.
   - Left for US-003: the contract is not in `chain/deployments.json`, `lib/chain.ts`, or the
     test fixture yet — mmf.test.ts deploys its own instance in beforeAll.
+---
+
+## 2026-07-14 08:05 - US-002 (TreasuryPosition table and entity MMF eligibility flags)
+- `prisma/schema.prisma`: new `TreasuryPosition` model (id, network, asset, shares,
+  assetAmountIn, indexAtEntry, status ACTIVE|RECALLED default ACTIVE, txHashPark,
+  txHashRecall?, createdAt, recalledAt?) — append-only by design; current value is
+  always derived (shares x live contract index), never stored on the row. `Entity`
+  gains `mmfEligible` and `mmfOptIn`, both Boolean default false (guardrail: BOTH
+  must be true to park).
+- `package.json`: `setup` script is now
+  `npm run compile && prisma generate && prisma db push && node scripts/setup.mjs`
+  — there is no migrations dir, so without this a schema change never reaches dev.db
+  and setup.mjs dies on "no such column".
+- `scripts/setup.mjs`: wipes `treasuryPosition` rows in the reset (parked positions
+  point at contracts that no longer exist after a redeploy) and seeds `ent_acme_us`
+  as the single mmfEligible + mmfOptIn institution.
+- `tests/helpers/deploy.ts`: ENTITIES mirrors the same ACME flags so the fixture has
+  an eligible institution for US-007/US-010.
+- Files changed: prisma/schema.prisma, package.json, scripts/setup.mjs,
+  tests/helpers/deploy.ts, AGENTS.md (setup/schema gotchas).
+- Checks: 100 tests pass, `npx tsc --noEmit` clean, `npm run lint` clean. Also ran
+  `npm run setup` end to end against freshly-started local chains and confirmed in
+  the DB that exactly one entity has mmfEligible/mmfOptIn true and that
+  TreasuryPosition queries — then restored the pre-existing dev.db + deployments.json.
+- **Learnings for future iterations:**
+  - Run `npx prisma format` after editing schema.prisma — it realigns columns, and
+    otherwise the next agent's diff is polluted by the formatter.
+  - `prisma db push` is non-interactive for additive changes (new table, new column
+    with a default), so it is safe inside the `setup` npm script.
+  - US-003 still owes: deploy TokenizedMMF in setup.mjs + the test fixture, record the
+    address in deployments.json, expose it from lib/chain.ts, mint a yield buffer to
+    the MMF address, and have the treasury `approve` the MMF (subscribe uses
+    transferFrom) — see the US-001 learnings above.
+  - TreasuryPosition intentionally has NO entityId (the platform treasury parks; the
+    entity only supplies the opt-in guardrail at the API layer, per US-007). Don't add
+    a relation unless a later story actually needs per-entity positions.
 ---

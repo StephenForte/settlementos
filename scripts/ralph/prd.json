@@ -34,8 +34,8 @@
         "Typecheck passes"
       ],
       "priority": 2,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Done 2026-07-14. schema.prisma (TreasuryPosition + Entity.mmfEligible/mmfOptIn), setup.mjs (wipes positions, marks ent_acme_us eligible+opted-in), tests/helpers/deploy.ts ENTITIES mirrored. No migrations dir in this repo — `npm run setup` now runs `prisma generate && prisma db push` before seeding, so it is what applies a schema change. Verified end to end against fresh local chains; suite still 100 green."
     },
     {
       "id": "US-003",
