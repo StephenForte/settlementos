@@ -62,6 +62,10 @@ Started: Tue Jul 14 07:44:50 PDT 2026
 - Rows that model financial history (TreasuryPosition, AuditEvent) are append-only:
   update status in place (ACTIVE -> RECALLED), never delete. Derive current value
   (shares x live index) instead of storing a mutable balance.
+- MMF accrual is IRREVERSIBLE (the contract's index is monotonic). Any suite that
+  accrues the shared fixture fund leaves it above par forever, so tests must assert
+  invariants (index >= par, shares = value/index, round-trip >= principal) rather than
+  par-equality, and a test file that accrues should do it in its LAST block.
 
 ## 2026-07-14 07:53 - US-001 (TokenizedMMF Solidity contract)
 - Implemented `contracts/TokenizedMMF.sol`: permissioned share fund holding one ERC-20.
@@ -263,4 +267,51 @@ Started: Tue Jul 14 07:44:50 PDT 2026
     file's position rows) is still the right ending for every new treasury test — the
     fixture fund is shared and `tests/integration/mmf.test.ts` asserts it sits at par with
     exactly MMF_YIELD_BUFFER.
+---
+
+## 2026-07-14 08:25 - US-006 (Simulated daily yield accrual)
+- `lib/treasury.ts`: `accrueDaily(networkId, annualRateBps = MMF_ANNUAL_RATE_BPS)` reads the
+  fund's live index, computes one day of yield, advances the contract via
+  `mmfOperatorWrite(networkId, "accrue", [newIndex])`, and audits `TREASURY_ACCRUED`
+  (network, fund, old index, new index, rate in bps, days, tx hash). Rate is a constant —
+  `MMF_ANNUAL_RATE_BPS = 350n` (3.5% APY) — overridable per call.
+- Pure math, exported and unit-tested so it is deterministic and chain-free:
+  `dailyIndex(index, bps) = index + (index * bps) / (10_000n * 365n)` (bigint, floor) and
+  `valueOfShares(shares, index) = shares * index / 1e18`. Floor division means the index
+  can only rise or stay put, which is exactly what the contract's monotonic `accrue`
+  requires. Also `currentIndexOf(networkId)` for the API/UI stories.
+- A position's value stays DERIVED: accrual writes nothing to TreasuryPosition — the row
+  keeps only `shares` + `indexAtEntry`, and value = shares x live index.
+- New `TreasuryErrorCode` `INVALID_RATE` (negative bps); `fundFor(networkId)` factored out
+  of `fundAssetFor` so accrual can resolve the fund without naming an asset (NO_FUND).
+- Tests: `tests/unit/treasury.test.ts` (new, 6 tests — par + 3.5% APY gives exactly
+  1000095890410958904, rate scaling, compounding, dust index cannot decrease, negative rate
+  throws) and 2 in `tests/db/treasury.test.ts` (on-chain park 100k -> accrueDaily -> recall
+  returns principal + ~9.589 mockUSDC of yield paid out of the fund's buffer, position row
+  untouched, TREASURY_ACCRUED on an INTACT audit chain; accrue on base-sepolia -> NO_FUND).
+- `tests/integration/mmf.test.ts`: the fixture-fund wiring assertions were par-equality
+  (`currentIndex == 1e18`, `yieldBuffer == MMF_YIELD_BUFFER`, `shares == PARK`). Once the db
+  suite accrues that fund those are false and file order is not guaranteed, so they now
+  assert invariants: index >= par, 0 < buffer <= MMF_YIELD_BUFFER, totalShares == 0, balance
+  == buffer, shares == PARK * 1e18 / index, and a round-trip within 1 base unit of dust.
+- Files changed: lib/treasury.ts, tests/unit/treasury.test.ts (new), tests/db/treasury.test.ts,
+  tests/integration/mmf.test.ts, AGENTS.md (architecture-map row + "accrual is one-way" gotcha).
+- Checks: 116 tests pass (was 108), `npx tsc --noEmit` clean, `npm run lint` clean. No contract
+  change, so no `npm run compile` and no fixture change were needed.
+- **Learnings for future iterations:**
+  - **Accrual is irreversible and the fixture fund is shared.** Put anything that accrues in
+    the LAST describe of its file, and never assert "at par" against the fixture fund from
+    another file — assert invariants. This bit tests/integration/mmf.test.ts; expect it to bite
+    US-010 too (a park -> accrue -> recall chain test cannot leave the fund as it found it).
+  - Yield is redeemed out of `MMF_YIELD_BUFFER` (50k mockUSDC per chain, minted at deploy).
+    Each accrual+recall drains it a little and it is never topped up during a run. A story that
+    accrues aggressively (many days, or a loop) must raise the buffer in BOTH deploy paths
+    (scripts/setup.mjs and tests/helpers/deploy.ts) or `redeem` reverts on an ERC-20 shortfall.
+  - After an accrual, park/recall no longer round-trips exactly: shares = floor(amount * 1e18 /
+    index) then asset = floor(shares * index / 1e18) can lose a base unit. Assert `>=` principal
+    (or a 1-unit dust band), never `==`.
+  - US-007 (routes) can now map the full typed-error set: NO_FUND, UNSUPPORTED_ASSET,
+    INVALID_AMOUNT, INVALID_RATE, INSUFFICIENT_FREE_BALANCE, NOT_ELIGIBLE, POSITION_NOT_FOUND,
+    POSITION_NOT_ACTIVE. `currentIndexOf()` + `valueOfShares()` are what GET /api/treasury/positions
+    should use for "current value per position" (one index read per network, not per row).
 ---

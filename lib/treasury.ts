@@ -20,6 +20,7 @@ import {
   publicClientFor,
   tokenBalance,
   MMF_ABI,
+  MMF_INDEX_SCALE,
 } from "./chain";
 
 /** Audit actions for treasury/MMF activity (hash-chained like everything else). */
@@ -31,6 +32,7 @@ export type TreasuryErrorCode =
   | "NO_FUND"
   | "UNSUPPORTED_ASSET"
   | "INVALID_AMOUNT"
+  | "INVALID_RATE"
   | "INSUFFICIENT_FREE_BALANCE"
   | "NOT_ELIGIBLE"
   | "POSITION_NOT_FOUND"
@@ -54,12 +56,18 @@ interface FundAsset {
   decimals: number;
 }
 
-/** Resolve the network's fund and check it is actually backed by `assetSymbol`. */
-async function fundAssetFor(networkId: string, assetSymbol: string): Promise<FundAsset> {
+/** The network's fund, or a typed NO_FUND — live testnets legitimately have none. */
+function fundFor(networkId: string): Address {
   const fund = mmfAddress(networkId);
   if (!fund) {
     throw new TreasuryError("NO_FUND", `No tokenized MMF is deployed on ${networkId}`);
   }
+  return fund;
+}
+
+/** Resolve the network's fund and check it is actually backed by `assetSymbol`. */
+async function fundAssetFor(networkId: string, assetSymbol: string): Promise<FundAsset> {
+  const fund = fundFor(networkId);
   if (!(assetSymbol in ASSETS)) {
     throw new TreasuryError("UNSUPPORTED_ASSET", `Unknown settlement asset ${assetSymbol}`);
   }
@@ -280,4 +288,76 @@ export async function recall(positionId: string): Promise<RecallResult> {
   });
 
   return { positionId: position.id, shares, assetAmount, indexAtExit, txHash: tx.hash };
+}
+
+/** Simulated annual yield on parked liquidity: 3.5% APY, in basis points. */
+export const MMF_ANNUAL_RATE_BPS = 350n;
+
+const BPS_SCALE = 10_000n;
+const DAYS_PER_YEAR = 365n;
+
+/**
+ * One day of yield applied to a share index — pure integer math, no wall clock
+ * and no floats. Floor division means the index never moves backwards (the
+ * contract would revert if it did), it just gains nothing on a dust index.
+ */
+export function dailyIndex(currentIndex: bigint, annualRateBps: bigint = MMF_ANNUAL_RATE_BPS): bigint {
+  if (annualRateBps < 0n) {
+    throw new TreasuryError("INVALID_RATE", `Annual rate must be >= 0 bps, got ${annualRateBps}`);
+  }
+  return currentIndex + (currentIndex * annualRateBps) / (BPS_SCALE * DAYS_PER_YEAR);
+}
+
+/**
+ * Asset value of a holding of shares at an index. A position's current value is
+ * always derived this way — it is never stored on the position row, which keeps
+ * only the shares it bought and the index it entered at.
+ */
+export function valueOfShares(shares: bigint, index: bigint): bigint {
+  return (shares * index) / MMF_INDEX_SCALE;
+}
+
+/** Live share index of the network's fund (1e18 = par). */
+export async function currentIndexOf(networkId: string): Promise<bigint> {
+  return publicClientFor(networkId).readContract({
+    address: fundFor(networkId),
+    abi: MMF_ABI,
+    functionName: "currentIndex",
+  });
+}
+
+export interface AccrueResult {
+  network: string;
+  oldIndex: bigint;
+  newIndex: bigint;
+  annualRateBps: bigint;
+  txHash: string;
+}
+
+/**
+ * Advance the network's fund by one day of simulated yield. Every ACTIVE
+ * position gains value implicitly — the index rises, so the same shares redeem
+ * for more asset (paid out of the fund's yield buffer, see AGENTS.md).
+ */
+export async function accrueDaily(
+  networkId: string,
+  annualRateBps: bigint = MMF_ANNUAL_RATE_BPS
+): Promise<AccrueResult> {
+  const fund = fundFor(networkId);
+  const oldIndex = await currentIndexOf(networkId);
+  const newIndex = dailyIndex(oldIndex, annualRateBps);
+
+  const tx = await mmfOperatorWrite(networkId, "accrue", [newIndex]);
+
+  await audit(TREASURY_ACCRUED, {
+    network: networkId,
+    fund,
+    oldIndex: oldIndex.toString(),
+    newIndex: newIndex.toString(),
+    annualRateBps: annualRateBps.toString(),
+    days: 1,
+    txHash: tx.hash,
+  });
+
+  return { network: networkId, oldIndex, newIndex, annualRateBps, txHash: tx.hash };
 }

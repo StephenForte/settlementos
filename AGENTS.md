@@ -55,7 +55,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/compliance.ts](lib/compliance.ts) | Compliance gate (KYB, sanctions, wallet/tx/corridor risk) → PASS/FAIL/MANUAL_REVIEW. Sanctions + wallet screening dispatch to real providers when env config is set (`OPENSANCTIONS_API_KEY`, `CHAINALYSIS_ORACLE_RPC_URL`), mocks otherwise |
 | `lib/providers/` | Real vendor adapters: OpenSanctions (sanctions match API), Chainalysis sanctions oracle (keyless on-chain `isSanctioned()` read for wallet screening). **Fail-safe: any provider error/timeout → MANUAL_REVIEW, never fail-open.** Verbatim provider evidence persisted on `ComplianceCheck.rawResponse` |
 | [lib/audit.ts](lib/audit.ts) | Append-only hash-chained audit log + chain verifier |
-| [lib/treasury.ts](lib/treasury.ts) | Tokenized-MMF treasury ops: `park()` (subscribe unreserved liquidity into the fund), `recall()` (T+0 redeem of a position, principal + accrued yield back to the treasury), `freeTreasuryBalance()` (bigint balance − RESERVED rows), `TreasuryError` (typed codes for route handlers), `TREASURY_*` audit actions |
+| [lib/treasury.ts](lib/treasury.ts) | Tokenized-MMF treasury ops: `park()` (subscribe unreserved liquidity into the fund), `recall()` (T+0 redeem of a position, principal + accrued yield back to the treasury), `accrueDaily()` (advance the fund index by one day at `MMF_ANNUAL_RATE_BPS`, default 3.5% APY; `dailyIndex()`/`valueOfShares()` are the pure bigint math), `freeTreasuryBalance()` (bigint balance − RESERVED rows), `TreasuryError` (typed codes for route handlers), `TREASURY_*` audit actions |
 | [lib/assets.ts](lib/assets.ts) | Asset metadata, currency↔token mapping, base-unit conversion |
 | [scripts/setup.mjs](scripts/setup.mjs) | Local deploy (tokens, escrow, TokenizedMMF + its yield buffer and treasury approval) + DB seed (dev-mnemonic accounts, local only) |
 | [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy via argv): env deployer key, per-network gas-dust targets, generated dust wallets, DB registration |
@@ -118,6 +118,12 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   fixture each mint a 50,000 mockUSDC buffer and have the **treasury approve the fund**
   (`subscribe` pulls via `transferFrom`); a new deploy target must do both or parking
   reverts.
+- **Accrual is one-way.** `accrueDaily()` raises the share index, and the contract
+  reverts on any decrease — there is no "un-accrue". So an accrued fund is accrued for
+  good: after one, a park→recall round-trip returns *more* than the principal (assert
+  `>=`, not `==`), floor division can shave a base unit of dust off a re-subscribed
+  position, and tests sharing the fixture fund must assert index/share invariants rather
+  than par.
 - The MMF is deployed **per network** and only on the local chains today. Resolve it
   with `mmfAddress(networkId)` from `lib/chain.ts`, which returns `undefined` (never
   throws) where no fund exists — real testnets included. Treat "no MMF here" as a

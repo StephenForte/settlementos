@@ -2,8 +2,9 @@
 // test node, plus the deployment wiring the treasury module reads (lib/chain).
 //
 // The behavior tests deploy a throwaway MMF so their index/share assertions cannot be
-// disturbed by other suites; the wiring tests use the fixture's deployed fund and
-// leave it at par with no shares outstanding.
+// disturbed by other suites; the wiring tests use the fixture's deployed fund, whose
+// index other suites may have accrued (irreversibly — it is monotonic), so they assert
+// its invariants rather than par and leave no shares outstanding.
 
 import { describe, it, expect, beforeAll } from "vitest";
 import type { Address, Abi } from "viem";
@@ -168,43 +169,55 @@ describe("TokenizedMMF deployment wiring", () => {
     expect(mmfAddress("not-a-network")).toBeUndefined();
   });
 
-  it("is backed by the network's mockUSDC, at par, with a funded yield buffer", async () => {
+  it("is backed by the network's mockUSDC, with a funded yield buffer and no stale shares", async () => {
     for (const networkId of ["base-local", "polygon-local"]) {
       const fund = mmfAddress(networkId)!;
       const usdcOnNet = networkContracts(networkId).tokens.mockUSDC.address;
       const client = publicClientFor(networkId);
-      const call = (functionName: "asset" | "currentIndex" | "yieldBuffer") =>
+      const call = (functionName: "asset" | "currentIndex" | "yieldBuffer" | "totalShares") =>
         client.readContract({ address: fund, abi: MMF_ABI, functionName }) as Promise<unknown>;
 
       expect(String(await call("asset")).toLowerCase()).toBe(usdcOnNet.toLowerCase());
-      expect(await call("currentIndex")).toBe(MMF_INDEX_SCALE);
-      expect(await call("yieldBuffer")).toBe(MMF_YIELD_BUFFER);
-      expect(await tokenBalance(networkId, usdcOnNet, fund)).toBe(MMF_YIELD_BUFFER);
+      // The fixture fund is shared and its index is monotonic: a suite that accrued
+      // it (tests/db/treasury) leaves it above par for good, and redeeming that yield
+      // draws the buffer down. Both are one-way, so assert the invariants, not par.
+      expect(await call("currentIndex")).toBeGreaterThanOrEqual(MMF_INDEX_SCALE);
+      const buffer = (await call("yieldBuffer")) as bigint;
+      expect(buffer).toBeGreaterThan(0n);
+      expect(buffer).toBeLessThanOrEqual(MMF_YIELD_BUFFER);
+      // Every suite unwinds its positions, so the buffer is the fund's whole balance.
+      expect(await call("totalShares")).toBe(0n);
+      expect(await tokenBalance(networkId, usdcOnNet, fund)).toBe(buffer);
     }
   });
 
   it("accepts a subscribe from the treasury — the fixture's approval is in place", async () => {
     const fund = mmfAddress("base-local")!;
     const usdcOnNet = networkContracts("base-local").tokens.mockUSDC.address;
+    const client = publicClientFor("base-local");
     const treasuryBefore = await tokenBalance("base-local", usdcOnNet, ACCOUNTS.treasury.address);
+    const index = await client.readContract({ address: fund, abi: MMF_ABI, functionName: "currentIndex" });
 
     await send(ACCOUNTS.operator.privateKey, fund, MMF_ABI as unknown as Abi, "subscribe", [
       ACCOUNTS.treasury.address,
       PARK,
     ]);
-    const shares = (await clients.publicClient.readContract({
+    const shares = await client.readContract({
       address: fund,
       abi: MMF_ABI,
       functionName: "sharesOf",
       args: [ACCOUNTS.treasury.address],
-    })) as bigint;
-    expect(shares).toBe(PARK); // at par, 1 share per asset base unit
+    });
+    expect(shares).toBe((PARK * MMF_INDEX_SCALE) / index); // 1:1 at par, fewer shares once accrued
 
-    // Leave the shared fixture fund as we found it: par, no shares outstanding.
+    // Leave the shared fixture fund with no shares outstanding.
     await send(ACCOUNTS.operator.privateKey, fund, MMF_ABI as unknown as Abi, "redeem", [
       ACCOUNTS.treasury.address,
       shares,
     ]);
-    expect(await tokenBalance("base-local", usdcOnNet, ACCOUNTS.treasury.address)).toBe(treasuryBefore);
+    // Round-tripping through floor division can shave sub-unit dust off the principal.
+    const treasuryAfter = await tokenBalance("base-local", usdcOnNet, ACCOUNTS.treasury.address);
+    expect(treasuryAfter).toBeLessThanOrEqual(treasuryBefore);
+    expect(treasuryAfter).toBeGreaterThanOrEqual(treasuryBefore - 1n);
   });
 });

@@ -18,10 +18,16 @@ import {
 } from "@/lib/chain";
 import { availableLiquidity } from "@/lib/routing";
 import {
+  accrueDaily,
+  currentIndexOf,
+  dailyIndex,
   freeTreasuryBalance,
   park,
   recall,
+  valueOfShares,
   TreasuryError,
+  MMF_ANNUAL_RATE_BPS,
+  TREASURY_ACCRUED,
   TREASURY_PARKED,
   TREASURY_RECALLED,
 } from "@/lib/treasury";
@@ -231,5 +237,75 @@ describe("treasury recall", () => {
     expect(position.status).toBe("RECALLED");
 
     await unwind();
+  });
+});
+
+// Accrual is irreversible (the contract's index is monotonic), so this block runs
+// last in the file: everything above assumes the shared fixture fund is still at par.
+describe("treasury accrual", () => {
+  it("accrues a day of simulated yield, so recalling returns more than the principal", async () => {
+    const usdc = networkContracts(NETWORK).tokens.mockUSDC.address;
+    const fund = mmfAddress(NETWORK)!;
+
+    const parked = await park({ networkId: NETWORK, asset: "mockUSDC", amount: "100000.00" });
+    const treasuryAfterPark = await tokenBalance(NETWORK, usdc, treasuryAddress());
+    const fundAfterPark = await tokenBalance(NETWORK, usdc, fund);
+
+    const accrual = await accrueDaily(NETWORK);
+    expect(accrual.annualRateBps).toBe(MMF_ANNUAL_RATE_BPS);
+    expect(accrual.oldIndex).toBe(parked.indexAtEntry);
+    expect(accrual.newIndex).toBe(dailyIndex(parked.indexAtEntry));
+    expect(accrual.newIndex).toBeGreaterThan(accrual.oldIndex);
+    expect(await currentIndexOf(NETWORK)).toBe(accrual.newIndex);
+
+    // The position row is untouched by accrual — its value is derived, not stored.
+    const row = await prisma.treasuryPosition.findUniqueOrThrow({ where: { id: parked.positionId } });
+    expect(row.assetAmountIn).toBe(parked.assetAmount.toString());
+    expect(row.indexAtEntry).toBe(parked.indexAtEntry.toString());
+    const derived = valueOfShares(BigInt(row.shares), accrual.newIndex);
+    expect(derived).toBeGreaterThan(parked.assetAmount);
+
+    const event = await prisma.auditEvent.findFirst({
+      where: { action: TREASURY_ACCRUED },
+      orderBy: { id: "desc" },
+    });
+    expect(event).not.toBeNull();
+    expect(JSON.parse(event!.detail)).toMatchObject({
+      network: NETWORK,
+      oldIndex: accrual.oldIndex.toString(),
+      newIndex: accrual.newIndex.toString(),
+      annualRateBps: "350",
+      txHash: accrual.txHash,
+    });
+
+    // Recall pays principal + yield: the extra asset comes out of the fund's buffer.
+    const result = await recall(parked.positionId);
+    expect(result.indexAtExit).toBe(accrual.newIndex);
+    expect(result.assetAmount).toBe(derived);
+    expect(result.assetAmount).toBeGreaterThan(parked.assetAmount);
+
+    const yielded = result.assetAmount - parked.assetAmount;
+    expect(await tokenBalance(NETWORK, usdc, treasuryAddress())).toBe(treasuryAfterPark + result.assetAmount);
+    expect(await tokenBalance(NETWORK, usdc, fund)).toBe(fundAfterPark - result.assetAmount);
+    expect(await sharesHeld()).toBe(0n);
+
+    const recalledEvent = await prisma.auditEvent.findFirst({
+      where: { action: TREASURY_RECALLED },
+      orderBy: { id: "desc" },
+    });
+    expect(JSON.parse(recalledEvent!.detail)).toMatchObject({
+      positionId: parked.positionId,
+      principal: "100000",
+      yield: fromBaseUnits(yielded, USDC_DECIMALS),
+      indexAtExit: accrual.newIndex.toString(),
+    });
+    await expect(verifyAuditChain()).resolves.toEqual({ valid: true });
+
+    await unwind();
+  });
+
+  it("refuses to accrue on a network with no fund", async () => {
+    await expect(accrueDaily("base-sepolia")).rejects.toThrow(TreasuryError);
+    await expect(accrueDaily("base-sepolia")).rejects.toMatchObject({ code: "NO_FUND" });
   });
 });

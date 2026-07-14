@@ -100,8 +100,8 @@
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Done 2026-07-14. lib/treasury.ts gains accrueDaily(networkId, annualRateBps = MMF_ANNUAL_RATE_BPS) — reads the live index, computes one day of yield with pure bigint math (dailyIndex: index + index*bps/(10_000*365), floor-rounded so the index can never decrease), calls accrue() via mmfOperatorWrite, and audits TREASURY_ACCRUED (old/new index, rate, days, fund, tx hash). Also exports valueOfShares(shares, index) and currentIndexOf(networkId): a position's value is always derived, never stored. New TreasuryErrorCode INVALID_RATE. tests/unit/treasury.test.ts (6 deterministic index-math tests) + 2 db tests (park -> accrue -> recall pays principal + yield out of the buffer, audit chain INTACT; accrue on a fund-less network throws NO_FUND). Suite 108 -> 116. NOTE: accrual is irreversible (monotonic index), so the shared fixture fund is above par once the db suite runs — tests/integration/mmf.test.ts wiring assertions were loosened from par-equality to invariants."
     },
     {
       "id": "US-007",
