@@ -59,7 +59,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [scripts/setup.mjs](scripts/setup.mjs) | Local deploy + DB seed (dev-mnemonic accounts, local only) |
 | [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy via argv): env deployer key, per-network gas-dust targets, generated dust wallets, DB registration |
 | `app/api/*` | REST route handlers (thin; logic lives in lib/) |
-| `contracts/` | Solidity 0.8.24: `MockERC20` (permissionless mint, by design), `PaymentSettlement` escrow |
+| `contracts/` | Solidity 0.8.24: `MockERC20` (permissionless mint, by design), `PaymentSettlement` escrow, `TokenizedMMF` (operator-gated share fund for parked treasury liquidity; monotonic index, no cross-calls with escrow) |
 | `tests/` | Vitest suite: `unit/` (pure), `db/` (compliance, audit chain), `integration/` (executor E2E, contract, API). Fixture bootstrap in `global-setup.ts` + `helpers/` |
 
 ## Invariants — do not break these
@@ -90,10 +90,22 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   Mocks stay the default when no provider env keys are set, so demos work
   offline; real-provider results must persist the verbatim vendor response on
   `ComplianceCheck.rawResponse` (audit evidence).
+- **MMF segregation**: parked treasury funds live in `TokenizedMMF` and never pass
+  through `PaymentSettlement` — the two contracts make no cross-calls and hold
+  separate asset balances. The share index is monotonic (`accrue` reverts on any
+  decrease), so a parked position can never lose value.
 - **API shape**: JSON request/response fields are `snake_case`; Prisma models are
   `camelCase`. Keep route handlers thin.
 
 ## Gotchas
+
+- Advancing the MMF index does **not** add asset to the fund: simulated yield is
+  paid out of a buffer that must be funded separately (mint mock asset to the MMF
+  address). An underfunded buffer makes `redeem` revert rather than shortchange a
+  redeemer — fund it wherever the MMF is deployed.
+- Addresses read back from a contract are EIP-55 checksummed, but
+  `chain/deployments*.json` stores them lowercase. Lowercase both sides before
+  comparing, or the assertion fails on case alone.
 
 - `npm run setup` **wipes the database** (payments, audit log, entities) and
   redeploys the local chains. Real-testnet contracts/wallets survive; their entity

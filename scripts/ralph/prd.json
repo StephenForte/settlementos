@@ -1,0 +1,175 @@
+{
+  "project": "SettlementOS",
+  "branchName": "ralph/phase-8-tokenized-mmf",
+  "description": "Phase 8: Tokenized MMF / overnight liquidity parking (JLTXX-inspired, PRD.md §24). Institutions park idle settlement-treasury balances in a simulated tokenized money-market fund (mockJLT), accrue daily yield, and recall T+0 when a payment needs the liquidity. Guardrails: institutional-only eligibility, explicit per-entity opt-in, park/recall events on the hash-chained audit log, strict segregation from payment escrow. Testnet-only, fully simulated yield, no real securities.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "TokenizedMMF Solidity contract",
+      "description": "As a developer, I need a permissioned tokenized-MMF contract so idle stablecoin can be parked into share tokens and redeemed, with operator-controlled daily index accrual.",
+      "acceptanceCriteria": [
+        "New contracts/TokenizedMMF.sol (Solidity 0.8.24): holds one approved ERC-20 asset, operator-only subscribe(address onBehalfOf, uint256 assetAmount) pulls the asset and mints shares at the current index, operator-only redeem(address onBehalfOf, uint256 shares) burns shares and returns the asset at the current index",
+        "Operator-only accrue(uint256 newIndex) with require(newIndex >= currentIndex) — index is monotonic, starts at 1e18",
+        "Events emitted: Subscribed(account, assetAmount, shares), Redeemed(account, shares, assetAmount), Accrued(oldIndex, newIndex)",
+        "Non-operator calls to subscribe/redeem/accrue revert",
+        "Funds held by TokenizedMMF are never routed through or held by PaymentSettlement (separate contract, no cross-calls)",
+        "npm run compile succeeds",
+        "Contract behavior tests added under tests/integration/ (subscribe/redeem round-trip at index 1e18, redeem after accrual returns more asset, operator restriction reverts)",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Done 2026-07-14. contracts/TokenizedMMF.sol + tests/integration/mmf.test.ts (7 tests). Suite 93 -> 100 green. Yield is paid from a buffer that must be funded (mint mock asset to the MMF address) and the parking account must approve the fund before subscribe — both need wiring into setup.mjs and the test fixture in US-003."
+    },
+    {
+      "id": "US-002",
+      "title": "TreasuryPosition table and entity MMF eligibility flags",
+      "description": "As a developer, I need to persist parked MMF positions and per-entity opt-in state so guardrails and the treasury view have a source of truth.",
+      "acceptanceCriteria": [
+        "prisma/schema.prisma gains a TreasuryPosition model: id, network (string network id), asset (string symbol), shares (string, base units), assetAmountIn (string, base units), indexAtEntry (string), status ('ACTIVE' | 'RECALLED', default 'ACTIVE'), txHashPark, txHashRecall (nullable), createdAt, recalledAt (nullable)",
+        "Entity model gains mmfEligible (Boolean, default false) and mmfOptIn (Boolean, default false)",
+        "Prisma client regenerates and the schema applies cleanly: npm run setup completes without error",
+        "Seed in scripts/setup.mjs marks exactly one seeded entity as mmfEligible=true and mmfOptIn=true so the demo has an eligible institution",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Deploy TokenizedMMF locally and wire it into lib/chain.ts",
+      "description": "As a developer, I need the MMF contract deployed to both local chains and addressable from the app so treasury logic can call it per network.",
+      "acceptanceCriteria": [
+        "scripts/setup.mjs deploys TokenizedMMF (backed by the local mockUSDC) on both local chains and records the address in chain/deployments.json under each network entry",
+        "lib/chain.ts exposes the TokenizedMMF ABI and an address lookup per network id, following the existing pattern used for PaymentSettlement; networks without an MMF deployment resolve to undefined without throwing",
+        "Test fixture deploys TokenizedMMF too (tests/global-setup.ts or helpers), so integration tests can use it",
+        "npm run setup completes; app still boots (npm run dev serves /api/networks)",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Park: sweep idle treasury balance into the MMF",
+      "description": "As a treasury manager, I want to park idle treasury stablecoin into the tokenized MMF so it earns simulated overnight yield.",
+      "acceptanceCriteria": [
+        "New lib/treasury.ts with park({ networkId, asset, amount }): converts the decimal-string amount via toBaseUnits (bigint end to end, no JS floats), approves and calls subscribe via operatorWrite, creates an ACTIVE TreasuryPosition with the park tx hash",
+        "Park refuses (throws a typed error) when the amount exceeds unreserved treasury balance — reserved liquidity for pending payments can never be parked",
+        "Park writes an audit event (audit(...) from lib/audit.ts) with type TREASURY_PARKED including network, asset, amount, and tx hash",
+        "DB test: parking reduces available treasury liquidity reported by the existing liquidity logic and creates the position row",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Recall: T+0 redemption back to the settlement asset",
+      "description": "As a treasury manager, I want to recall a parked position instantly so liquidity is available when a payment needs it.",
+      "acceptanceCriteria": [
+        "lib/treasury.ts gains recall(positionId): redeems the position's shares at the current index via operatorWrite, marks the position RECALLED with recalledAt and the recall tx hash",
+        "Redeemed asset (principal plus any accrued yield) returns to the treasury wallet and is reflected in available liquidity",
+        "Recall writes an audit event TREASURY_RECALLED with position id, shares, asset amount returned, and tx hash",
+        "Recalling a non-ACTIVE position throws; the position row is never deleted (append-only history)",
+        "Integration test: park then recall round-trips the principal at unchanged index",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Simulated daily yield accrual",
+      "description": "As a treasury manager, I want parked balances to accrue realistic daily yield so the demo shows the value of overnight parking.",
+      "acceptanceCriteria": [
+        "lib/treasury.ts gains accrueDaily(networkId): computes one day of yield at a configurable annual rate (constant, default 3.5% APY) using integer/bigint index math and calls accrue(newIndex) on the contract",
+        "Position current value is derived (shares x currentIndex), never stored mutably on the position row",
+        "Accrual writes an audit event TREASURY_ACCRUED with old index, new index, and rate",
+        "Unit test: known index and rate produce the expected new index (deterministic, no wall-clock dependence)",
+        "Integration test: park, accrue once, recall returns more than parked principal",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Treasury API routes: park, recall, positions, accrue",
+      "description": "As a developer at a fintech partner, I want API endpoints for the MMF module so parking can be driven programmatically.",
+      "acceptanceCriteria": [
+        "POST /api/treasury/park body { network, asset, amount, entity_id } -> 200 with { position_id, status, tx_hash }; POST /api/treasury/recall body { position_id } -> 200 with { position_id, status, tx_hash }; GET /api/treasury/positions -> list with current value per position; POST /api/treasury/accrue body { network } -> 200 with { old_index, new_index }",
+        "All request/response JSON fields are snake_case; route handlers stay thin and delegate to lib/treasury.ts",
+        "Park returns 403-style error JSON when the entity is not mmfEligible or not mmfOptIn (guardrail enforced server-side)",
+        "Invalid bodies (missing fields, non-decimal amount, unknown network) return 400 with an error message, matching existing route validation patterns",
+        "API validation tests added following the existing tests/integration API route pattern",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Route engine treats parked liquidity as available-with-recall-delay",
+      "description": "As a payment operator, I want quotes to count parked liquidity so a payment can proceed by auto-recalling from the MMF.",
+      "acceptanceCriteria": [
+        "lib/routing.ts liquidity check: when free treasury balance is insufficient but free-plus-parked covers the amount, the quote is still offered and flags recall_required: true (snake_case in API responses)",
+        "lib/executor.ts: when executing a payment whose route requires recall, it recalls the needed position(s) via lib/treasury.ts before reserving liquidity and escrowing; recall failure fails the payment through the existing legal state transitions with liquidity released",
+        "Auto-recall produces the same TREASURY_RECALLED audit event plus a payment-linked audit event referencing the payment id",
+        "Existing quotes with sufficient free liquidity are unchanged (recall_required false or absent)",
+        "Integration test: park most of the treasury, create a payment exceeding free balance, execute, and assert auto-recall then settlement succeeds end to end",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Treasury parking UI on the Liquidity page",
+      "description": "As a treasury manager, I want to see and manage the MMF position from the dashboard so parking is demoable end to end.",
+      "acceptanceCriteria": [
+        "Liquidity page shows a Tokenized MMF card per network with an MMF deployment: parked value, shares, current index, accrued yield since entry, and position status",
+        "Park form (asset amount) and Recall button call the new API routes and refresh the view without a full page reload",
+        "Card visibly labels the product: 'Simulated yield — testnet only' and 'Institutional only'; park controls are disabled when the demo entity is not eligible/opted-in",
+        "Accrue button (demo control) triggers POST /api/treasury/accrue and the displayed value updates",
+        "Networks without an MMF deployment (e.g. real testnets before deploy) show no card or a 'not deployed' placeholder — the page never 500s (public-RPC resilience pattern)",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "End-to-end guardrail and segregation tests",
+      "description": "As a compliance reviewer, I need proof that parked funds stay segregated and every treasury action is on the audit chain.",
+      "acceptanceCriteria": [
+        "DB test: full park -> accrue -> recall flow leaves the audit chain INTACT per the existing audit-chain verifier, with TREASURY_PARKED, TREASURY_ACCRUED, TREASURY_RECALLED events present in order",
+        "Test: park attempt for an entity with mmfOptIn=false is rejected at the lib layer and via the API, and produces no position row",
+        "Test: parked funds are held by the TokenizedMMF contract address, and the PaymentSettlement escrow balance is unchanged by park/recall (segregation assertion via on-chain balanceOf)",
+        "Test: reserved (in-flight payment) liquidity cannot be parked",
+        "Full suite green: npm test passes with no skipped treasury tests",
+        "npx tsc --noEmit and npm run lint pass",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

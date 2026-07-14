@@ -1,0 +1,58 @@
+# Ralph Progress Log
+Started: Tue Jul 14 07:44:50 PDT 2026
+---
+
+## Codebase Patterns
+- Read AGENTS.md first — it is the engineering guide (architecture map, invariants,
+  gotchas) and CLAUDE.md just points at it. Add durable learnings there, not to a new
+  CLAUDE.md.
+- Quality gate for every commit: `npm test` (self-contained: compiles contracts, boots
+  Hardhat on ports 9545/9546, builds a fresh SQLite fixture under tests/.tmp — never
+  touches dev chains or the dev DB), then `npx tsc --noEmit`, then `npm run lint`.
+- Run `npm run compile` after ANY contract change — tests read artifacts from
+  `chain/artifacts/` (gitignored) and will use stale bytecode otherwise.
+- Contract tests: `tests/integration/*.test.ts`, driven with viem via
+  `helpers/deploy.ts` (`clientsFor(rpc, chainId)` + `artifact(name)`), fixture accounts
+  from `tests/fixture.ts` ACCOUNTS. Assert reverts with
+  `await expect(...).rejects.toThrow(/require message/)`.
+- A test can deploy its own contract instance against the fixture chain (see the rogue
+  token in contract.test.ts) — no need to wire something into global-setup just to test it.
+- Addresses read from a contract are EIP-55 checksummed; deployments.json stores them
+  lowercase. Lowercase both sides before comparing.
+- Money: fiat = decimal strings, on-chain = bigint base units. Never a JS float on-chain.
+- Solidity contracts follow one house style: `admin` + `operators` mapping,
+  `onlyAdmin`/`onlyOperator` modifiers, constructor makes the deployer both, short
+  lowercase revert strings ("not operator").
+
+## 2026-07-14 07:53 - US-001 (TokenizedMMF Solidity contract)
+- Implemented `contracts/TokenizedMMF.sol`: permissioned share fund holding one ERC-20.
+  Operator-only `subscribe(onBehalfOf, assetAmount)` pulls the asset (account must have
+  approved the fund) and mints shares at the live index; operator-only
+  `redeem(onBehalfOf, shares)` burns and returns asset; operator-only `accrue(newIndex)`
+  with `require(newIndex >= currentIndex)`. Index starts at 1e18 (INDEX_SCALE = par).
+  Events: Subscribed / Redeemed / Accrued. Views: `assetValueOf(account)`,
+  `yieldBuffer()`. No imports of or calls to PaymentSettlement — segregation by design.
+- Added `tests/integration/mmf.test.ts` (7 tests): par round-trip, redeem-after-accrual
+  pays more, monotonic index reverts on decrease, non-operator reverts on all three
+  mutators, over-redemption reverts, and an escrow-segregation balance assertion.
+- Files changed: contracts/TokenizedMMF.sol (new), tests/integration/mmf.test.ts (new),
+  AGENTS.md (architecture map row, MMF segregation invariant, two gotchas).
+- Checks: 100 tests pass (was 93), `npx tsc --noEmit` clean, `npm run lint` clean.
+- **Learnings for future iterations:**
+  - Branching: PRD says branch from main, but main was 1 commit BEHIND the phase-7 tip
+    (Phase 7 is unmerged). Branched `ralph/phase-8-tokenized-mmf` from phase-7-polygon-amoy
+    instead so the Amoy work isn't dropped. Phase 8 sits on top of Phase 7.
+  - **Yield needs funding.** Advancing the index raises redemption value without adding any
+    asset to the contract, so redeeming accrued yield draws on a buffer. Mint mock asset to
+    the MMF address wherever it is deployed (US-003 setup.mjs + test fixture) or redeem will
+    revert with "ERC20: insufficient balance" the moment anyone redeems above par.
+  - The parking account (treasury) must `approve` the MMF for the asset before `subscribe`
+    — the fund pulls via transferFrom. Wire this into setup.mjs/the fixture in US-003.
+  - MockERC20.mint is permissionless by design, which is how the yield buffer gets funded
+    on testnet.
+  - Share math is floor division both ways: shares = amount * 1e18 / index,
+    asset = shares * index / 1e18. At par they are 1:1, so tests that assume
+    shares == base units only hold BEFORE the first accrual — order matters within a file.
+  - Left for US-003: the contract is not in `chain/deployments.json`, `lib/chain.ts`, or the
+    test fixture yet — mmf.test.ts deploys its own instance in beforeAll.
+---
