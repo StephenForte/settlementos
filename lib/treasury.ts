@@ -32,7 +32,9 @@ export type TreasuryErrorCode =
   | "UNSUPPORTED_ASSET"
   | "INVALID_AMOUNT"
   | "INSUFFICIENT_FREE_BALANCE"
-  | "NOT_ELIGIBLE";
+  | "NOT_ELIGIBLE"
+  | "POSITION_NOT_FOUND"
+  | "POSITION_NOT_ACTIVE";
 
 /** Typed failure so route handlers can map a cause to an HTTP status. */
 export class TreasuryError extends Error {
@@ -212,4 +214,70 @@ export async function park({ networkId, asset, amount, entityId }: ParkArgs): Pr
   });
 
   return { positionId: position.id, shares, assetAmount, indexAtEntry, txHash: tx.hash };
+}
+
+export interface RecallResult {
+  positionId: string;
+  shares: bigint;
+  /** Asset returned to the treasury: principal plus any yield accrued since entry. */
+  assetAmount: bigint;
+  indexAtExit: bigint;
+  txHash: string;
+}
+
+/**
+ * Recall a parked position T+0: redeem its shares at the live index, returning
+ * principal plus accrued yield to the treasury wallet, and mark the position
+ * RECALLED. Positions are append-only history — the row is never deleted.
+ */
+export async function recall(positionId: string): Promise<RecallResult> {
+  const position = await prisma.treasuryPosition.findUnique({ where: { id: positionId } });
+  if (!position) {
+    throw new TreasuryError("POSITION_NOT_FOUND", `No treasury position ${positionId}`);
+  }
+  if (position.status !== "ACTIVE") {
+    throw new TreasuryError(
+      "POSITION_NOT_ACTIVE",
+      `Position ${positionId} is ${position.status} and cannot be recalled again`
+    );
+  }
+
+  const { fund, symbol, token, decimals } = await fundAssetFor(position.network, position.asset);
+  const shares = BigInt(position.shares);
+  const treasury = accountsFor(position.network).treasury.address;
+
+  const indexAtExit = await publicClientFor(position.network).readContract({
+    address: fund,
+    abi: MMF_ABI,
+    functionName: "currentIndex",
+  });
+  // redeem() returns the asset paid out, but a write only yields a receipt — the
+  // treasury's balance delta is the same number.
+  const balanceBefore = await tokenBalance(position.network, token, treasury);
+  const tx = await mmfOperatorWrite(position.network, "redeem", [treasury, shares]);
+  const assetAmount = (await tokenBalance(position.network, token, treasury)) - balanceBefore;
+
+  const recalled = await prisma.treasuryPosition.update({
+    where: { id: position.id },
+    data: { status: "RECALLED", recalledAt: new Date(), txHashRecall: tx.hash },
+  });
+
+  const assetAmountIn = BigInt(position.assetAmountIn);
+  await audit(TREASURY_RECALLED, {
+    positionId: position.id,
+    network: position.network,
+    asset: symbol,
+    shares: shares.toString(),
+    amount: fromBaseUnits(assetAmount, decimals),
+    assetAmountUnits: assetAmount.toString(),
+    principal: fromBaseUnits(assetAmountIn, decimals),
+    yield: fromBaseUnits(assetAmount > assetAmountIn ? assetAmount - assetAmountIn : 0n, decimals),
+    indexAtEntry: position.indexAtEntry,
+    indexAtExit: indexAtExit.toString(),
+    fund,
+    txHash: tx.hash,
+    recalledAt: recalled.recalledAt?.toISOString(),
+  });
+
+  return { positionId: position.id, shares, assetAmount, indexAtExit, txHash: tx.hash };
 }

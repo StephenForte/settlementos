@@ -55,7 +55,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/compliance.ts](lib/compliance.ts) | Compliance gate (KYB, sanctions, wallet/tx/corridor risk) → PASS/FAIL/MANUAL_REVIEW. Sanctions + wallet screening dispatch to real providers when env config is set (`OPENSANCTIONS_API_KEY`, `CHAINALYSIS_ORACLE_RPC_URL`), mocks otherwise |
 | `lib/providers/` | Real vendor adapters: OpenSanctions (sanctions match API), Chainalysis sanctions oracle (keyless on-chain `isSanctioned()` read for wallet screening). **Fail-safe: any provider error/timeout → MANUAL_REVIEW, never fail-open.** Verbatim provider evidence persisted on `ComplianceCheck.rawResponse` |
 | [lib/audit.ts](lib/audit.ts) | Append-only hash-chained audit log + chain verifier |
-| [lib/treasury.ts](lib/treasury.ts) | Tokenized-MMF treasury ops: `park()` (subscribe unreserved liquidity into the fund), `freeTreasuryBalance()` (bigint balance − RESERVED rows), `TreasuryError` (typed codes for route handlers), `TREASURY_*` audit actions |
+| [lib/treasury.ts](lib/treasury.ts) | Tokenized-MMF treasury ops: `park()` (subscribe unreserved liquidity into the fund), `recall()` (T+0 redeem of a position, principal + accrued yield back to the treasury), `freeTreasuryBalance()` (bigint balance − RESERVED rows), `TreasuryError` (typed codes for route handlers), `TREASURY_*` audit actions |
 | [lib/assets.ts](lib/assets.ts) | Asset metadata, currency↔token mapping, base-unit conversion |
 | [scripts/setup.mjs](scripts/setup.mjs) | Local deploy (tokens, escrow, TokenizedMMF + its yield buffer and treasury approval) + DB seed (dev-mnemonic accounts, local only) |
 | [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy via argv): env deployer key, per-network gas-dust targets, generated dust wallets, DB registration |
@@ -100,6 +100,10 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 - **Reserved liquidity is untouchable**: only the treasury balance minus RESERVED
   `LiquidityReservation` rows (`freeTreasuryBalance()`) may be parked in the MMF —
   liquidity promised to an in-flight payment can never be swept into the fund.
+- **Positions are append-only history**: `recall()` flips a `TreasuryPosition` to
+  RECALLED in place (status + `recalledAt` + `txHashRecall`); rows are never deleted,
+  and a position's current value is always *derived* (`shares × live index`), never
+  stored mutably on the row.
 
 ## Gotchas
 

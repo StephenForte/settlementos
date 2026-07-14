@@ -17,7 +17,14 @@ import {
   MMF_ABI,
 } from "@/lib/chain";
 import { availableLiquidity } from "@/lib/routing";
-import { freeTreasuryBalance, park, TreasuryError, TREASURY_PARKED } from "@/lib/treasury";
+import {
+  freeTreasuryBalance,
+  park,
+  recall,
+  TreasuryError,
+  TREASURY_PARKED,
+  TREASURY_RECALLED,
+} from "@/lib/treasury";
 import { createDraftPayment } from "../helpers/payments";
 
 const NETWORK = "base-local";
@@ -143,5 +150,86 @@ describe("treasury parking", () => {
     ).rejects.toMatchObject({ code: "NO_FUND" });
 
     expect(await prisma.treasuryPosition.count()).toBe(0);
+  });
+});
+
+describe("treasury recall", () => {
+  it("redeems a parked position T+0, returning the principal at an unchanged index", async () => {
+    const usdc = networkContracts(NETWORK).tokens.mockUSDC.address;
+    const fund = mmfAddress(NETWORK)!;
+    const treasuryBefore = await tokenBalance(NETWORK, usdc, treasuryAddress());
+    const liquidityBefore = await availableLiquidity("mockUSDC", NETWORK);
+
+    const parked = await park({ networkId: NETWORK, asset: "mockUSDC", amount: "25000.00" });
+    const fundAfterPark = await tokenBalance(NETWORK, usdc, fund);
+
+    const result = await recall(parked.positionId);
+
+    // Index never moved, so the redemption returns exactly the principal.
+    expect(result.positionId).toBe(parked.positionId);
+    expect(result.shares).toBe(parked.shares);
+    expect(result.indexAtExit).toBe(parked.indexAtEntry);
+    expect(result.assetAmount).toBe(parked.assetAmount);
+    expect(result.txHash).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(result.txHash).not.toBe(parked.txHash);
+
+    // The asset came back out of the fund and into the treasury wallet.
+    expect(await tokenBalance(NETWORK, usdc, treasuryAddress())).toBe(treasuryBefore);
+    expect(await tokenBalance(NETWORK, usdc, fund)).toBe(fundAfterPark - parked.assetAmount);
+    expect(await sharesHeld()).toBe(0n);
+
+    // ...and is available liquidity again.
+    const liquidityAfter = await availableLiquidity("mockUSDC", NETWORK);
+    expect(liquidityAfter.available).toBe(liquidityBefore.available);
+    expect(liquidityAfter.onchain).toBe(liquidityBefore.onchain);
+
+    // The row is updated in place, never deleted — append-only position history.
+    const position = await prisma.treasuryPosition.findUniqueOrThrow({ where: { id: parked.positionId } });
+    expect(position).toMatchObject({
+      status: "RECALLED",
+      shares: parked.shares.toString(),
+      txHashPark: parked.txHash,
+      txHashRecall: result.txHash,
+    });
+    expect(position.recalledAt).toBeInstanceOf(Date);
+
+    const event = await prisma.auditEvent.findFirst({
+      where: { action: TREASURY_RECALLED },
+      orderBy: { id: "desc" },
+    });
+    expect(event).not.toBeNull();
+    expect(JSON.parse(event!.detail)).toMatchObject({
+      positionId: parked.positionId,
+      network: NETWORK,
+      asset: "mockUSDC",
+      shares: parked.shares.toString(),
+      amount: "25000",
+      principal: "25000",
+      yield: "0",
+      indexAtExit: parked.indexAtEntry.toString(),
+      txHash: result.txHash,
+    });
+    await expect(verifyAuditChain()).resolves.toEqual({ valid: true });
+
+    await unwind();
+  });
+
+  it("refuses to recall an unknown position or one that is already recalled", async () => {
+    await expect(recall("pos_does_not_exist")).rejects.toThrow(TreasuryError);
+    await expect(recall("pos_does_not_exist")).rejects.toMatchObject({ code: "POSITION_NOT_FOUND" });
+
+    const parked = await park({ networkId: NETWORK, asset: "mockUSDC", amount: "1000.00" });
+    await recall(parked.positionId);
+
+    const second = recall(parked.positionId);
+    await expect(second).rejects.toThrow(TreasuryError);
+    await expect(second).rejects.toMatchObject({ code: "POSITION_NOT_ACTIVE" });
+
+    // A rejected re-recall neither moves funds nor drops the history row.
+    expect(await sharesHeld()).toBe(0n);
+    const position = await prisma.treasuryPosition.findUniqueOrThrow({ where: { id: parked.positionId } });
+    expect(position.status).toBe("RECALLED");
+
+    await unwind();
   });
 });

@@ -83,8 +83,8 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Done 2026-07-14. lib/treasury.ts gains recall(positionId): redeems the position's shares at the live index via mmfOperatorWrite, returns principal + accrued yield to the treasury wallet, flips the row to RECALLED in place (recalledAt + txHashRecall; never deleted), and audits TREASURY_RECALLED (positionId, shares, amount, principal, yield, indexAtEntry/Exit, tx hash). Two new TreasuryErrorCodes: POSITION_NOT_FOUND / POSITION_NOT_ACTIVE. tests/db/treasury.test.ts adds 2 tests (on-chain park->recall round-trip at unchanged index restores treasury balance + availableLiquidity; unknown and already-recalled positions throw and keep the row). Suite 106 -> 108."
     },
     {
       "id": "US-006",

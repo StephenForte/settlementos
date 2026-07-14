@@ -55,6 +55,13 @@ Started: Tue Jul 14 07:44:50 PDT 2026
   PaymentSettlement, `mmfOperatorWrite()` for TokenizedMMF. Don't hand-roll a wallet.
 - Tests that move fixture funds (parking, minting, accruing) must unwind at the end —
   the chains, the DB, and the MMF are shared across test files, which run sequentially.
+- lib/treasury throws only `TreasuryError` with a typed `code` — add a code to the
+  `TreasuryErrorCode` union rather than throwing a bare Error, so US-007's routes can
+  map cause -> HTTP status in one place. Tests assert with
+  `.rejects.toMatchObject({ code: "..." })`.
+- Rows that model financial history (TreasuryPosition, AuditEvent) are append-only:
+  update status in place (ACTIVE -> RECALLED), never delete. Derive current value
+  (shares x live index) instead of storing a mutable balance.
 
 ## 2026-07-14 07:53 - US-001 (TokenizedMMF Solidity contract)
 - Implemented `contracts/TokenizedMMF.sol`: permissioned share fund holding one ERC-20.
@@ -212,4 +219,48 @@ Started: Tue Jul 14 07:44:50 PDT 2026
   - `availableLiquidity()` (lib/routing) is the float/decimal-string view for quotes;
     `freeTreasuryBalance()` (lib/treasury) is the bigint view used for guards. Parking
     reduces both automatically because it really moves tokens out of the treasury wallet.
+---
+
+## 2026-07-14 08:20 - US-005 (Recall: T+0 redemption back to the settlement asset)
+- `lib/treasury.ts`: `recall(positionId)` loads the position, refuses anything that is
+  not ACTIVE, re-resolves the network's fund via the existing `fundAssetFor()` (so a
+  position whose fund was redeployed under a different asset fails loudly rather than
+  redeeming the wrong token), reads the live index, redeems the position's shares as the
+  operator via `mmfOperatorWrite(network, "redeem", [treasury, shares])`, and flips the
+  row to RECALLED **in place** with `recalledAt` + `txHashRecall`. The asset returned
+  (principal + any yield accrued since entry) is measured as the treasury's token-balance
+  delta, since a viem write only yields a receipt.
+- Two new `TreasuryErrorCode`s: `POSITION_NOT_FOUND`, `POSITION_NOT_ACTIVE` — US-007 maps
+  both to 404/409-style route errors.
+- Audit: `TREASURY_RECALLED` with positionId, network, asset, shares, amount returned
+  (decimal + base units), principal, yield, index at entry and exit, fund, tx hash. All
+  base units stringified (JSON.stringify throws on bigint).
+- `tests/db/treasury.test.ts` (+2 tests, 106 -> 108): a real on-chain park -> recall
+  round-trip at an unchanged index returns exactly the principal — treasury token balance
+  and `availableLiquidity()` both back to their pre-park values, fund balance down by the
+  principal, treasury shares at 0, position RECALLED with both tx hashes, TREASURY_RECALLED
+  on an INTACT audit chain; and unknown / already-recalled positions throw the typed codes
+  while the history row survives untouched.
+- Files changed: lib/treasury.ts, tests/db/treasury.test.ts, AGENTS.md (architecture-map
+  row + append-only-positions invariant).
+- Checks: 108 tests pass, `npx tsc --noEmit` clean, `npm run lint` clean.
+- **Learnings for future iterations:**
+  - No contract change was needed — `redeem` already existed from US-001 and `MMF_ABI` /
+    `mmfOperatorWrite` from US-003/US-004, so no `npm run compile` step and no fixture
+    change. US-006 (`accrue`) is in the same position: the contract and the operator path
+    are already there, only lib + tests are owed.
+  - Shares are stored on the row, so recall does NOT need `sharesOf` — it redeems exactly
+    `BigInt(position.shares)`. That is what keeps multiple concurrent positions on the same
+    treasury wallet independent (the contract only tracks an aggregate per account).
+  - At an unchanged index a round-trip is exact (no floor-division dust) because
+    `shares = amount * 1e18 / index` then `asset = shares * index / 1e18` inverts cleanly at
+    par. After US-006 accrues the index, do NOT expect park/recall to be exact — assert
+    `>= principal` instead.
+  - `recall()` reads the index for the audit trail *before* redeeming; if a future story
+    accrues between the read and the write, the audited `indexAtExit` could lag the actual
+    payout. Fine today (single-threaded demo), worth knowing if accrual ever runs on a timer.
+  - Test isolation: the file's existing `unwind()` (redeem all treasury shares + delete the
+    file's position rows) is still the right ending for every new treasury test — the
+    fixture fund is shared and `tests/integration/mmf.test.ts` asserts it sits at par with
+    exactly MMF_YIELD_BUFFER.
 ---
