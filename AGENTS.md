@@ -47,7 +47,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | Module | Responsibility |
 |---|---|
 | [lib/networks.ts](lib/networks.ts) | Network registry (local sims + real base-sepolia and polygon-amoy), explorer URL helpers. **Client-safe — no node imports, no secrets.** |
-| [lib/chain.ts](lib/chain.ts) | viem chain adapter. Loads/merges `chain/deployments*.json`, per-network accounts via `accountsFor()`, contract ABIs (`SETTLEMENT_ABI`, `MMF_ABI`), `operatorWrite()`, `treasuryTokenTransfer()`, `mmfAddress()` (undefined where no fund is deployed) |
+| [lib/chain.ts](lib/chain.ts) | viem chain adapter. Loads/merges `chain/deployments*.json`, per-network accounts via `accountsFor()`, contract ABIs (`SETTLEMENT_ABI`, `MMF_ABI`), `operatorWrite()` (escrow) / `mmfOperatorWrite()` (fund), `treasuryTokenTransfer()`, `ensureTreasuryAllowance()`, `mmfAddress()` (undefined where no fund is deployed) |
 | [lib/state.ts](lib/state.ts) | Payment lifecycle state machine; `assertTransition()` enforces legal moves |
 | [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: liquidity reservation, escrow, FX, payout, refund-on-failure |
 | [lib/routing.ts](lib/routing.ts) | Route quotes (instant/batched/bridged), treasury liquidity checks |
@@ -55,6 +55,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/compliance.ts](lib/compliance.ts) | Compliance gate (KYB, sanctions, wallet/tx/corridor risk) → PASS/FAIL/MANUAL_REVIEW. Sanctions + wallet screening dispatch to real providers when env config is set (`OPENSANCTIONS_API_KEY`, `CHAINALYSIS_ORACLE_RPC_URL`), mocks otherwise |
 | `lib/providers/` | Real vendor adapters: OpenSanctions (sanctions match API), Chainalysis sanctions oracle (keyless on-chain `isSanctioned()` read for wallet screening). **Fail-safe: any provider error/timeout → MANUAL_REVIEW, never fail-open.** Verbatim provider evidence persisted on `ComplianceCheck.rawResponse` |
 | [lib/audit.ts](lib/audit.ts) | Append-only hash-chained audit log + chain verifier |
+| [lib/treasury.ts](lib/treasury.ts) | Tokenized-MMF treasury ops: `park()` (subscribe unreserved liquidity into the fund), `freeTreasuryBalance()` (bigint balance − RESERVED rows), `TreasuryError` (typed codes for route handlers), `TREASURY_*` audit actions |
 | [lib/assets.ts](lib/assets.ts) | Asset metadata, currency↔token mapping, base-unit conversion |
 | [scripts/setup.mjs](scripts/setup.mjs) | Local deploy (tokens, escrow, TokenizedMMF + its yield buffer and treasury approval) + DB seed (dev-mnemonic accounts, local only) |
 | [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy via argv): env deployer key, per-network gas-dust targets, generated dust wallets, DB registration |
@@ -96,8 +97,15 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   decrease), so a parked position can never lose value.
 - **API shape**: JSON request/response fields are `snake_case`; Prisma models are
   `camelCase`. Keep route handlers thin.
+- **Reserved liquidity is untouchable**: only the treasury balance minus RESERVED
+  `LiquidityReservation` rows (`freeTreasuryBalance()`) may be parked in the MMF —
+  liquidity promised to an in-flight payment can never be swept into the fund.
 
 ## Gotchas
+
+- `audit()` JSON-stringifies its detail, and `JSON.stringify` **throws on a bigint**.
+  Convert base units to strings (`.toString()` / `fromBaseUnits`) before putting them
+  in an audit detail.
 
 - Advancing the MMF index does **not** add asset to the fund: simulated yield is
   paid out of a buffer that must be funded separately (mint mock asset to the MMF

@@ -185,6 +185,16 @@ export const ERC20_ABI = [
   },
   {
     type: "function",
+    name: "allowance",
+    stateMutability: "view",
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
     name: "mint",
     stateMutability: "nonpayable",
     inputs: [
@@ -354,6 +364,71 @@ export async function operatorWrite(
     args: args as any,
   });
   return confirm(networkId, hash);
+}
+
+/**
+ * Submit a TokenizedMMF write as the operator on the given network. The fund is
+ * a separate contract from PaymentSettlement (parked funds never pass through
+ * escrow), so it gets its own operator-signed write path.
+ */
+export async function mmfOperatorWrite(
+  networkId: string,
+  functionName: "subscribe" | "redeem" | "accrue",
+  args: readonly unknown[]
+): Promise<TxResult> {
+  const fund = mmfAddress(networkId);
+  if (!fund) throw new Error(`No TokenizedMMF deployed on ${networkId}`);
+  const operator = accountsFor(networkId).operator;
+  const wallet = walletFor(networkId, resolveKey(operator, `${networkId} operator`));
+  const hash = await wallet.writeContract({
+    address: fund,
+    abi: MMF_ABI,
+    functionName,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    args: args as any,
+  });
+  return confirm(networkId, hash);
+}
+
+export async function tokenAllowance(
+  networkId: string,
+  token: Address,
+  owner: Address,
+  spender: Address
+): Promise<bigint> {
+  return publicClientFor(networkId).readContract({
+    address: token,
+    abi: ERC20_ABI,
+    functionName: "allowance",
+    args: [owner, spender],
+  });
+}
+
+/**
+ * Ensure the treasury has approved `spender` for at least `amount` of a token,
+ * approving MAX if not. The MMF pulls the asset via transferFrom on subscribe;
+ * the deploy scripts pre-approve, but a fund redeployed under an existing DB
+ * would not be, so parking self-heals rather than reverting.
+ */
+export async function ensureTreasuryAllowance(
+  networkId: string,
+  tokenSymbol: string,
+  spender: Address,
+  amount: bigint
+): Promise<void> {
+  const token = networkContracts(networkId).tokens[tokenSymbol];
+  if (!token) throw new Error(`Token ${tokenSymbol} not deployed on ${networkId}`);
+  const treasury = accountsFor(networkId).treasury;
+  if ((await tokenAllowance(networkId, token.address, treasury.address, spender)) >= amount) return;
+
+  const wallet = walletFor(networkId, resolveKey(treasury, `${networkId} treasury`));
+  const hash = await wallet.writeContract({
+    address: token.address,
+    abi: ERC20_ABI,
+    functionName: "approve",
+    args: [spender, 2n ** 256n - 1n],
+  });
+  await confirm(networkId, hash);
 }
 
 /**

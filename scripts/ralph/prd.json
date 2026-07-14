@@ -66,8 +66,8 @@
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Done 2026-07-14. lib/treasury.ts (park, freeTreasuryBalance, TreasuryError, TREASURY_* audit actions) + lib/chain.ts (mmfOperatorWrite, tokenAllowance, ensureTreasuryAllowance, ERC20 allowance in the ABI). Park guards on bigint free balance (treasury balance minus RESERVED rows) so reserved liquidity can never be parked, and takes an optional entityId that enforces the mmfEligible+mmfOptIn guardrail at the lib layer (US-007/US-010 reuse it). tests/db/treasury.test.ts adds 3 tests; suite 103 -> 106."
     },
     {
       "id": "US-005",

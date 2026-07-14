@@ -47,6 +47,14 @@ Started: Tue Jul 14 07:44:50 PDT 2026
   Follow that shape for anything deployed only on some networks.
 - The dev server may find :3000 taken and fall back to :3001 — read the actual port
   out of the dev log before curling it.
+- `audit()` JSON-stringifies its detail, and JSON.stringify THROWS on a bigint. Convert
+  base units to strings before auditing them.
+- viem writes return a receipt, not the contract function's return value. Read the
+  relevant view before/after (or decode the event) to capture what a mutator returned.
+- Contract writes go through the operator helpers in lib/chain: `operatorWrite()` for
+  PaymentSettlement, `mmfOperatorWrite()` for TokenizedMMF. Don't hand-roll a wallet.
+- Tests that move fixture funds (parking, minting, accruing) must unwind at the end —
+  the chains, the DB, and the MMF are shared across test files, which run sequentially.
 
 ## 2026-07-14 07:53 - US-001 (TokenizedMMF Solidity contract)
 - Implemented `contracts/TokenizedMMF.sol`: permissioned share fund holding one ERC-20.
@@ -160,4 +168,48 @@ Started: Tue Jul 14 07:44:50 PDT 2026
   - Still owed before park/recall works end to end (US-004/005): `operatorWrite()` is hard-
     wired to PaymentSettlement's address + ABI and its `functionName` union — parking needs
     an MMF-targeted equivalent (or a generalized operatorWrite) rather than a reuse of it.
+---
+
+## 2026-07-14 08:15 - US-004 (Park: sweep idle treasury balance into the MMF)
+- `lib/treasury.ts` (new): `park({ networkId, asset, amount, entityId? })` resolves the
+  network's fund via `mmfAddress`, asserts the fund is actually backed by that asset
+  (reads `asset()` and compares lowercased), converts the decimal amount with
+  `toBaseUnits` (bigint end to end), ensures the treasury's approval, subscribes as the
+  operator, and writes an ACTIVE `TreasuryPosition` with the park tx hash. Minted shares
+  come from the treasury's sharesOf delta (a write only yields a receipt, so subscribe's
+  return value is not readable). Also exports `freeTreasuryBalance()` and a typed
+  `TreasuryError` with codes NO_FUND / UNSUPPORTED_ASSET / INVALID_AMOUNT /
+  INSUFFICIENT_FREE_BALANCE / NOT_ELIGIBLE (US-007 maps these to HTTP statuses).
+- Guardrails: park refuses when the amount exceeds treasury balance minus RESERVED
+  LiquidityReservation rows (all bigint — no float rounding), and the optional
+  `entityId` enforces mmfEligible && mmfOptIn at the lib layer, so US-007's API guard
+  and US-010's rejection test both have a single source of truth.
+- `lib/chain.ts`: `mmfOperatorWrite(networkId, "subscribe"|"redeem"|"accrue", args)`
+  (operatorWrite is hard-wired to PaymentSettlement's address/ABI, so the fund needed its
+  own operator-signed path), `tokenAllowance()`, `ensureTreasuryAllowance()` (approves MAX
+  only when the current allowance is short — parking self-heals if a fund is redeployed
+  under an existing DB), plus `allowance` in ERC20_ABI.
+- Audit: `TREASURY_PARKED` (exported constant) with network, asset, decimal amount, base
+  units, shares, index at entry, fund address, tx hash, and the entity when supplied.
+- `tests/db/treasury.test.ts` (new, 3 tests): park records the position and shrinks
+  `availableLiquidity` by exactly the parked amount with the asset landing in the fund;
+  reserved liquidity cannot be parked but the unreserved remainder still can; bad amount /
+  wrong asset / no-fund network raise the right typed codes and create no row.
+- Files changed: lib/treasury.ts (new), lib/chain.ts, tests/db/treasury.test.ts (new),
+  AGENTS.md (architecture-map row, reserved-liquidity invariant, bigint-audit gotcha).
+- Checks: 106 tests pass (was 103), `npx tsc --noEmit` clean, `npm run lint` clean.
+- **Learnings for future iterations:**
+  - **`audit()` JSON-stringifies its detail and JSON.stringify THROWS on a bigint.**
+    Stringify base units (or use `fromBaseUnits`) before putting them in an audit detail.
+  - `operatorWrite()` only talks to PaymentSettlement. Use `mmfOperatorWrite()` for the
+    fund — US-005 (`redeem`) and US-006 (`accrue`) go through it.
+  - viem writes return a receipt, not the function's return value. To capture a value a
+    mutator returns (subscribe → shares, redeem → assetAmount), read the relevant view
+    before and after, or decode the event log.
+  - Any test that parks MUST unwind (redeem all treasury shares) — the fixture MMF and the
+    treasury's mockUSDC balance are shared across suites, and `tests/integration/mmf.test.ts`
+    asserts the fund sits at par with exactly MMF_YIELD_BUFFER.
+  - `availableLiquidity()` (lib/routing) is the float/decimal-string view for quotes;
+    `freeTreasuryBalance()` (lib/treasury) is the bigint view used for guards. Parking
+    reduces both automatically because it really moves tokens out of the treasury wallet.
 ---
