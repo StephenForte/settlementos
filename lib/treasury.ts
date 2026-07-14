@@ -27,6 +27,8 @@ import {
 export const TREASURY_PARKED = "TREASURY_PARKED";
 export const TREASURY_RECALLED = "TREASURY_RECALLED";
 export const TREASURY_ACCRUED = "TREASURY_ACCRUED";
+/** Payment-linked: an execution pulled its liquidity back out of the fund. */
+export const TREASURY_AUTO_RECALLED = "TREASURY_AUTO_RECALLED";
 
 export type TreasuryErrorCode =
   | "NO_FUND"
@@ -360,4 +362,107 @@ export async function accrueDaily(
   });
 
   return { network: networkId, oldIndex, newIndex, annualRateBps, txHash: tx.hash };
+}
+
+/**
+ * Derived value of every ACTIVE position for an asset on a network, in base
+ * units — liquidity that is parked but recallable T+0. Zero (never a throw)
+ * where no fund is deployed, so quoting can call this on any network.
+ */
+export async function parkedBalance(networkId: string, symbol: AssetSymbol): Promise<bigint> {
+  if (!mmfAddress(networkId)) return 0n;
+  const positions = await prisma.treasuryPosition.findMany({
+    where: { network: networkId, asset: symbol, status: "ACTIVE" },
+  });
+  if (positions.length === 0) return 0n;
+
+  const index = await currentIndexOf(networkId);
+  return positions.reduce((sum, p) => sum + valueOfShares(BigInt(p.shares), index), 0n);
+}
+
+export interface RecallForPaymentArgs {
+  networkId: string;
+  asset: string;
+  /** Decimal string the treasury must have free once the recall is done. */
+  amount: string;
+  /** Links the recall to the payment that triggered it on the audit chain. */
+  paymentId: string;
+}
+
+export interface RecallForPaymentResult {
+  recalled: RecallResult[];
+  /** Base units returned to the treasury across all positions recalled. */
+  assetAmount: bigint;
+}
+
+/**
+ * Recall as many parked positions as it takes to free `amount` for a payment —
+ * the T+0 path an execution takes when its liquidity is sitting in the fund.
+ * Oldest position first (FIFO: it has accrued the longest). A no-op returning
+ * an empty list when the free balance already covers the amount.
+ */
+export async function recallForPayment({
+  networkId,
+  asset,
+  amount,
+  paymentId,
+}: RecallForPaymentArgs): Promise<RecallForPaymentResult> {
+  const { symbol, decimals } = await fundAssetFor(networkId, asset);
+  const needed = parseAmount(amount, decimals);
+
+  const { free } = await freeTreasuryBalance(networkId, symbol);
+  if (free >= needed) return { recalled: [], assetAmount: 0n };
+
+  const shortfall = needed - free;
+  const parked = await parkedBalance(networkId, symbol);
+  if (parked < shortfall) {
+    throw new TreasuryError(
+      "INSUFFICIENT_FREE_BALANCE",
+      `Cannot free ${amount} ${symbol} on ${networkId}: ${fromBaseUnits(free, decimals)} is unreserved and ` +
+        `only ${fromBaseUnits(parked, decimals)} is parked (short ${fromBaseUnits(shortfall, decimals)})`
+    );
+  }
+
+  const positions = await prisma.treasuryPosition.findMany({
+    where: { network: networkId, asset: symbol, status: "ACTIVE" },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const recalled: RecallResult[] = [];
+  let freed = 0n;
+  for (const position of positions) {
+    if (freed >= shortfall) break;
+    const result = await recall(position.id);
+    recalled.push(result);
+    freed += result.assetAmount;
+  }
+  // parked >= shortfall above, so the loop covers it barring a base unit of
+  // floor-division dust; a shortfall here means the fund and the position rows
+  // disagree, which must not settle a payment.
+  if (freed < shortfall) {
+    throw new TreasuryError(
+      "INSUFFICIENT_FREE_BALANCE",
+      `Recalled every parked ${symbol} position on ${networkId} and still ${fromBaseUnits(
+        shortfall - freed,
+        decimals
+      )} short of ${amount}`
+    );
+  }
+
+  await audit(
+    TREASURY_AUTO_RECALLED,
+    {
+      network: networkId,
+      asset: symbol,
+      needed: fromBaseUnits(needed, decimals),
+      freeBefore: fromBaseUnits(free, decimals),
+      shortfall: fromBaseUnits(shortfall, decimals),
+      recalledAmount: fromBaseUnits(freed, decimals),
+      positionIds: recalled.map((r) => r.positionId),
+      txHashes: recalled.map((r) => r.txHash),
+    },
+    paymentId
+  );
+
+  return { recalled, assetAmount: freed };
 }

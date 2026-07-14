@@ -271,8 +271,20 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
                         : `${Math.round(r.estimated_time_seconds / 3600)}h`}
                     </dd>
                     <dt className="text-slate-500">Liquidity</dt>
-                    <dd className={r.liquidity_available ? "text-emerald-300" : "text-rose-300"}>
-                      {r.liquidity_available ? "Available" : "Shortfall"}
+                    <dd
+                      className={
+                        !r.liquidity_available
+                          ? "text-rose-300"
+                          : r.recall_required
+                            ? "text-amber-300"
+                            : "text-emerald-300"
+                      }
+                    >
+                      {!r.liquidity_available
+                        ? "Shortfall"
+                        : r.recall_required
+                          ? "Available — MMF recall (T+0)"
+                          : "Available"}
                     </dd>
                     <dt className="text-slate-500">Route</dt>
                     <dd className="text-slate-200">

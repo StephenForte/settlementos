@@ -49,13 +49,13 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/networks.ts](lib/networks.ts) | Network registry (local sims + real base-sepolia and polygon-amoy), explorer URL helpers. **Client-safe — no node imports, no secrets.** |
 | [lib/chain.ts](lib/chain.ts) | viem chain adapter. Loads/merges `chain/deployments*.json`, per-network accounts via `accountsFor()`, contract ABIs (`SETTLEMENT_ABI`, `MMF_ABI`), `operatorWrite()` (escrow) / `mmfOperatorWrite()` (fund), `treasuryTokenTransfer()`, `ensureTreasuryAllowance()`, `mmfAddress()` (undefined where no fund is deployed) |
 | [lib/state.ts](lib/state.ts) | Payment lifecycle state machine; `assertTransition()` enforces legal moves |
-| [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: liquidity reservation, escrow, FX, payout, refund-on-failure |
-| [lib/routing.ts](lib/routing.ts) | Route quotes (instant/batched/bridged), treasury liquidity checks |
+| [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: auto-recall of parked MMF liquidity, liquidity reservation, escrow, FX, payout, refund-on-failure |
+| [lib/routing.ts](lib/routing.ts) | Route quotes (instant/batched/bridged), treasury liquidity checks. Parked MMF liquidity counts as available: free-short-but-parked-covers still quotes, flagged `recall_required` |
 | [lib/fx.ts](lib/fx.ts) | Simulated FX: static mid rates, spread + tiered slippage, platform fee |
 | [lib/compliance.ts](lib/compliance.ts) | Compliance gate (KYB, sanctions, wallet/tx/corridor risk) → PASS/FAIL/MANUAL_REVIEW. Sanctions + wallet screening dispatch to real providers when env config is set (`OPENSANCTIONS_API_KEY`, `CHAINALYSIS_ORACLE_RPC_URL`), mocks otherwise |
 | `lib/providers/` | Real vendor adapters: OpenSanctions (sanctions match API), Chainalysis sanctions oracle (keyless on-chain `isSanctioned()` read for wallet screening). **Fail-safe: any provider error/timeout → MANUAL_REVIEW, never fail-open.** Verbatim provider evidence persisted on `ComplianceCheck.rawResponse` |
 | [lib/audit.ts](lib/audit.ts) | Append-only hash-chained audit log + chain verifier |
-| [lib/treasury.ts](lib/treasury.ts) | Tokenized-MMF treasury ops: `park()` (subscribe unreserved liquidity into the fund), `recall()` (T+0 redeem of a position, principal + accrued yield back to the treasury), `accrueDaily()` (advance the fund index by one day at `MMF_ANNUAL_RATE_BPS`, default 3.5% APY; `dailyIndex()`/`valueOfShares()` are the pure bigint math), `freeTreasuryBalance()` (bigint balance − RESERVED rows), `TreasuryError` (typed codes for route handlers), `TREASURY_*` audit actions |
+| [lib/treasury.ts](lib/treasury.ts) | Tokenized-MMF treasury ops: `park()` (subscribe unreserved liquidity into the fund), `recall()` (T+0 redeem of a position, principal + accrued yield back to the treasury), `accrueDaily()` (advance the fund index by one day at `MMF_ANNUAL_RATE_BPS`, default 3.5% APY; `dailyIndex()`/`valueOfShares()` are the pure bigint math), `freeTreasuryBalance()` (bigint balance − RESERVED rows), `parkedBalance()` (derived value of ACTIVE positions; `0n`, never a throw, where no fund exists), `recallForPayment()` (FIFO auto-recall for the executor), `TreasuryError` (typed codes for route handlers), `TREASURY_*` audit actions |
 | [lib/assets.ts](lib/assets.ts) | Asset metadata, currency↔token mapping, base-unit conversion |
 | [scripts/setup.mjs](scripts/setup.mjs) | Local deploy (tokens, escrow, TokenizedMMF + its yield buffer and treasury approval) + DB seed (dev-mnemonic accounts, local only) |
 | [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy via argv): env deployer key, per-network gas-dust targets, generated dust wallets, DB registration |
@@ -105,12 +105,23 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   RECALLED in place (status + `recalledAt` + `txHashRecall`); rows are never deleted,
   and a position's current value is always *derived* (`shares × live index`), never
   stored mutably on the row.
+- **Recall before reserve**: when a route carries `recall_required`, the executor
+  redeems the parked positions *before* it reserves liquidity or escrows anything —
+  otherwise it would reserve against a balance that is still sitting in the fund.
+  A failed auto-recall fails the payment (APPROVED → FAILED) with nothing escrowed.
 
 ## Gotchas
 
 - `audit()` JSON-stringifies its detail, and `JSON.stringify` **throws on a bigint**.
   Convert base units to strings (`.toString()` / `fromBaseUnits`) before putting them
   in an audit detail.
+
+- `recall_required` is a **quote-time snapshot** frozen into `Payment.quoteJson`. The
+  world can move between quoting and execution, so nothing downstream may assume it is
+  still accurate: `recallForPayment()` is a no-op when the free balance already covers
+  the amount, and the executor's existing insufficient-liquidity check still runs after
+  the recall. Import direction is routing → treasury (never the reverse) — treasury
+  must not import routing or the module graph cycles.
 
 - Advancing the MMF index does **not** add asset to the fund: simulated yield is
   paid out of a buffer that must be funded separately (mint mock asset to the MMF

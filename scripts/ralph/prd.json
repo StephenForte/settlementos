@@ -134,8 +134,8 @@
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Done 2026-07-14. lib/treasury gains parkedBalance(networkId, symbol) (derived value of ACTIVE positions; 0n where no fund) and recallForPayment({networkId, asset, amount, paymentId}) (FIFO oldest-first recall until the shortfall is covered; no-op when free already covers; audits a payment-linked TREASURY_AUTO_RECALLED on top of the per-position TREASURY_RECALLED events). lib/routing: liquidityOk -> liquidityCheck returns {ok, recallRequired}; RouteOption gains recall_required, set on all 4 route branches (false when free liquidity suffices, so existing quotes are unchanged). lib/executor: step 0 auto-recalls before reserving/escrowing when route.recall_required; a failed recall goes APPROVED -> FAILED with the reservation released and nothing on-chain. Route panel shows 'Available - MMF recall (T+0)'. tests/integration/auto-recall.test.ts adds 4 tests; suite 124 -> 128."
     },
     {
       "id": "US-009",

@@ -21,6 +21,7 @@ import {
   treasuryTokenTransfer,
 } from "./chain";
 import { availableLiquidity, type RouteOption } from "./routing";
+import { recallForPayment } from "./treasury";
 import { keccak256, toHex, type Address } from "viem";
 
 async function setStatus(
@@ -91,6 +92,32 @@ export async function executePayment(paymentId: string): Promise<Payment> {
         data: { destinationNetwork: destNet },
       })),
     };
+  }
+
+  // 0. Auto-recall: the route only cleared because liquidity is parked in the
+  //    MMF, so redeem it T+0 before reserving anything against it.
+  if (route.recall_required) {
+    try {
+      // Emits a TREASURY_RECALLED per position plus one payment-linked
+      // TREASURY_AUTO_RECALLED summarizing the redemption.
+      await recallForPayment({
+        networkId: destNet,
+        asset: destAsset.symbol,
+        amount: destAmount,
+        paymentId: payment.id,
+      });
+    } catch (err) {
+      const failureReason = `Auto-recall of parked ${destAsset.symbol} on ${destNet} failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+      // Nothing is reserved or escrowed yet, but a stale reservation from an
+      // earlier attempt must not survive a failed payment.
+      await prisma.liquidityReservation
+        .update({ where: { paymentId: payment.id }, data: { status: "RELEASED" } })
+        .catch(() => {});
+      await setStatus(payment, "FAILED", { failureReason });
+      throw new Error(failureReason);
+    }
   }
 
   // 1. Reserve destination-side liquidity on the destination network.

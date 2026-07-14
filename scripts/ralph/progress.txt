@@ -75,6 +75,19 @@ Started: Tue Jul 14 07:44:50 PDT 2026
 - Route tests import the handler directly (`import { POST } from "@/app/api/.../route"`)
   and call it with a `NextRequest` — no HTTP server. A constructed Request with a body
   needs the `{ duplex: "half" }` cast (undici).
+- Module import direction inside lib/ is executor → routing → treasury → chain/db.
+  Adding an import that points back up the chain (treasury → routing) cycles the graph.
+  If two modules need the same fact, put it in the LOWER one and have the higher import
+  it (e.g. `parkedBalance` lives in treasury; routing calls it).
+- Anything frozen into `Payment.quoteJson` at quote time (route id, fees, and now
+  `recall_required`) is a SNAPSHOT — the chain and the DB can move before execution.
+  Treat those fields as a hint, and keep the executor's own re-checks. Corollary: a
+  helper the executor calls off such a flag should be a safe no-op when the condition
+  no longer holds.
+- The MMF is backed by mockUSDC only, and the executor reserves the DESTINATION asset.
+  So a payment can only exercise MMF liquidity when its destination currency is USD
+  (USD→USD is a legal corridor — `midRate` returns 1 when source == dest). A USD→JPY
+  payment reserves mockJPY and never touches the fund.
 
 ## 2026-07-14 07:53 - US-001 (TokenizedMMF Solidity contract)
 - Implemented `contracts/TokenizedMMF.sol`: permissioned share fund holding one ERC-20.
@@ -374,4 +387,69 @@ Started: Tue Jul 14 07:44:50 PDT 2026
   - US-008 (auto-recall in the executor) can reuse the same typed errors; US-009's UI can hit
     these four routes directly — `GET /api/treasury/positions` already returns everything the
     card needs (parked value, shares, current index, accrued yield, status).
+---
+
+## 2026-07-14 08:40 - US-008 (Route engine treats parked liquidity as available-with-recall-delay)
+- `lib/treasury.ts`: two additions on top of park/recall/accrue.
+  - `parkedBalance(networkId, symbol)` — derived value of every ACTIVE position on that
+    network (sum of `shares x live index`), in base units. Returns `0n` (never throws)
+    where no fund is deployed, so quoting can call it on any network including the real
+    testnets.
+  - `recallForPayment({ networkId, asset, amount, paymentId })` — frees `amount` for a
+    payment by recalling parked positions oldest-first (FIFO: the oldest has accrued
+    longest). No-op when the free balance already covers the amount. Pre-checks
+    `parkedBalance >= shortfall` so it never half-recalls into a doomed payment, and
+    still re-checks after the loop (floor-division dust / a row-vs-fund disagreement).
+    Audits a payment-linked `TREASURY_AUTO_RECALLED` (needed, free before, shortfall,
+    amount recalled, position ids, tx hashes) on top of the per-position
+    `TREASURY_RECALLED` events that `recall()` already writes.
+- `lib/routing.ts`: `liquidityOk` (boolean) became `liquidityCheck` returning
+  `{ ok, recallRequired }`. Free liquidity short but free + parked covers it → the quote
+  is STILL offered, with `recall_required: true`. `RouteOption` gains `recall_required`,
+  wired into all four route branches (instant, batched, bridged, source-chain fallback)
+  and defaulting to `false` in `common`, so quotes with ample free liquidity are byte-for-
+  byte unchanged. Also exports `parkedLiquidity(asset, network)` (the decimal-string view,
+  mirroring `availableLiquidity`). The parked lookup only runs in the shortfall branch —
+  a normal quote costs no extra queries.
+- `lib/executor.ts`: new step 0 — when `route.recall_required`, `recallForPayment()` runs
+  BEFORE the liquidity reservation and the escrow (reserving first would reserve against a
+  balance still sitting in the fund). A failed recall releases any stale reservation and
+  takes the payment APPROVED → FAILED (a legal transition) with nothing on-chain.
+- `app/payments/[id]/page.tsx`: the route panel's Liquidity row now distinguishes
+  "Available" (emerald) from "Available — MMF recall (T+0)" (amber) from "Shortfall".
+- `tests/integration/auto-recall.test.ts` (new, 4 tests): parks all but 20k of the
+  treasury's mockUSDC, then (1) a $100k USD→USD quote flags `recall_required` on every
+  route while staying `liquidity_available`, (2) with nothing parked the same quote leaves
+  the flag false, (3) executing auto-recalls the position, settles end to end, flips the row
+  to RECALLED in place, leaves zero shares, and puts TREASURY_AUTO_RECALLED on the payment's
+  audit trail BEFORE `payment.status.liquidity_reserved` with the reservation CONSUMED and
+  the chain INTACT, (4) failure injection — delete the position row without redeeming, so
+  the fund still holds the asset but nothing is recallable — the payment goes FAILED with no
+  tx hash and no RESERVED row.
+- Files changed: lib/treasury.ts, lib/routing.ts, lib/executor.ts, app/payments/[id]/page.tsx,
+  tests/integration/auto-recall.test.ts (new), AGENTS.md (architecture map, recall-before-
+  reserve invariant, quote-snapshot gotcha).
+- Checks: 128 tests pass (was 124), `npx tsc --noEmit` clean, `npm run lint` clean. No
+  contract change, so no `npm run compile` and no fixture change. The UI edit is a one-line
+  conditional on an existing `<dd>`; no browser MCP tool is configured in this environment,
+  so the route panel still wants a manual eyeball (US-009 rebuilds this area anyway).
+- **Learnings for future iterations:**
+  - **Import direction in lib/ is executor → routing → treasury → chain/db.** Routing
+    importing treasury is fine; treasury importing routing would cycle. When two modules
+    need the same fact, it belongs in the lower one.
+  - **The MMF holds mockUSDC, and the executor reserves the DESTINATION asset.** So only a
+    payment whose destination currency is USD can ever exercise parked liquidity — a
+    USD→JPY payment reserves mockJPY and never touches the fund. `midRate` returns 1 when
+    source == dest, so USD→USD is a legal corridor and is what the auto-recall test uses.
+  - `recall_required` is frozen into `quoteJson` at quote time. It can be stale by
+    execution time (someone parks or recalls in between), which is why `recallForPayment()`
+    no-ops when free liquidity already covers the amount and the executor's original
+    insufficient-liquidity check still runs after it.
+  - Injecting a recall failure is easiest by deleting the `TreasuryPosition` row WITHOUT
+    redeeming: the asset stays stranded in the fund, so free liquidity is short and nothing
+    is recallable. `unwind()` (redeem `sharesOf(treasury)`) still cleans it up afterwards,
+    because it redeems by on-chain share balance rather than by row.
+  - US-009's Liquidity-page card can read `parkedBalance()` / `parkedLiquidity()` for
+    "parked value" without touching the MMF ABI, and `GET /api/treasury/positions` already
+    returns the per-position derived value.
 ---
