@@ -13,7 +13,7 @@ The MVP described in this PRD is **built and running**. Code: [github.com/Stephe
 | 5 | Test suite (71 tests: unit / DB / on-chain integration) + GitHub Actions CI | ✅ Done 2026-07-08 |
 | 6 | Compliance provider sandbox (OpenSanctions + Chainalysis) | ✅ Done 2026-07-10 |
 | 7 | Second real testnet (Polygon Amoy) — public cross-chain demo | 🔨 Code done 2026-07-13; deploy awaits Amoy POL |
-| 8 | Tokenized MMF / overnight liquidity parking (JLTXX-inspired, see §24) | Planned |
+| 8 | Tokenized MMF / overnight liquidity parking (JLTXX-inspired, see §24) | ✅ Done 2026-07-14 |
 | 9 | Production hardening (AUDIT.md remediation) + regulatory & partner package | Planned |
 
 Live on Base Sepolia (chainId 84532): `PaymentSettlement` at
@@ -1393,11 +1393,27 @@ Two mocks replaced with real vendor sandboxes behind the existing `ProviderResul
 - Makes the cross-chain bridge demo fully public: Basescan + Amoy Polygonscan
   links on one payment
 
-### Phase 8: Tokenized MMF / Overnight Liquidity Parking
+### Phase 8: Tokenized MMF / Overnight Liquidity Parking — ✅ DONE 2026-07-14
 
-Activate the §24 treasury placeholder as a working simulation — JLTXX-inspired
-(see §24 for the full design). Institutions park idle settlement balances in a
-tokenized money-market fund overnight, in anticipation of corridor moves.
+Activated the §24 treasury placeholder as a working simulation — JLTXX-inspired
+(see §24 for the full design). Built autonomously story-by-story by the Ralph
+agent loop (`scripts/ralph/`), 10 user stories:
+
+- `TokenizedMMF.sol`: operator-permissioned subscribe/redeem, daily accrual via
+  a monotonic share index (starts 1e18); funds fully segregated from
+  `PaymentSettlement` escrow (proven on-chain in tests)
+- `TreasuryPosition` table + per-entity `mmfEligible` / `mmfOptIn` guardrail
+  flags (institutional-only, explicit opt-in; API returns 403 otherwise)
+- `lib/treasury.ts`: park (reserved liquidity can never be parked), T+0 recall,
+  `accrueDaily` at a simulated 3.5% APY — pure-bigint index math, position
+  value always derived from the live index, never stored
+- Four thin API routes (`/api/treasury/park|recall|positions|accrue`), and
+  `TREASURY_PARKED/ACCRUED/RECALLED` events on the hash-chained audit log
+- Route engine treats parked liquidity as available-with-recall-delay
+  (`recall_required` on quotes); the executor auto-recalls before escrow
+- Liquidity-page MMF card: park/recall/accrue controls, live index and yield,
+  "Institutional only" / "Simulated yield — testnet only" pills
+- Suite grew 93 → 131 tests; park→accrue→recall verified in the browser
 
 ### Phase 9: Production Hardening + Regulatory / Partner Package
 
