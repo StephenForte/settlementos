@@ -151,8 +151,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 9,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Done 2026-07-14. app/liquidity/page.tsx (server) resolves each network's fund via mmfAddress(), reads the asset it is backed by + the live index + the unreserved treasury balance, and derives every position's value (shares x live index). app/liquidity/mmf-card.tsx ('use client') renders parked value / accrued yield / share index / free-to-park + the position table, and owns the Park form, per-position Recall T+0, and the Accrue-1-day demo control — each POSTs a treasury route then router.refresh()es (no full reload). Labelled 'Institutional only' + 'Simulated yield — testnet only'; park controls disable when no entity is mmfEligible+mmfOptIn. Networks with no fund (base-sepolia) render a 'not deployed' placeholder; an unreadable fund degrades to 'unreachable' rather than 500ing. Verified on a real dev server (no browser MCP in this env): park 200k -> accrue (+19.18 = 3.5%/365 exactly) -> recall returns 200,019.178082, row flips to RECALLED in place, audit chain INTACT. Suite still 128 green."
     },
     {
       "id": "US-010",

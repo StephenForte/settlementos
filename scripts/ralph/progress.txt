@@ -453,3 +453,62 @@ Started: Tue Jul 14 07:44:50 PDT 2026
     "parked value" without touching the MMF ABI, and `GET /api/treasury/positions` already
     returns the per-position derived value.
 ---
+
+## 2026-07-14 08:47 - US-009 (Treasury parking UI on the Liquidity page)
+- Replaced the old "Tokenized Treasury Products — NOT ENABLED — FUTURE" placeholder card
+  with a LIVE Tokenized MMF card, rendered per network that has a fund.
+- `app/liquidity/page.tsx` (server component, unchanged role): for each network it resolves
+  the fund with `mmfAddress()`, reads the asset the fund is actually backed by (`asset()`,
+  matched case-insensitively against that network's tokens rather than assuming mockUSDC),
+  the live share index (`currentIndexOf`), and the unreserved treasury balance
+  (`freeTreasuryBalance`). Position values are DERIVED there (`valueOfShares(shares, index)`),
+  never read off the row. Also finds the single mmfEligible+mmfOptIn entity for the park form.
+- `app/liquidity/mmf-card.tsx` (new, `"use client"`): parked value, accrued yield, share
+  index (exact 6-dp bigint formatting — `Number(1e18)` loses the low digits), free-to-park,
+  and a positions table with StatusBadge + per-row "Recall T+0". Park form and an
+  "Accrue 1 day" demo control. Every mutation POSTs the US-007 route then calls
+  `router.refresh()`, which re-renders the server parent and flows fresh props down — the
+  view updates with no full page reload.
+- Guardrails visible in the UI: "Institutional only" + "Simulated yield — testnet only"
+  pills; park input and button are disabled (with an amber explainer) when no entity is
+  eligible+opted-in. The API re-checks the guardrail server-side regardless.
+- Resilience: no fund on the network (base-sepolia) → dashed "Not deployed" placeholder;
+  fund present but its RPC read throws → "unreachable" placeholder. The page never 500s.
+- `components/ui.tsx`: STATUS_STYLES gains ACTIVE (emerald) / RECALLED (slate) so the
+  shared StatusBadge covers position status too.
+- Files changed: app/liquidity/mmf-card.tsx (new), app/liquidity/page.tsx,
+  components/ui.tsx, AGENTS.md (architecture-map row + the server-props/router.refresh gotcha).
+- Checks: 128 tests pass (unchanged — this story adds no lib/contract behavior),
+  `npx tsc --noEmit` clean, `npm run lint` clean.
+- **Verification (no browser MCP is configured in this environment):** drove the REAL dev
+  server instead of a headless browser — started both local chains, `npm run setup`, served
+  the app on :3001, and asserted on the server-rendered HTML. Card shows index 1.000000 and
+  500,000.00 free on both local networks; base-sepolia shows the "not deployed" placeholder.
+  Then exercised exactly the calls the buttons make: park 200,000 → card reads
+  200,000.00 parked / 300,000.00 free; accrue 1 day → index 1.000095, yield +19.18
+  (= 200000 × 3.5% ÷ 365, exact); recall → returns 200,019.178082, position flips to
+  RECALLED in place with live fields blank, free-to-park rises to 500,019.18 (yield paid out
+  of the buffer), and `GET /api/audit` reports `integrity.valid: true`. Killed the chains and
+  my :3001 server and restored the pre-existing dev.db + deployments.json afterwards.
+  A human eyeball on the actual rendered card (spacing/colour) is still worth one minute.
+- **Learnings for future iterations:**
+  - **The Liquidity page's data path is server-side.** Chain/DB reads belong in
+    `page.tsx`; the client child gets plain serializable props. After a mutation the child
+    calls `router.refresh()`, which re-renders the server parent and passes NEW props down.
+    So do NOT copy a server prop into `useState` — it would go stale after every park/recall.
+    (`app/payments/*` predates this and fetches client-side; both patterns live in the repo.)
+  - The `/api/audit` response shape is `{ integrity: { valid }, events }` — not `{ intact }`.
+  - Formatting the 1e18 share index through `Number()` silently loses the low digits
+    (1e18 > 2^53). Format it with BigInt division (`i / 1e18n` + a scaled remainder).
+  - Port 3000 may already hold the user's dev server: serve verification runs on another
+    port (`npx next dev -p 3001`) rather than killing theirs.
+  - Reading the fund's `asset()` and matching it against `deployments.json` tokens (both
+    lowercased) is only ~4 lines and beats hardcoding mockUSDC — it keeps the card honest if
+    a fund is ever deployed against a different token.
+  - US-010 is all that remains: it is largely a consolidation story (guardrail + segregation
+    + audit-chain tests). Much of it already exists — reserved-liquidity-cannot-be-parked and
+    the not-opted-in rejection are covered in tests/db/treasury.test.ts and
+    tests/integration/treasury-api.test.ts. What is genuinely new is the on-chain SEGREGATION
+    assertion (balanceOf(TokenizedMMF) rises while balanceOf(PaymentSettlement) is unchanged
+    across park/recall) and a single ordered park → accrue → recall audit-chain test.
+---
