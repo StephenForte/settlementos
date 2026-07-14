@@ -23,6 +23,8 @@ import { LIVE_NETWORK_IDS, NETWORKS, networkInfo } from "./networks";
 
 export interface NetworkContracts {
   PaymentSettlement: Address;
+  /** Tokenized MMF for parked treasury liquidity. Absent on networks without one. */
+  TokenizedMMF?: Address;
   tokens: Record<string, { address: Address; decimals: number }>;
 }
 
@@ -183,6 +185,16 @@ export const ERC20_ABI = [
   },
   {
     type: "function",
+    name: "allowance",
+    stateMutability: "view",
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
     name: "mint",
     stateMutability: "nonpayable",
     inputs: [
@@ -241,6 +253,71 @@ export const SETTLEMENT_ABI = [
   },
 ] as const;
 
+export const MMF_ABI = [
+  {
+    type: "function",
+    name: "subscribe",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "onBehalfOf", type: "address" },
+      { name: "assetAmount", type: "uint256" },
+    ],
+    outputs: [{ name: "shares", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "redeem",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "onBehalfOf", type: "address" },
+      { name: "shares", type: "uint256" },
+    ],
+    outputs: [{ name: "assetAmount", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "accrue",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "newIndex", type: "uint256" }],
+    outputs: [],
+  },
+  { type: "function", name: "asset", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  { type: "function", name: "currentIndex", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "INDEX_SCALE", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "totalShares", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  {
+    type: "function",
+    name: "sharesOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "assetValueOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  { type: "function", name: "yieldBuffer", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+] as const;
+
+/** Fixed-point scale of the MMF share index (1e18 == par), mirroring TokenizedMMF.INDEX_SCALE. */
+export const MMF_INDEX_SCALE = 10n ** 18n;
+
+/**
+ * TokenizedMMF address for a network, or undefined where no fund is deployed
+ * (real testnets before a fund deploy, or an unknown network id). Never throws —
+ * callers treat "no MMF here" as a normal, non-fatal state.
+ */
+export function mmfAddress(networkId: string): Address | undefined {
+  try {
+    return loadDeployments().networks[networkId]?.contracts?.TokenizedMMF;
+  } catch {
+    return undefined;
+  }
+}
+
 export function onchainPaymentId(paymentId: string): Hex {
   return keccak256(toHex(paymentId));
 }
@@ -287,6 +364,71 @@ export async function operatorWrite(
     args: args as any,
   });
   return confirm(networkId, hash);
+}
+
+/**
+ * Submit a TokenizedMMF write as the operator on the given network. The fund is
+ * a separate contract from PaymentSettlement (parked funds never pass through
+ * escrow), so it gets its own operator-signed write path.
+ */
+export async function mmfOperatorWrite(
+  networkId: string,
+  functionName: "subscribe" | "redeem" | "accrue",
+  args: readonly unknown[]
+): Promise<TxResult> {
+  const fund = mmfAddress(networkId);
+  if (!fund) throw new Error(`No TokenizedMMF deployed on ${networkId}`);
+  const operator = accountsFor(networkId).operator;
+  const wallet = walletFor(networkId, resolveKey(operator, `${networkId} operator`));
+  const hash = await wallet.writeContract({
+    address: fund,
+    abi: MMF_ABI,
+    functionName,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    args: args as any,
+  });
+  return confirm(networkId, hash);
+}
+
+export async function tokenAllowance(
+  networkId: string,
+  token: Address,
+  owner: Address,
+  spender: Address
+): Promise<bigint> {
+  return publicClientFor(networkId).readContract({
+    address: token,
+    abi: ERC20_ABI,
+    functionName: "allowance",
+    args: [owner, spender],
+  });
+}
+
+/**
+ * Ensure the treasury has approved `spender` for at least `amount` of a token,
+ * approving MAX if not. The MMF pulls the asset via transferFrom on subscribe;
+ * the deploy scripts pre-approve, but a fund redeployed under an existing DB
+ * would not be, so parking self-heals rather than reverting.
+ */
+export async function ensureTreasuryAllowance(
+  networkId: string,
+  tokenSymbol: string,
+  spender: Address,
+  amount: bigint
+): Promise<void> {
+  const token = networkContracts(networkId).tokens[tokenSymbol];
+  if (!token) throw new Error(`Token ${tokenSymbol} not deployed on ${networkId}`);
+  const treasury = accountsFor(networkId).treasury;
+  if ((await tokenAllowance(networkId, token.address, treasury.address, spender)) >= amount) return;
+
+  const wallet = walletFor(networkId, resolveKey(treasury, `${networkId} treasury`));
+  const hash = await wallet.writeContract({
+    address: token.address,
+    abi: ERC20_ABI,
+    functionName: "approve",
+    args: [spender, 2n ** 256n - 1n],
+  });
+  await confirm(networkId, hash);
 }
 
 /**

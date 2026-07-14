@@ -41,6 +41,9 @@ const CHAINS = {
   },
 };
 
+// Pre-funded mockUSDC held by the MMF to pay simulated yield on redemption.
+const MMF_YIELD_BUFFER = 50_000n * 10n ** 6n;
+
 // Standard Hardhat/Anvil dev mnemonic accounts — local use only.
 const ACCOUNTS = {
   operator: {
@@ -121,6 +124,9 @@ async function setupChain(networkId, cfg) {
     tokens[symbol] = { ...t, decimals };
   }
   const settlement = await deploy("PaymentSettlement", []);
+  // Tokenized MMF for parked treasury liquidity — backed by mockUSDC, the settlement
+  // asset. Its funds are strictly segregated from the escrow contract above.
+  const mmf = await deploy("TokenizedMMF", [tokens.mockUSDC.address]);
 
   for (const t of Object.values(tokens)) {
     await write(operator, settlement.address, settlement.abi, "setApprovedAsset", [t.address, true]);
@@ -135,6 +141,9 @@ async function setupChain(networkId, cfg) {
     ["mockSGD", ACCOUNTS.treasury.address, 1_000_000n * 10n ** 6n],
     ["mockSGD", ACCOUNTS.singapore.address, 200_000n * 10n ** 6n],
     ["mockJPY", ACCOUNTS.tokyo.address, 10_000_000n],
+    // MMF yield buffer: accrual raises redemption value without adding asset to the
+    // fund, so the simulated yield is paid out of this pre-funded balance.
+    ["mockUSDC", mmf.address, MMF_YIELD_BUFFER],
   ];
   for (const [sym, to, amount] of mints) {
     if (tokens[sym]) {
@@ -149,12 +158,16 @@ async function setupChain(networkId, cfg) {
       await write(w, t.address, t.abi, "approve", [settlement.address, MAX]);
     }
   }
+  // The treasury is the parking account: subscribe() pulls via transferFrom.
+  const treasuryWallet = wallet(ACCOUNTS.treasury.privateKey);
+  await write(treasuryWallet, tokens.mockUSDC.address, tokens.mockUSDC.abi, "approve", [mmf.address, MAX]);
 
   return {
     chainId: cfg.chainId,
     rpcUrl: cfg.rpcUrl,
     contracts: {
       PaymentSettlement: settlement.address,
+      TokenizedMMF: mmf.address,
       tokens: Object.fromEntries(
         Object.entries(tokens).map(([k, v]) => [k, { address: v.address, decimals: v.decimals }])
       ),
@@ -188,6 +201,8 @@ async function main() {
   console.log("Seeding database...");
   const prisma = new PrismaClient();
   // Fresh chain state → fresh app state, in FK dependency order.
+  // Parked MMF positions point at contracts that no longer exist after redeploy.
+  await prisma.treasuryPosition.deleteMany();
   await prisma.ledgerCredit.deleteMany();
   await prisma.liquidityReservation.deleteMany();
   await prisma.complianceCheck.deleteMany();
@@ -217,6 +232,9 @@ async function main() {
       kybStatus: "PASSED",
       riskRating: "LOW",
       approvedCorridors: JSON.stringify(["USD-JPY", "USD-SGD"]),
+      // The one institution cleared for tokenized-MMF parking (Phase 8).
+      mmfEligible: true,
+      mmfOptIn: true,
       wallet: { address: ACCOUNTS.acme.address, label: "ACME operating wallet", allowlisted: true, riskScore: 5 },
     },
     {

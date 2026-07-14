@@ -22,6 +22,8 @@ const STATUS_STYLES: Record<string, string> = {
   PASSED: "bg-emerald-500/15 text-emerald-300 border-emerald-500/40",
   PENDING: "bg-amber-500/15 text-amber-300 border-amber-500/40",
   EXEMPT_TESTNET: "bg-slate-700/50 text-slate-300 border-slate-600",
+  ACTIVE: "bg-emerald-500/15 text-emerald-300 border-emerald-500/40",
+  RECALLED: "bg-slate-700/50 text-slate-400 border-slate-600",
 };
 
 export function StatusBadge({ status }: { status: string }) {

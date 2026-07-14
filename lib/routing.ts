@@ -4,9 +4,10 @@
 // single-chain fallback that settles on the source network with a ledger credit.
 
 import { quoteFx, roundCurrency } from "./fx";
-import { assetForCurrency, fromBaseUnits, toBaseUnits } from "./assets";
+import { assetForCurrency, fromBaseUnits, toBaseUnits, type AssetSymbol } from "./assets";
 import { accountsFor, isChainReady, loadDeployments, tokenBalance } from "./chain";
 import { networkInfo } from "./networks";
+import { parkedBalance } from "./treasury";
 import { prisma } from "./db";
 
 export const BRIDGE_FEE_BPS = 5; // simulated bridge/liquidity-network fee
@@ -31,6 +32,8 @@ export interface RouteOption {
   platform_fee: string;
   estimated_destination_amount: string;
   liquidity_available: boolean;
+  /** The route only clears because parked MMF liquidity gets recalled T+0 first. */
+  recall_required: boolean;
   compliance_required: boolean;
   recommended: boolean;
 }
@@ -56,13 +59,41 @@ export async function availableLiquidity(
   return { onchain, reserved: reserved.toString(), available: available.toString() };
 }
 
-async function liquidityOk(assetSymbol: string, networkId: string, needed: number): Promise<boolean> {
-  if (!isChainReady()) return true;
+/** Treasury liquidity parked in the network's tokenized MMF — recallable T+0. */
+export async function parkedLiquidity(assetSymbol: string, networkId: string): Promise<string> {
+  const token = loadDeployments().networks[networkId]?.contracts.tokens[assetSymbol];
+  if (!token) return "0";
+  const units = await parkedBalance(networkId, assetSymbol as AssetSymbol);
+  return fromBaseUnits(units, token.decimals);
+}
+
+interface LiquidityCheck {
+  /** The payment can be funded — possibly only after recalling from the MMF. */
+  ok: boolean;
+  /** Free liquidity alone falls short; parked liquidity has to be recalled first. */
+  recallRequired: boolean;
+}
+
+/**
+ * Can the treasury fund `needed` of an asset on a network? Parked MMF liquidity
+ * counts: it redeems T+0, so the quote is still offered — flagged so the
+ * executor knows to recall before it reserves and escrows.
+ */
+async function liquidityCheck(
+  assetSymbol: string,
+  networkId: string,
+  needed: number
+): Promise<LiquidityCheck> {
+  if (!isChainReady()) return { ok: true, recallRequired: false };
   try {
     const liq = await availableLiquidity(assetSymbol, networkId);
-    return Number(liq.available) >= needed;
+    if (Number(liq.available) >= needed) return { ok: true, recallRequired: false };
+
+    const parked = await parkedLiquidity(assetSymbol, networkId);
+    if (Number(liq.available) + Number(parked) >= needed) return { ok: true, recallRequired: true };
+    return { ok: false, recallRequired: false };
   } catch {
-    return true; // chain unreachable during quoting → assume ok, execution re-checks
+    return { ok: true, recallRequired: false }; // chain unreachable while quoting → execution re-checks
   }
 }
 
@@ -86,13 +117,14 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
     platform_fee_bps: fx.platformFeeBps,
     platform_fee: roundCurrency(fx.platformFee, src),
     liquidity_available: true,
+    recall_required: false,
     compliance_required: true,
   };
 
   if (sourceNet === destNet) {
     const effective = fx.effectiveRate;
     const destAmount = roundCurrency(fx.destinationAmount, dst);
-    const okay = await liquidityOk(destAsset.symbol, destNet, fx.destinationAmount);
+    const liq = await liquidityCheck(destAsset.symbol, destNet, fx.destinationAmount);
     const net = networkInfo(sourceNet).label;
     return [
       {
@@ -108,7 +140,8 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
         estimated_fx_rate: effective.toFixed(6),
         bridge_fee_bps: 0,
         estimated_destination_amount: destAmount,
-        liquidity_available: okay,
+        liquidity_available: liq.ok,
+        recall_required: liq.recallRequired,
         recommended: true,
       },
       {
@@ -124,7 +157,8 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
         estimated_fx_rate: effective.toFixed(6),
         bridge_fee_bps: 0,
         estimated_destination_amount: destAmount,
-        liquidity_available: okay,
+        liquidity_available: liq.ok,
+        recall_required: liq.recallRequired,
         recommended: false,
       },
     ];
@@ -136,10 +170,10 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
 
   const bridgedEffective = fx.midRate * (1 - (fx.spreadBps + fx.slippageBps + BRIDGE_FEE_BPS) / 10_000);
   const bridgedDestAmount = (amount - fx.platformFee) * bridgedEffective;
-  const bridgedOk = await liquidityOk(destAsset.symbol, destNet, bridgedDestAmount);
+  const bridgedLiq = await liquidityCheck(destAsset.symbol, destNet, bridgedDestAmount);
 
   const fallbackDestAmount = roundCurrency(fx.destinationAmount, dst);
-  const fallbackOk = await liquidityOk(destAsset.symbol, sourceNet, fx.destinationAmount);
+  const fallbackLiq = await liquidityCheck(destAsset.symbol, sourceNet, fx.destinationAmount);
 
   return [
     {
@@ -160,7 +194,8 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
       estimated_fx_rate: bridgedEffective.toFixed(6),
       bridge_fee_bps: BRIDGE_FEE_BPS,
       estimated_destination_amount: roundCurrency(bridgedDestAmount, dst),
-      liquidity_available: bridgedOk,
+      liquidity_available: bridgedLiq.ok,
+      recall_required: bridgedLiq.recallRequired,
       recommended: true,
     },
     {
@@ -176,7 +211,8 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
       estimated_fx_rate: fx.effectiveRate.toFixed(6),
       bridge_fee_bps: 0,
       estimated_destination_amount: fallbackDestAmount,
-      liquidity_available: fallbackOk,
+      liquidity_available: fallbackLiq.ok,
+      recall_required: fallbackLiq.recallRequired,
       recommended: false,
     },
   ];

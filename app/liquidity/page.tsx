@@ -1,10 +1,113 @@
 import { prisma } from "@/lib/db";
-import { accountsFor, isChainReady, loadDeployments, tokenBalance } from "@/lib/chain";
+import {
+  MMF_ABI,
+  accountsFor,
+  isChainReady,
+  loadDeployments,
+  mmfAddress,
+  publicClientFor,
+  tokenBalance,
+} from "@/lib/chain";
 import { explorerAddressUrl, networkInfo } from "@/lib/networks";
-import { fromBaseUnits } from "@/lib/assets";
+import { ASSETS, fromBaseUnits, type AssetSymbol } from "@/lib/assets";
+import {
+  MMF_ANNUAL_RATE_BPS,
+  currentIndexOf,
+  freeTreasuryBalance,
+  valueOfShares,
+} from "@/lib/treasury";
 import { Card } from "@/components/ui";
+import { MmfCard, type MmfCardProps, type MmfPositionView } from "./mmf-card";
 
 export const dynamic = "force-dynamic";
+
+type PositionRow = Awaited<ReturnType<typeof prisma.treasuryPosition.findMany>>[number];
+type EligibleEntity = { externalId: string; name: string } | null;
+
+/**
+ * Per-network MMF view. Returns null where no fund is deployed (real testnets),
+ * and `null` props where the fund exists but its RPC read failed — the page
+ * degrades rather than 500s.
+ */
+async function mmfCardProps(
+  networkId: string,
+  positions: PositionRow[],
+  entity: EligibleEntity
+): Promise<MmfCardProps | null> {
+  const fund = mmfAddress(networkId);
+  if (!fund) return null;
+
+  // The fund is single-asset: resolve the symbol it is actually backed by rather
+  // than assuming, then read the live index and the unreserved treasury balance.
+  let symbol: AssetSymbol;
+  let index: bigint | null;
+  let free: bigint;
+  try {
+    const assetAddress = (await publicClientFor(networkId).readContract({
+      address: fund,
+      abi: MMF_ABI,
+      functionName: "asset",
+    })) as string;
+    const tokens = loadDeployments().networks[networkId].contracts.tokens;
+    // Contracts hand back EIP-55 addresses; deployments.json stores them lowercase.
+    const match = Object.entries(tokens).find(
+      ([, t]) => t.address.toLowerCase() === assetAddress.toLowerCase()
+    );
+    if (!match) return null;
+    symbol = match[0] as AssetSymbol;
+    index = await currentIndexOf(networkId);
+    free = (await freeTreasuryBalance(networkId, symbol)).free;
+  } catch {
+    return null; // RPC flaking — the caller renders a "fund unreachable" note
+  }
+
+  const decimals = ASSETS[symbol].decimals;
+  let parked = 0n;
+  let accrued = 0n;
+
+  const views: MmfPositionView[] = positions.map((p) => {
+    const shares = BigInt(p.shares);
+    const principal = BigInt(p.assetAmountIn);
+    const positionDecimals = ASSETS[p.asset as AssetSymbol]?.decimals ?? decimals;
+    // Value is always DERIVED (shares x live index), never read off the row.
+    const value = p.status === "ACTIVE" && index !== null ? valueOfShares(shares, index) : null;
+    if (value !== null) {
+      parked += value;
+      accrued += value > principal ? value - principal : 0n;
+    }
+    return {
+      positionId: p.id,
+      asset: p.asset,
+      status: p.status,
+      shares: p.shares,
+      amountIn: fromBaseUnits(principal, positionDecimals),
+      currentValue: value === null ? null : fromBaseUnits(value, positionDecimals),
+      accruedYield:
+        value === null
+          ? null
+          : fromBaseUnits(value > principal ? value - principal : 0n, positionDecimals),
+      indexAtEntry: p.indexAtEntry,
+      createdAt: p.createdAt.toISOString(),
+      txHashPark: p.txHashPark,
+      txHashRecall: p.txHashRecall,
+    };
+  });
+
+  return {
+    networkId,
+    asset: symbol,
+    fundAddress: fund,
+    fundUrl: explorerAddressUrl(networkId, fund),
+    currentIndex: index === null ? null : index.toString(),
+    parkedValue: index === null ? null : fromBaseUnits(parked, decimals),
+    accruedYield: index === null ? null : fromBaseUnits(accrued, decimals),
+    freeBalance: fromBaseUnits(free, decimals),
+    annualRateBps: MMF_ANNUAL_RATE_BPS.toString(),
+    entityId: entity?.externalId ?? null,
+    entityName: entity?.name ?? null,
+    positions: views,
+  };
+}
 
 export default async function LiquidityPage() {
   if (!isChainReady()) {
@@ -30,6 +133,14 @@ export default async function LiquidityPage() {
     reservedBy[key] = (reservedBy[key] ?? 0) + Number(r.amount);
   }
 
+  // Institutional-only guardrail: parking is offered only when a cleared,
+  // opted-in institution exists. The API re-checks server-side regardless.
+  const eligible = await prisma.entity.findFirst({
+    where: { mmfEligible: true, mmfOptIn: true },
+    select: { externalId: true, name: true },
+  });
+  const allPositions = await prisma.treasuryPosition.findMany({ orderBy: { createdAt: "desc" } });
+
   const networkSections = await Promise.all(
     Object.entries(dep.networks).map(async ([networkId, net]) => {
       const treasury = accountsFor(networkId).treasury.address;
@@ -39,6 +150,12 @@ export default async function LiquidityPage() {
         settlement: net.contracts.PaymentSettlement,
         tokens: [] as { symbol: string; address: string; balance: string; reserved: number; available: number }[],
         unreachable: false,
+        hasFund: mmfAddress(networkId) !== undefined,
+        mmf: await mmfCardProps(
+          networkId,
+          allPositions.filter((p) => p.network === networkId),
+          eligible
+        ),
       };
       try {
         section.tokens = await Promise.all(
@@ -144,6 +261,21 @@ export default async function LiquidityPage() {
               </Card>
             ))}
           </div>
+
+          <div className="mt-4">
+            {section.mmf ? (
+              <MmfCard {...section.mmf} />
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 px-5 py-4">
+                <p className="text-sm font-semibold text-slate-300">Tokenized MMF</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {section.hasFund
+                    ? "Fund deployed but unreachable right now — live values unavailable."
+                    : "Not deployed on this network. Idle-balance parking is available where a fund exists."}
+                </p>
+              </div>
+            )}
+          </div>
         </div>
       ))}
 
@@ -184,34 +316,6 @@ export default async function LiquidityPage() {
           )}
         </Card>
       </div>
-
-      <Card title="Tokenized Treasury Products">
-        <div className="rounded-lg border border-dashed border-slate-700 bg-slate-900/40 p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-semibold text-white">Tokenized T-Bill Strategy</p>
-              <p className="mt-1 max-w-xl text-xs leading-relaxed text-slate-400">
-                Park idle stablecoin balances in approved tokenized T-bill or money-market products.
-                Payment settlement balances remain legally and operationally separate from treasury
-                products.
-              </p>
-            </div>
-            <span className="shrink-0 rounded-full border border-slate-600 bg-slate-800 px-3 py-1 text-[11px] text-slate-300">
-              NOT ENABLED — FUTURE
-            </span>
-          </div>
-          <dl className="mt-4 grid grid-cols-2 gap-x-8 gap-y-1 text-xs md:grid-cols-4">
-            <dt className="text-slate-500">Eligibility</dt>
-            <dd className="text-slate-300">Institutional only</dd>
-            <dt className="text-slate-500">Estimated yield</dt>
-            <dd className="text-slate-300">Simulated</dd>
-            <dt className="text-slate-500">Risk</dt>
-            <dd className="text-slate-300">Requires approval</dd>
-            <dt className="text-slate-500">Status</dt>
-            <dd className="text-slate-300">Placeholder</dd>
-          </dl>
-        </div>
-      </Card>
     </div>
   );
 }
