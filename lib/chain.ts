@@ -347,6 +347,30 @@ async function confirm(networkId: string, hash: Hex): Promise<TxResult> {
   return { hash, blockNumber: receipt.blockNumber, gasUsed: receipt.gasUsed };
 }
 
+/**
+ * Retry an on-chain call whose failure is transient replica lag. Public RPC
+ * endpoints are load-balanced: a write that depends on state from a
+ * just-confirmed tx can be gas-estimated against a replica that hasn't seen
+ * that block yet and revert (e.g. settlePayment → "not initiated" seconds
+ * after the escrow confirmed). `isTransient` decides from the error message
+ * whether waiting can help; anything else is rethrown immediately.
+ */
+export async function retryOnReplicaLag<T>(
+  fn: () => Promise<T>,
+  isTransient: (message: string) => boolean,
+  { retries = 4, delayMs = 2000 }: { retries?: number; delayMs?: number } = {}
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (attempt >= retries || !isTransient(message)) throw err;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 /** Submit a settlement-contract write as the operator on the given network. */
 export async function operatorWrite(
   networkId: string,
@@ -356,13 +380,20 @@ export async function operatorWrite(
   const dep = loadDeployments();
   const operator = accountsFor(networkId).operator;
   const wallet = walletFor(networkId, resolveKey(operator, `${networkId} operator`));
-  const hash = await wallet.writeContract({
-    address: dep.networks[networkId].contracts.PaymentSettlement,
-    abi: SETTLEMENT_ABI,
-    functionName,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    args: args as any,
-  });
+  // Every function except initiatePayment requires the escrow row written by a
+  // prior tx, so "not initiated" right after that tx confirmed is replica lag.
+  const dependsOnPriorTx = functionName !== "initiatePayment";
+  const hash = await retryOnReplicaLag(
+    () =>
+      wallet.writeContract({
+        address: dep.networks[networkId].contracts.PaymentSettlement,
+        abi: SETTLEMENT_ABI,
+        functionName,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        args: args as any,
+      }),
+    (message) => dependsOnPriorTx && message.includes("not initiated")
+  );
   return confirm(networkId, hash);
 }
 

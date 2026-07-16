@@ -12,7 +12,7 @@ The MVP described in this PRD is **built and running**. Code: [github.com/Stephe
 | 4 | **Real Base Sepolia deployment** with public Basescan links | ✅ Done 2026-07-07 |
 | 5 | Test suite (71 tests: unit / DB / on-chain integration) + GitHub Actions CI | ✅ Done 2026-07-08 |
 | 6 | Compliance provider sandbox (OpenSanctions + Chainalysis) | ✅ Done 2026-07-10 |
-| 7 | Second real testnet (Polygon Amoy) — public cross-chain demo | 🔨 Code done 2026-07-13; deploy awaits Amoy POL |
+| 7 | Second real testnet (Polygon Amoy) — public cross-chain demo | ✅ Done 2026-07-15 |
 | 8 | Tokenized MMF / overnight liquidity parking (JLTXX-inspired, see §24) | ✅ Done 2026-07-14 |
 | 9 | Production hardening (AUDIT.md remediation) + regulatory & partner package | Planned |
 
@@ -20,6 +20,12 @@ Live on Base Sepolia (chainId 84532): `PaymentSettlement` at
 [`0x9d8b8b7c476ab02306046f3da719d380fa0456aa`](https://sepolia.basescan.org/address/0x9d8b8b7c476ab02306046f3da719d380fa0456aa);
 first real settled payment ($100k USD→JPY, 8.5s):
 [`0xdbf963...258c5`](https://sepolia.basescan.org/tx/0xdbf963150f5c1c90e3a007cc474c3fd42255fd3d019e3d71a6d821528fe258c5).
+Live on Polygon Amoy (chainId 80002): `PaymentSettlement` at
+[the same address](https://amoy.polygonscan.com/address/0x9d8b8b7c476ab02306046f3da719d380fa0456aa)
+(same deployer nonce sequence). First real cross-chain settled payment
+($25k USD→JPY, Base Sepolia escrow → Polygon Amoy payout, ~7s):
+escrow [`0x2857eb...15c8e`](https://sepolia.basescan.org/tx/0x2857eb40d9ec95e2672c36581ad578a29389fe1d8e98c50cf86074e483e15c8e),
+payout [`0xc2d075...c0bd69`](https://amoy.polygonscan.com/tx/0xc2d0750d86926918b40f454d17fd2b46ba0ffbaf90185f57ca4fd466e8c0bd69).
 Detailed phase notes in §29.
 
 ## 1. Product Name
@@ -1386,12 +1392,23 @@ Two mocks replaced with real vendor sandboxes behind the existing `ProviderResul
 - KYB stays mocked (sandbox onboarding cost exceeds demo value for now)
 - 20 new tests (adapter mapping incl. on-chain ABI round-trip against a stubbed RPC, fail-safe, registry dispatch, raw-evidence persistence) — suite now 91; oracle verified live on Ethereum mainnet
 
-### Phase 7: Second Real Testnet — Polygon Amoy
+### Phase 7: Second Real Testnet — Polygon Amoy — ✅ DONE 2026-07-15
 
-- Deploy the contract set to Polygon Amoy (80002) — the per-network account
-  plumbing from Phase 4 already supports it; mostly a deploy-script variant
-- Makes the cross-chain bridge demo fully public: Basescan + Amoy Polygonscan
-  links on one payment
+- polygon-amoy (80002) in the network registry; `loadDeployments()` generalized
+  to one `deployments.<id>.json` overlay per live network; parameterized
+  `scripts/deploy-testnet.mjs` (replaces the Base Sepolia one-off) with
+  per-network gas-dust targets — Amoy enforces a ~30 gwei floor, ~100× Base
+  Sepolia (code 2026-07-13; deploy 2026-07-15 after faucet-funding the
+  deployer ~0.185 POL/day)
+- Cross-chain bridge demo now fully public: first real bridged payment
+  ($25k USD→JPY) escrowed on Base Sepolia and paid out on Polygon Amoy, with
+  Basescan + Amoy Polygonscan links on one payment (~7s end to end)
+- Live-fire lesson: the first attempt failed when the load-balanced public RPC
+  gas-estimated `settlePayment` against a replica that hadn't seen the escrow
+  block ("not initiated") — added `retryOnReplicaLag` to `operatorWrite` for
+  state-dependent calls (impossible to hit on single-node local chains); the
+  stuck escrow was recovered on-chain via manual `failAndRefund` with the
+  audit chain kept intact. Suite now 135 tests
 
 ### Phase 8: Tokenized MMF / Overnight Liquidity Parking — ✅ DONE 2026-07-14
 
