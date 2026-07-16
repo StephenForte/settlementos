@@ -94,7 +94,8 @@ Phase 9 Track A: production hardening per AUDIT.md
   no longer holds.
 - The MMF is backed by mockUSDC only, and the executor reserves the DESTINATION asset.
   So a payment can only exercise MMF liquidity when its destination currency is USD
-  (USD→USD is a legal corridor — `midRate` returns 1 when source == dest). A USD→JPY
+  (USD→USD is a legal corridor — `midRate` returns unity when source == dest; since
+  US-012 that is the scaled bigint RATE_SCALE, not the number 1). A USD→JPY
   payment reserves mockJPY and never touches the fund.
 - `scripts/*.mjs` CANNOT import anything from `lib/` (TS, and there is no TS runner —
   no tsx/ts-node installed). Any logic a seed/deploy script shares with lib/ must be
