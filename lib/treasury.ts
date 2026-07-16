@@ -10,7 +10,8 @@
 import type { Address } from "viem";
 import { prisma } from "./db";
 import { audit } from "./audit";
-import { ASSETS, fromBaseUnits, toBaseUnits, type AssetSymbol } from "./assets";
+import { ASSETS, fromBaseUnits, type AssetSymbol } from "./assets";
+import { MoneyError, parseScaledUnits } from "./money";
 import {
   accountsFor,
   ensureTreasuryAllowance,
@@ -93,11 +94,22 @@ async function fundAssetFor(networkId: string, assetSymbol: string): Promise<Fun
   return { fund, token: token.address, symbol, decimals: token.decimals };
 }
 
-function parseAmount(amount: string, decimals: number): bigint {
-  if (typeof amount !== "string" || !/^\d+(\.\d+)?$/.test(amount.trim())) {
-    throw new TreasuryError("INVALID_AMOUNT", `Amount must be a positive decimal string, got "${amount}"`);
+/**
+ * A decimal string in asset units to base units, strictly (lib/money): an
+ * over-precise amount is rejected, never truncated down to something the caller
+ * did not ask to park. Re-typed as a TreasuryError so route handlers keep their
+ * single cause → status table.
+ */
+function parseAssetUnits(amount: unknown, decimals: number, what: string): bigint {
+  try {
+    return parseScaledUnits(amount, decimals, { what });
+  } catch (e) {
+    throw new TreasuryError("INVALID_AMOUNT", e instanceof MoneyError ? e.message : `Unreadable ${what}`);
   }
-  const units = toBaseUnits(amount, decimals);
+}
+
+function parseAmount(amount: string, decimals: number): bigint {
+  const units = parseAssetUnits(amount, decimals, "amount");
   if (units <= 0n) {
     throw new TreasuryError("INVALID_AMOUNT", `Amount must be greater than zero, got "${amount}"`);
   }
@@ -114,9 +126,10 @@ export interface TreasuryBalance {
 }
 
 /**
- * Unreserved treasury balance for an asset, in base units. Mirrors
- * `availableLiquidity()` in lib/routing (same balance, same RESERVED rows) but
- * stays in bigint so the park guard never rounds.
+ * Unreserved treasury balance for an asset, in base units — the one definition
+ * of "balance minus RESERVED rows" in the codebase. `availableLiquidity()` in
+ * lib/routing wraps this to add display strings rather than summing the same
+ * rows a second time: two implementations would be two rounding rules.
  */
 export async function freeTreasuryBalance(networkId: string, symbol: AssetSymbol): Promise<TreasuryBalance> {
   const token = networkContracts(networkId).tokens[symbol];
@@ -126,7 +139,13 @@ export async function freeTreasuryBalance(networkId: string, symbol: AssetSymbol
   const reservations = await prisma.liquidityReservation.findMany({
     where: { asset: symbol, network: networkId, status: "RESERVED" },
   });
-  const reserved = reservations.reduce((sum, r) => sum + toBaseUnits(r.amount, token.decimals), 0n);
+  // Strict parse, not toBaseUnits: a reservation string we cannot represent
+  // exactly must not be silently truncated *down*. Under-counting what is
+  // promised to an in-flight payment is what would let it be double-spent.
+  const reserved = reservations.reduce(
+    (sum, r) => sum + parseAssetUnits(r.amount, token.decimals, "reserved amount"),
+    0n
+  );
   return { balance, reserved, free: balance > reserved ? balance - reserved : 0n };
 }
 

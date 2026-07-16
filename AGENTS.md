@@ -51,7 +51,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/state.ts](lib/state.ts) | Payment lifecycle state machine; `assertTransition()` enforces legal moves. Pure — no DB, no framework |
 | [lib/transitions.ts](lib/transitions.ts) | The one way a payment's status changes: `transitionStatus(payment, to, {data, detail, action, actor})` asserts the move is legal, then compare-and-swaps on the observed status (`updateMany where {id, status: from}`). Zero rows → `StaleTransitionError` (an `ApiError` with code `conflict`, so `caughtErrorResponse` renders a 409 with no mapping). Audits only after a successful swap |
 | [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: execution-lease claim, auto-recall of parked MMF liquidity, liquidity reservation, escrow, FX, payout, and the failure exits — refund while the escrow is held, **compensation** once it is released (`compensateSender`). `ExecutionLeaseError` (an `ApiError` with code `conflict` → 409, like `StaleTransitionError`) is a second attempt losing the lease. Also the operator-repair half: `stuckPayments()` (payments still holding funds, each with its escrow state read live) and `repairCompensation()` (re-run a compensation transfer that failed). `executorTestHooks` are the test-only throw points for every failure exit |
-| [lib/routing.ts](lib/routing.ts) | Route quotes (instant/batched/bridged), treasury liquidity checks. Parked MMF liquidity counts as available: free-short-but-parked-covers still quotes, flagged `recall_required` |
+| [lib/routing.ts](lib/routing.ts) | Route quotes (instant/batched/bridged), treasury liquidity checks. Parked MMF liquidity counts as available: free-short-but-parked-covers still quotes, flagged `recall_required`. `availableLiquidity()` is a display wrapper over `treasury.freeTreasuryBalance()` (bigint base units + formatted strings), and `liquidityCheck()`/`destinationUnits()` compare in **token base units** |
 | [lib/fx.ts](lib/fx.ts) | Simulated FX, **all bigint**: static mid rates, spread + tiered slippage, platform fee. Amounts are currency **minor units**; rates are integers scaled by `10^RATE_DECIMALS` (18) — `midRate()` returns a scaled bigint, `formatRate()` renders it. `convert()` (minor units across currencies at a rate), `applyBps()` (worsen a rate), `usdEquivalent()` (→ USD minor units, for tiering/risk thresholds) |
 | [lib/compliance.ts](lib/compliance.ts) | Compliance gate (KYB, sanctions, wallet/tx/corridor risk) → PASS/FAIL/MANUAL_REVIEW. Sanctions + wallet screening dispatch to real providers when env config is set (`OPENSANCTIONS_API_KEY`, `CHAINALYSIS_ORACLE_RPC_URL`), mocks otherwise |
 | `lib/providers/` | Real vendor adapters: OpenSanctions (sanctions match API), Chainalysis sanctions oracle (keyless on-chain `isSanctioned()` read for wallet screening). **Fail-safe: any provider error/timeout → MANUAL_REVIEW, never fail-open.** Verbatim provider evidence persisted on `ComplianceCheck.rawResponse` |
@@ -61,7 +61,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/session.ts](lib/session.ts) | Next-only half of auth: `currentPrincipal()` resolves the `sos_key` cookie via `cookies()` for **server components** (which have no `Request`); `sessionCookieOptions()` is the one place the cookie's flags are defined. Keep `next/headers` out of lib/auth.ts so route tests can pass a plain `Request` |
 | [lib/treasury.ts](lib/treasury.ts) | Tokenized-MMF treasury ops: `park()` (subscribe unreserved liquidity into the fund), `recall()` (T+0 redeem of a position, principal + accrued yield back to the treasury), `accrueDaily()` (advance the fund index by one day at `MMF_ANNUAL_RATE_BPS`, default 3.5% APY; `dailyIndex()`/`valueOfShares()` are the pure bigint math), `freeTreasuryBalance()` (bigint balance − RESERVED rows), `parkedBalance()` (derived value of ACTIVE positions; `0n`, never a throw, where no fund exists), `recallForPayment()` (FIFO auto-recall for the executor), `TreasuryError` (typed codes for route handlers), `TREASURY_*` audit actions |
 | [lib/assets.ts](lib/assets.ts) | Asset metadata, currency↔token mapping, base-unit conversion |
-| [lib/money.ts](lib/money.ts) | The amount gate at the API boundary: `parseAmount(amount, currency)` → bigint **minor units** (canonical grammar only — no exponent/sign/whitespace, at most the currency's decimals, ≤15 integer digits, > 0), `formatMinorUnits()` / `canonicalAmount()` for the stored string, `formatScaledUnits()` (its generic half — any integer scaled by `10^n`, used for FX rates), `CURRENCY_DECIMALS` (USD/SGD 2, JPY 0), typed `MoneyError`. Framework-free; routes map it to a 400 |
+| [lib/money.ts](lib/money.ts) | The amount gate at the API boundary: `parseAmount(amount, currency)` → bigint **minor units** (canonical grammar only — no exponent/sign/whitespace, at most the currency's decimals, ≤15 integer digits, > 0), `formatMinorUnits()` / `canonicalAmount()` for the stored string, `formatScaledUnits()` / `parseScaledUnits()` (the generic halves — any integer scaled by `10^n`, at any precision: FX rates, and reservation strings read back as token base units), `CURRENCY_DECIMALS` (USD/SGD 2, JPY 0), typed `MoneyError`. Framework-free; routes map it to a 400 |
 | [scripts/setup.mjs](scripts/setup.mjs) | Local deploy (tokens, escrow, TokenizedMMF + its yield buffer and treasury approval) + DB seed (dev-mnemonic accounts, local only) |
 | [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy via argv): env deployer key, per-network gas-dust targets, generated dust wallets, DB registration |
 | `app/api/*` | REST route handlers (thin; logic lives in lib/) |
@@ -111,7 +111,10 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   request would settle a sum nobody asked for. `Payment.amount` is stored in
   canonical form (`canonicalAmount()`: exactly the currency's decimals), so
   everything downstream may assume it. Never gate an amount with `Number(x)` —
-  it accepts every one of those inputs.
+  it accepts every one of those inputs. Reading a money string *back* (a
+  reservation row, a quoted destination amount) goes through `parseScaledUnits`,
+  not `toBaseUnits`: same reject-never-repair rule, at whatever scale the caller
+  names. Truncating a reservation *down* under-counts what is already promised.
 - **Quoting math is bigint, and it floors**: `lib/fx.ts` never puts a monetary value
   through a JS float — `157.2` is not representable, so `(amount - fee) * rate` drifts
   against the base units actually escrowed. Amounts are minor units, rates are scaled
@@ -183,9 +186,16 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 
 - **API shape**: JSON request/response fields are `snake_case`; Prisma models are
   `camelCase`. Keep route handlers thin.
-- **Reserved liquidity is untouchable**: only the treasury balance minus RESERVED
-  `LiquidityReservation` rows (`freeTreasuryBalance()`) may be parked in the MMF —
-  liquidity promised to an in-flight payment can never be swept into the fund.
+- **Reserved liquidity is untouchable, and "free" is defined once**: only the treasury
+  balance minus RESERVED `LiquidityReservation` rows (`freeTreasuryBalance()`, lib/treasury)
+  may be parked in the MMF — liquidity promised to an in-flight payment can never be swept
+  into the fund. That function is the *only* implementation of that subtraction: routing's
+  `availableLiquidity()` and the executor's reservation guard wrap it rather than sum the
+  same rows again, because a second implementation is a second rounding rule, and a park and
+  a payment must never both be told the same liquidity is theirs. Every comparison is bigint
+  **token base units** — a currency's minor units are a different scale (USD counts cents,
+  mockUSDC counts millionths), so cross the two only through a canonical string
+  (`destinationUnits()`), never a bare number compare.
 - **Positions are append-only history**: `recall()` flips a `TreasuryPosition` to
   RECALLED in place (status + `recalledAt` + `txHashRecall`); rows are never deleted,
   and a position's current value is always *derived* (`shares × live index`), never

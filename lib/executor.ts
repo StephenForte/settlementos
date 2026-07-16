@@ -25,7 +25,7 @@ import {
   treasuryTokenTransfer,
   type OnchainPaymentState,
 } from "./chain";
-import { availableLiquidity, type RouteOption } from "./routing";
+import { availableLiquidity, destinationUnits, type RouteOption } from "./routing";
 import { recallForPayment } from "./treasury";
 import { keccak256, toHex, type Address } from "viem";
 
@@ -197,7 +197,10 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
 
   // 1. Reserve destination-side liquidity on the destination network.
   const liq = await availableLiquidity(destAsset.symbol, destNet);
-  if (Number(liq.available) < Number(destAmount)) {
+  // Both sides in the destination token's base units — the same unit
+  // treasury.freeTreasuryBalance guards parking with, so a payment and a park
+  // can never both be told the same liquidity is theirs.
+  if (liq.availableUnits < destinationUnits(destAmount, liq.decimals)) {
     const failureReason = `Insufficient ${destAsset.symbol} liquidity on ${destNet}: need ${destAmount}, available ${liq.available}`;
     await setStatus(payment, "FAILED", { failureReason });
     throw new Error(failureReason);

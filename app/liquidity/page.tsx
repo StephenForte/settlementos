@@ -10,6 +10,7 @@ import {
 } from "@/lib/chain";
 import { explorerAddressUrl, networkInfo } from "@/lib/networks";
 import { ASSETS, fromBaseUnits, type AssetSymbol } from "@/lib/assets";
+import { parseScaledUnits } from "@/lib/money";
 import {
   MMF_ANNUAL_RATE_BPS,
   currentIndexOf,
@@ -23,6 +24,11 @@ export const dynamic = "force-dynamic";
 
 type PositionRow = Awaited<ReturnType<typeof prisma.treasuryPosition.findMany>>[number];
 type EligibleEntity = { externalId: string; name: string } | null;
+
+/** `fromBaseUnits` for a figure that may legitimately be below zero. */
+function signedBaseUnits(units: bigint, decimals: number): string {
+  return units < 0n ? `-${fromBaseUnits(-units, decimals)}` : fromBaseUnits(units, decimals);
+}
 
 /**
  * Per-network MMF view. Returns null where no fund is deployed (real testnets),
@@ -127,10 +133,14 @@ export default async function LiquidityPage() {
   const activeReservations = await prisma.liquidityReservation.findMany({
     where: { status: "RESERVED" },
   });
-  const reservedBy: Record<string, number> = {};
+  // Base units, like every other figure on this page — a float sum here would
+  // disagree with the bigint free balance the MMF card shows right beside it.
+  const reservedBy: Record<string, bigint> = {};
   for (const r of activeReservations) {
+    const decimals = dep.networks[r.network]?.contracts.tokens[r.asset]?.decimals;
+    if (decimals === undefined) continue; // reserved on a network this deploy does not carry
     const key = `${r.network}:${r.asset}`;
-    reservedBy[key] = (reservedBy[key] ?? 0) + Number(r.amount);
+    reservedBy[key] = (reservedBy[key] ?? 0n) + parseScaledUnits(r.amount, decimals, { what: "reserved amount" });
   }
 
   // Institutional-only guardrail: parking is offered only when a cleared,
@@ -148,7 +158,7 @@ export default async function LiquidityPage() {
         networkId,
         info: networkInfo(networkId),
         settlement: net.contracts.PaymentSettlement,
-        tokens: [] as { symbol: string; address: string; balance: string; reserved: number; available: number }[],
+        tokens: [] as { symbol: string; address: string; balance: string; reserved: string; available: string }[],
         unreachable: false,
         hasFund: mmfAddress(networkId) !== undefined,
         mmf: await mmfCardProps(
@@ -161,14 +171,16 @@ export default async function LiquidityPage() {
         section.tokens = await Promise.all(
           Object.entries(net.contracts.tokens).map(async ([symbol, t]) => {
             const raw = await tokenBalance(networkId, t.address, treasury);
-            const balance = fromBaseUnits(raw, t.decimals);
-            const reserved = reservedBy[`${networkId}:${symbol}`] ?? 0;
+            const reserved = reservedBy[`${networkId}:${symbol}`] ?? 0n;
             return {
               symbol,
               address: t.address,
-              balance,
-              reserved,
-              available: Number(balance) - reserved,
+              balance: fromBaseUnits(raw, t.decimals),
+              reserved: fromBaseUnits(reserved, t.decimals),
+              // Unclamped, unlike treasury.freeTreasuryBalance's guard: a treasury
+              // that has promised more than it holds is an anomaly an operator has
+              // to see, and showing it as zero is how it stays unseen.
+              available: signedBaseUnits(raw - reserved, t.decimals),
             };
           })
         );
@@ -244,14 +256,14 @@ export default async function LiquidityPage() {
                 <dl className="mt-3 space-y-1 text-xs">
                   <div className="flex justify-between">
                     <dt className="text-slate-500">Reserved</dt>
-                    <dd className={t.reserved > 0 ? "text-indigo-300" : "text-slate-400"}>
-                      {t.reserved.toLocaleString("en-US")}
+                    <dd className={Number(t.reserved) > 0 ? "text-indigo-300" : "text-slate-400"}>
+                      {Number(t.reserved).toLocaleString("en-US")}
                     </dd>
                   </div>
                   <div className="flex justify-between">
                     <dt className="text-slate-500">Available</dt>
-                    <dd className={t.available < 0 ? "text-rose-300" : "text-emerald-300"}>
-                      {t.available.toLocaleString("en-US")}
+                    <dd className={t.available.startsWith("-") ? "text-rose-300" : "text-emerald-300"}>
+                      {Number(t.available).toLocaleString("en-US")}
                     </dd>
                   </div>
                 </dl>

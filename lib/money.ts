@@ -60,6 +60,48 @@ export function currencyDecimals(currency: string): number {
   return decimals;
 }
 
+export interface ScaledParseOpts {
+  /** Names the value in error messages. */
+  what?: string;
+  /** Overrides the excess-precision message where the caller has a better one. */
+  excessPrecision?: string;
+}
+
+/**
+ * A canonical decimal string to an integer scaled by 10^decimals — the parse
+ * half of `formatScaledUnits`, and the strict counterpart of `toBaseUnits`
+ * (lib/assets), which truncates. Zero is allowed: this parses quantities we
+ * produced ourselves (a reservation row, a liquidity figure), where the
+ * positivity rule of a client's payment amount does not apply.
+ *
+ * Takes `unknown` for the same reason parseAmount does — a string type on a
+ * value read from JSON or a DB column is a hope, not a fact.
+ */
+export function parseScaledUnits(value: unknown, decimals: number, opts: ScaledParseOpts = {}): bigint {
+  const what = opts.what ?? "value";
+
+  if (typeof value !== "string" || !CANONICAL_DECIMAL.test(value)) {
+    throw new MoneyError(
+      "INVALID_FORMAT",
+      `${what} must be a plain decimal string, e.g. "25000.00" — no sign, exponent, or spaces`
+    );
+  }
+
+  const [whole, frac = ""] = value.split(".");
+  if (whole.length > MAX_INTEGER_DIGITS) {
+    throw new MoneyError("TOO_LARGE", `${what} may have at most ${MAX_INTEGER_DIGITS} integer digits`);
+  }
+  if (frac.length > decimals) {
+    throw new MoneyError(
+      "EXCESS_PRECISION",
+      opts.excessPrecision ??
+        (decimals === 0 ? `${what} must be a whole number` : `${what} allows at most ${decimals} decimal places`)
+    );
+  }
+
+  return BigInt(whole) * 10n ** BigInt(decimals) + BigInt(frac.padEnd(decimals, "0") || "0");
+}
+
 /**
  * Parse a client-supplied amount into that currency's minor units.
  *
@@ -68,28 +110,13 @@ export function currencyDecimals(currency: string): number {
  */
 export function parseAmount(amount: unknown, currency: string): bigint {
   const decimals = currencyDecimals(currency);
-
-  if (typeof amount !== "string" || !CANONICAL_DECIMAL.test(amount)) {
-    throw new MoneyError(
-      "INVALID_FORMAT",
-      'amount must be a plain decimal string, e.g. "25000.00" — no sign, exponent, or spaces'
-    );
-  }
-
-  const [whole, frac = ""] = amount.split(".");
-  if (whole.length > MAX_INTEGER_DIGITS) {
-    throw new MoneyError("TOO_LARGE", `amount may have at most ${MAX_INTEGER_DIGITS} integer digits`);
-  }
-  if (frac.length > decimals) {
-    throw new MoneyError(
-      "EXCESS_PRECISION",
+  const units = parseScaledUnits(amount, decimals, {
+    what: "amount",
+    excessPrecision:
       decimals === 0
         ? `${currency} amounts must be whole numbers`
-        : `${currency} amounts allow at most ${decimals} decimal places`
-    );
-  }
-
-  const units = BigInt(whole) * 10n ** BigInt(decimals) + BigInt(frac.padEnd(decimals, "0") || "0");
+        : `${currency} amounts allow at most ${decimals} decimal places`,
+  });
   if (units <= 0n) throw new MoneyError("NOT_POSITIVE", "amount must be greater than zero");
   return units;
 }

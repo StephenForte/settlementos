@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   parseAmount,
+  parseScaledUnits,
   formatMinorUnits,
   canonicalAmount,
   currencyDecimals,
@@ -98,6 +99,39 @@ describe("formatMinorUnits", () => {
     ] as [string, string][]) {
       expect(formatMinorUnits(parseAmount(amount, currency), currency)).toBe(amount);
     }
+  });
+});
+
+describe("parseScaledUnits", () => {
+  it("scales a canonical string to any precision — token base units, not just currency minor units", () => {
+    // The same "1000.00" is 100,000 cents to a currency and 1,000,000,000 base
+    // units to mockUSDC. Which scale you meant is the caller's to say.
+    expect(parseScaledUnits("1000.00", 2)).toBe(100_000n);
+    expect(parseScaledUnits("1000.00", 6)).toBe(1_000_000_000n);
+    expect(parseScaledUnits("1000", 0)).toBe(1_000n);
+    expect(parseScaledUnits("0.000001", 6)).toBe(1n);
+  });
+
+  it("allows zero, unlike parseAmount — a reservation total is a quantity, not a payment", () => {
+    expect(parseScaledUnits("0", 6)).toBe(0n);
+    expect(parseScaledUnits("0.00", 2)).toBe(0n);
+    expect(() => parseAmount("0", "USD")).toThrow(/greater than zero/);
+  });
+
+  it("rejects excess precision rather than truncating it away, unlike toBaseUnits", () => {
+    expect(() => parseScaledUnits("1.0000001", 6)).toThrow(MoneyError);
+    expect(() => parseScaledUnits("1000.5", 0)).toThrow(/whole number/);
+  });
+
+  it("holds parseAmount's grammar and size limits", () => {
+    for (const bad of ["1e6", "Infinity", "-5", "+5", " 1", "", "abc", null, 100]) {
+      expect(() => parseScaledUnits(bad, 6), String(bad)).toThrow(MoneyError);
+    }
+    expect(() => parseScaledUnits("1000000000000000", 6)).toThrow(/15 integer digits/);
+  });
+
+  it("round-trips with formatScaledUnits' minor-unit half", () => {
+    expect(formatMinorUnits(parseScaledUnits("25000.00", 2), "USD")).toBe("25000.00");
   });
 });
 
