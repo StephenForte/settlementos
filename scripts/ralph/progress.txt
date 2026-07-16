@@ -88,5 +88,65 @@ Phase 9 Track A: production hardening per AUDIT.md
   So a payment can only exercise MMF liquidity when its destination currency is USD
   (USD→USD is a legal corridor — `midRate` returns 1 when source == dest). A USD→JPY
   payment reserves mockJPY and never touches the fund.
+- `scripts/*.mjs` CANNOT import anything from `lib/` (TS, and there is no TS runner —
+  no tsx/ts-node installed). Any logic a seed/deploy script shares with lib/ must be
+  duplicated inline and kept in sync BY HAND (see setup.mjs's `hashKey`/`generateKey`
+  copy of lib/auth.ts). Note the duplication in AGENTS.md when you add one, and
+  cross-check it for real — a silent drift here breaks every seeded key.
+- Auth identity lives in `lib/auth.ts`: `authenticate(request)` → `Principal | null`
+  (`x-api-key` header, then `sos_key` cookie). It types its param as `Request`, not
+  `NextRequest`, so route tests can pass a plain `new Request(...)` — NextRequest
+  extends Request, so both work. Security helpers should FAIL CLOSED (return null)
+  on malformed data rather than throw or grant a partial identity.
+- Secrets the app generates (API keys) follow the deployments.json precedent: hash/
+  reference in the DB, raw value only in a gitignored `chain/*.json` + printed once
+  by setup. `.gitignore`'s `chain/deployments*.json` does NOT cover other chain/
+  files — add an explicit line and verify with `git check-ignore -v <path>`.
+- Verifying `npm run setup` without destroying dev state (the documented dance):
+  back up `chain/deployments.json` + `prisma/dev.db` to /tmp, start both chains
+  (`npm run chain`, `npm run chain:polygon`), poll `eth_chainId` on 8545/8546 until
+  both answer, run setup, then `pkill -f "hardhat node"` and restore both files.
+  The restored dev.db predates any schema change you just made — that is expected;
+  `npm run setup` is what re-syncs it.
+- To exercise something against the DEV db (not the fixture), write a throwaway
+  vitest file that news up its own `PrismaClient({ datasourceUrl: file:<dev.db> })`
+  — `setup-env.ts` pins DATABASE_URL to the fixture for every worker, so an explicit
+  datasourceUrl is the only way around it. Delete the file afterward.
 
+---
+
+## 2026-07-16 11:45 - US-001 (API-key identity model)
+- Added the ApiKey identity foundation for Phase 9 authz. Identity ONLY — nothing is
+  enforced yet, every route is still open until US-003/US-004. Commit b7545d3.
+- Files changed:
+  - prisma/schema.prisma — ApiKey model (keyHash @unique, role, entityId? FK, label)
+    + `apiKeys ApiKey[]` back-relation on Entity. Role is a String with a comment,
+    matching the schema's existing enum-by-convention style (SQLite has no enums).
+  - lib/auth.ts (new) — Role/Principal types, authenticate(request), principalForKey(raw),
+    generateKey(), hashKey(), API_KEY_HEADER, API_KEY_COOKIE.
+  - scripts/setup.mjs — seeds 6 keys, prints once, writes chain/dev-api-keys.json;
+    apiKey.deleteMany() added to the reset (before entity.deleteMany, FK order).
+  - .gitignore — chain/dev-api-keys.json
+  - tests/fixture.ts — API_KEYS constant; tests/global-setup.ts — seeds them
+  - tests/db/auth.test.ts (new) — 9 tests. Suite 135 -> 144, tsc + lint green.
+- Verification beyond the suite: ran `npm run setup` for real against both local chains
+  (backup/restore dance, now in Codebase Patterns) and cross-checked all 6 seeded dev
+  keys resolve via lib/auth's hashKey — this is the ONLY thing that catches drift
+  between setup.mjs's duplicated hash and lib/auth's, since the fixture seeds via
+  lib/auth directly and would stay green even if setup.mjs drifted.
+- **Learnings for future iterations:**
+  - `principalForKey(raw)` is deliberately split out of `authenticate(request)` —
+    US-002 needs to resolve a principal from `cookies()` in a server component, where
+    there is no Request object. Use it there.
+  - Principal.entityId is the Entity.id (cuid), NOT externalId. API_KEYS.entities in
+    the fixture is keyed by externalId, so tests must look the entity up to compare.
+  - authenticate() returns null for BOTH anonymous and invalid keys, on purpose: the
+    caller decides the status code (US-003 wants a generic 401 for both, no oracle
+    telling an attacker which keys exist).
+  - Malformed-row fail-closed is tested by INSERTING a bad row (orphaned ENTITY key,
+    unknown role) and asserting null — worth keeping as US-003/4 add role checks.
+  - There is no tsx/ts-node in this repo; don't reach for a quick `tsx script.ts`.
+  - Next up US-002 (login page + cookie). The cookie name/reader already exist here —
+    /api/auth/login just has to validate via principalForKey and set `sos_key`
+    httpOnly. Don't re-derive the cookie parsing; authenticate() already does it.
 ---

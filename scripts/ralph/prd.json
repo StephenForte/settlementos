@@ -16,8 +16,8 @@
         "Tests pass"
       ],
       "priority": 1,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Done 2026-07-16 (b7545d3). lib/auth.ts exports authenticate(request), principalForKey(raw) (for US-002's cookies() server-component path), generateKey, hashKey, API_KEY_HEADER, API_KEY_COOKIE. Fails closed on malformed rows (ENTITY key with no entityId, unrecognized role) -> null. scripts/setup.mjs is .mjs and CANNOT import lib/auth.ts, so it carries a duplicated key format + hashKey — keep in sync (noted in AGENTS.md). Tests use fixed API_KEYS in tests/fixture.ts (dev-mnemonic pattern) seeded by global-setup.ts. chain/dev-api-keys.json needed a new .gitignore line (deployments*.json did not cover it). Suite 135 -> 144."
     },
     {
       "id": "US-002",
