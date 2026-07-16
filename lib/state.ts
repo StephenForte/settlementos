@@ -66,3 +66,11 @@ export const TERMINAL_STATES: PaymentStatus[] = [
   "REFUNDED",
   "EXPIRED",
 ];
+
+/**
+ * States at which an execution attempt is over, so the payment's execution lease
+ * must be released (see `Payment.executionLeaseId`). FAILED is not terminal — a
+ * refund can still follow — but the attempt that failed is done with the row, and
+ * holding the lease past it would block an operator retry the state machine allows.
+ */
+export const LEASE_RELEASE_STATES: PaymentStatus[] = [...TERMINAL_STATES, "FAILED"];

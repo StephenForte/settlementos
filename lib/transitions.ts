@@ -15,7 +15,7 @@
 import type { Payment } from "@prisma/client";
 import { prisma } from "./db";
 import { audit } from "./audit";
-import { assertTransition, type PaymentStatus } from "./state";
+import { assertTransition, LEASE_RELEASE_STATES, type PaymentStatus } from "./state";
 import { ApiError } from "./api-errors";
 
 /**
@@ -64,11 +64,19 @@ export async function transitionStatus(
   const from = payment.status;
   assertTransition(from, to);
 
+  // Reaching one of these ends the execution attempt, so its lease goes with the
+  // status in the same statement — a lease outliving the attempt that took it
+  // would block every later retry. Kept out of the audit detail below: releasing
+  // the lease is bookkeeping, not part of the change being recorded.
+  const releaseLease = LEASE_RELEASE_STATES.includes(to)
+    ? { executionLeaseId: null, leasedAt: null }
+    : {};
+
   // The CAS: `status: from` in the WHERE is what makes this safe. A plain
   // update({ where: { id } }) would clobber a concurrent writer's result.
   const { count } = await prisma.payment.updateMany({
     where: { id: payment.id, status: from },
-    data: { status: to, ...data },
+    data: { status: to, ...data, ...releaseLease },
   });
   if (count === 0) throw new StaleTransitionError(payment.id, from, to as PaymentStatus);
 

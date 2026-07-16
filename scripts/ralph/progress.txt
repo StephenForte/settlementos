@@ -179,6 +179,20 @@ Phase 9 Track A: production hardening per AUDIT.md
   vitest file that news up its own `PrismaClient({ datasourceUrl: file:<dev.db> })`
   — `setup-env.ts` pins DATABASE_URL to the fixture for every worker, so an explicit
   datasourceUrl is the only way around it. Delete the file afterward.
+- A lib error with an obvious client meaning should extend `ApiError` with its code
+  (StaleTransitionError, ExecutionLeaseError → "conflict"). Routes need NO mapping:
+  the existing `caughtErrorResponse`/`fromThrown` passes an ApiError's code + message
+  straight through. Reserve treasury's typed-code + per-route status table for errors
+  whose HTTP meaning is route-dependent.
+- Guarding a side-effecting operation against concurrency: the status you READ is
+  already stale — the CAS that claims the work is what decides the race, and it must
+  come BEFORE the first irreversible effect (a chain write), not just before the DB
+  write. Anything claimed must have a release path for throws that never reach the
+  code that would normally release it (a `finally`, scoped to the claim's own id so
+  it cannot free a later claim).
+- Naming a relation-included Prisma row at a function boundary (to extract a helper
+  out of a long function) needs `Prisma.PaymentGetPayload<{ include: {...} }>` —
+  findUniqueOrThrow's inline inference does not survive being passed as a param.
 
 ---
 
@@ -430,3 +444,44 @@ Phase 9 Track A: production hardening per AUDIT.md
     prisma.$transaction that creates the reservation. US-016 (atomic audit) will want
     transitionStatus to take an optional tx client — the audit() call is already the
     last thing it does, so that is a localized change.
+
+## 2026-07-16 - US-007 (Per-payment execution lease claimed atomically with liquidity reservation)
+- Payment gains `executionLeaseId` + `leasedAt`. executePayment claims the lease with a CAS
+  (`where { id, status: "APPROVED", executionLeaseId: null }`) as its FIRST write, then runs the
+  existing body via a new `runExecution()` helper wrapped in try/finally. The reservation upsert
+  now sits inside a `prisma.$transaction` that re-asserts the lease before writing it.
+  `transitionStatus` clears the lease on any LEASE_RELEASE_STATES status.
+- Files: prisma/schema.prisma, lib/state.ts (LEASE_RELEASE_STATES), lib/transitions.ts,
+  lib/executor.ts (ExecutionLeaseError, PaymentWithParties, claim + runExecution + finally),
+  tests/integration/execution-lease.test.ts (new, 6 tests), AGENTS.md.
+- Suite 191 -> 197. tsc + lint green.
+- **Learnings for future iterations:**
+  - DECISION (AC tension, worth knowing for US-009/US-010): AC1 says claim the lease "inside the
+    same $transaction that creates the LiquidityReservation", but AC2 says the loser must touch
+    NO chain state — and the reservation is preceded by the auto-recall, which WRITES to chain.
+    Those cannot both hold with a single claim at reservation time. Resolved by splitting: claim
+    first (before recall, so the loser is stopped before any chain call), then RE-assert the lease
+    inside the reservation transaction (so {lease, reservation} is still atomic — a reservation
+    can never exist without the lease). Reserving before recalling was rejected: freeTreasuryBalance
+    is balance minus RESERVED rows, so a reservation written first would make recallForPayment
+    over-redeem from the MMF. The "recall before reserve" invariant in AGENTS.md is load-bearing.
+  - A lease needs a release path for throws that never reach a terminal transition (unquoted
+    payment, wallet lookup failure, RPC down during setup). transitionStatus covers the
+    status-changing paths; the executor's `finally` (scoped to its OWN leaseId, so it can never
+    free a later attempt's lease) covers the rest. Without it a setup-time throw locks the payment
+    out of execution permanently — there is a test for exactly this.
+  - Extracting `runExecution()` out of `executePayment` needs the relation-included payment type:
+    `Prisma.PaymentGetPayload<{ include: {...} }>` is the idiomatic way to name it (the inline
+    findUniqueOrThrow inference does not survive a function boundary). Assign the param to a local
+    `let` rather than reassigning the param itself.
+  - FAILED is deliberately NOT in TERMINAL_STATES (FAILED -> REFUNDED is legal), so the lease set is
+    its own list: `LEASE_RELEASE_STATES = [...TERMINAL_STATES, "FAILED"]`. When US-009 adds
+    COMPENSATED, add it to TERMINAL_STATES and the lease set follows for free.
+  - Lease-clearing is merged into the CAS's `data` but kept OUT of the audit detail (which spreads
+    `...data` separately) — releasing a lease is bookkeeping, not part of the recorded change.
+  - Route-level proof of a 409 works with no new mapping: ExecutionLeaseError extends
+    ApiError("conflict"), so the execute route's existing `fromThrown(e, "execution_failed", ...)`
+    passes the conflict code through. Same payoff US-006 noted for StaleTransitionError.
+  - Testing "exactly one escrow happened" is best asserted ON CHAIN (treasury USDC delta == one
+    payment's amount), not just by counting audit rows — the audit count would pass even if the
+    second attempt had escrowed and been rolled back in the DB.

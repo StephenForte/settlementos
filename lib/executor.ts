@@ -8,9 +8,11 @@
 // recipient's wallet ON the destination network (a real ERC-20 transfer on
 // chain 2), giving the payment transaction hashes on both networks.
 
-import type { Payment } from "@prisma/client";
+import { randomUUID } from "node:crypto";
+import type { Payment, Prisma } from "@prisma/client";
 import { prisma } from "./db";
 import { audit } from "./audit";
+import { ApiError } from "./api-errors";
 import { type PaymentStatus } from "./state";
 import { transitionStatus } from "./transitions";
 import { assetForCurrency, toBaseUnits } from "./assets";
@@ -24,6 +26,23 @@ import {
 import { availableLiquidity, type RouteOption } from "./routing";
 import { recallForPayment } from "./treasury";
 import { keccak256, toHex, type Address } from "viem";
+
+/**
+ * Someone else is already executing this payment (or it left APPROVED before we
+ * claimed it). A 409 via `caughtErrorResponse`, same as StaleTransitionError:
+ * expected under concurrency, not a bug. The message names no internals and does
+ * not distinguish the two causes.
+ */
+export class ExecutionLeaseError extends ApiError {
+  constructor(readonly paymentId: string) {
+    super("conflict", "payment is already being executed");
+    this.name = "ExecutionLeaseError";
+  }
+}
+
+type PaymentWithParties = Prisma.PaymentGetPayload<{
+  include: { sender: { include: { wallets: true } }; recipient: { include: { wallets: true } } };
+}>;
 
 // Every status change the executor makes is a compare-and-swap against the
 // status it last observed, so a concurrent writer can never be overwritten:
@@ -51,9 +70,13 @@ function selectedRoute(payment: Payment): RouteOption {
  * Execute an APPROVED payment end-to-end. Runs synchronously — the local
  * chains confirm in milliseconds. On on-chain failure after escrow, funds are
  * refunded on the source network.
+ *
+ * At most one attempt runs per payment: the execution lease is claimed here,
+ * before anything reads a chain or moves a token, so a second concurrent execute
+ * throws ExecutionLeaseError (→ 409) having touched no chain state at all.
  */
 export async function executePayment(paymentId: string): Promise<Payment> {
-  let payment = await prisma.payment.findUniqueOrThrow({
+  const payment = await prisma.payment.findUniqueOrThrow({
     where: { id: paymentId },
     include: { sender: { include: { wallets: true } }, recipient: { include: { wallets: true } } },
   });
@@ -62,6 +85,36 @@ export async function executePayment(paymentId: string): Promise<Payment> {
     throw new Error(`Payment must be APPROVED to execute (current: ${payment.status})`);
   }
 
+  // The claim, not the check above, is what decides the race: the status read a
+  // moment ago is already stale. `executionLeaseId: null` admits exactly one
+  // winner; everyone else matches zero rows.
+  const leaseId = randomUUID();
+  const { count } = await prisma.payment.updateMany({
+    where: { id: paymentId, status: "APPROVED", executionLeaseId: null },
+    data: { executionLeaseId: leaseId, leasedAt: new Date() },
+  });
+  if (count === 0) throw new ExecutionLeaseError(paymentId);
+
+  try {
+    return await runExecution({ ...payment, executionLeaseId: leaseId }, leaseId);
+  } finally {
+    // transitionStatus releases the lease at SETTLED/FAILED/REFUNDED, so this
+    // normally matches zero rows. It exists for the throws that never reach a
+    // transition at all — an unquoted payment, a wallet lookup that fails, an
+    // RPC down during setup — which would otherwise strand the lease and lock
+    // the payment out of every retry. Scoped to our own leaseId so it can never
+    // free a later attempt's.
+    await prisma.payment
+      .updateMany({
+        where: { id: paymentId, executionLeaseId: leaseId },
+        data: { executionLeaseId: null, leasedAt: null },
+      })
+      .catch(() => {});
+  }
+}
+
+async function runExecution(claimed: PaymentWithParties, leaseId: string): Promise<Payment> {
+  let payment = claimed;
   const route = selectedRoute(payment);
   const sourceNet = route.source_network;
   const destNet = route.destination_network;
@@ -123,15 +176,27 @@ export async function executePayment(paymentId: string): Promise<Payment> {
     await setStatus(payment, "FAILED", { failureReason });
     throw new Error(failureReason);
   }
-  await prisma.liquidityReservation.upsert({
-    where: { paymentId: payment.id },
-    create: {
-      paymentId: payment.id,
-      asset: destAsset.symbol,
-      network: destNet,
-      amount: destAmount,
-    },
-    update: { asset: destAsset.symbol, network: destNet, amount: destAmount, status: "RESERVED" },
+  // Lease and reservation are written together: re-asserting the lease inside the
+  // same transaction is what makes a reservation impossible without it. The claim
+  // is re-checked rather than assumed — between the claim and here the payment ran
+  // an auto-recall and a chain read, and a reservation held by an attempt that no
+  // longer owns the payment would silently withhold liquidity from everyone else.
+  await prisma.$transaction(async (tx) => {
+    const { count } = await tx.payment.updateMany({
+      where: { id: payment.id, status: "APPROVED", executionLeaseId: leaseId },
+      data: { leasedAt: new Date() },
+    });
+    if (count === 0) throw new ExecutionLeaseError(payment.id);
+    await tx.liquidityReservation.upsert({
+      where: { paymentId: payment.id },
+      create: {
+        paymentId: payment.id,
+        asset: destAsset.symbol,
+        network: destNet,
+        amount: destAmount,
+      },
+      update: { asset: destAsset.symbol, network: destNet, amount: destAmount, status: "RESERVED" },
+    });
   });
   payment = {
     ...payment,
