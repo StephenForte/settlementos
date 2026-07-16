@@ -162,6 +162,25 @@ Phase 9 Track A: production hardening per AUDIT.md
   request body (the review route took `body.reviewer` — a forgeable audit signature).
   Audit with `actorOf(principal)` from app/api/guard.ts; leave machine-initiated events
   (executor, treasury internals) as "system".
+- Concurrency control here is always RESERVE-THEN-ACT, never CHECK-THEN-ACT: let the DB
+  decide the race (a unique index, or a CAS `updateMany` on the value you observed), then
+  do the work you now own. `transitionStatus` (status CAS), the execution lease (CAS on
+  `executionLeaseId IS NULL`), and idempotency (unique `(principalId, key)` create) are
+  all the same shape. A `findFirst` + `if (!exists)` is a bug — two callers both pass it.
+- The `X | NextResponse` return + `if (x instanceof NextResponse) return x` narrowing is
+  the house convention for "do the thing, or hand me the response to send" helpers
+  (`requirePrincipal`, `authorizePaymentWrite`, `beginIdempotency`). Follow it for new
+  route glue rather than inventing a result object or throwing.
+- A route wrapper that must cover EVERY exit (idempotency; later: rate limiting) needs
+  the handler body as its own function returning a NextResponse — extract
+  `POST()` → thin wrapper + `doTheThing(principal, ...)`, rather than threading the
+  wrapper through a dozen early returns. Note `req.json()` is a one-shot stream, so read
+  the body ONCE in the wrapper and pass it down; to store a response you must
+  `res.clone().text()` it.
+- Fields on `Principal` come from `principalForKey` (lib/auth.ts) — the ONLY constructor,
+  so adding one (e.g. `keyId` for per-caller state) is cheap. But `toEqual` assertions on
+  a whole Principal in tests/db/auth.test.ts break on any new field: use
+  `expect.any(String)` for ids.
 - When a write route adds an authz check, its not-found body must match the READ
   route's byte for byte (both `notFound()` from guard.ts) — a write that says
   "payment not found" while the guard says "not found" re-opens the existence oracle
@@ -485,3 +504,64 @@ Phase 9 Track A: production hardening per AUDIT.md
   - Testing "exactly one escrow happened" is best asserted ON CHAIN (treasury USDC delta == one
     payment's amount), not just by counting audit rows — the audit count would pass even if the
     second attempt had escrowed and been rolled back in the DB.
+
+## 2026-07-16 12:45 - US-008
+- Idempotency keys for POST /api/payments and POST /api/payments/[id]/execute. An
+  `Idempotency-Key` header makes a retry replay the first response instead of creating
+  or executing twice; no header = unchanged behaviour (the browser demo sends none).
+- Files changed:
+  - prisma/schema.prisma — new IdempotencyRecord (principalId, key, route, requestHash,
+    responseStatus?, responseBody?, createdAt; @@unique([principalId, key]))
+  - lib/auth.ts — Principal gains `keyId` (= ApiKey.id), the stable per-caller identity
+  - lib/idempotency.ts (new) — beginIdempotent / completeIdempotent / abandonIdempotent,
+    hashRequest (canonical body fingerprint), IDEMPOTENCY_TTL_MS (24h)
+  - app/api/idempotency.ts (new) — beginIdempotency() → IdempotentScope | NextResponse
+  - lib/api-errors.ts — new `idempotency_conflict` code → 422
+  - app/api/payments/route.ts, app/api/payments/[id]/execute/route.ts — handler bodies
+    extracted to createPayment() / runExecute(), wrapped by the scope
+  - tests/integration/idempotency.test.ts (new, 10 tests), tests/db/auth.test.ts (keyId)
+  - AGENTS.md — architecture map rows + the reserve-then-stamp invariant
+- Suite 197 -> 208. tsc + lint green. No UI change, so no browser pass; the tests drive
+  the real handlers.
+- **Learnings for future iterations:**
+  - RESERVE-THEN-STAMP was the whole design decision. The obvious shape — look the key
+    up, and if it is absent run the handler — is exactly the check-then-act bug the CAS
+    stories (US-006/US-007) already outlawed: two duplicates both find nothing and both
+    run. Creating the record FIRST makes the unique index the arbiter, and the record's
+    own state then answers every duplicate: unstamped -> 409 in-flight, stamped ->
+    replay, different body/route -> 422. This codebase now has three instances of the
+    same pattern (status CAS, execution lease, idempotency) — reach for it by default.
+  - The two ACs pushed in different directions on WHAT to store. Storing only successes
+    would leave a definite failure (a 409 from a bad status, a 500 execution_failed)
+    retryable-but-not-replayable, which contradicts "same key + same body replays the
+    stored response". Resolution: store whatever the handler RETURNED (errors included —
+    a definite answer is an answer), and abandon the key only when the handler THREW,
+    because an unknown outcome is the one case where re-running is the honest move.
+  - `route` must be the CONCRETE path, not the template. `POST /api/payments/[id]/execute`
+    as the stored route would let one key aimed at payment A replay its response for
+    payment B — a silent wrong answer. Storing `POST /api/payments/pay_x/execute` turns
+    that into the 422 it is. Anything a route's identity depends on but the body does not
+    carry (a path param) has to be in `route` or in the hash.
+  - JSON.stringify is NOT a request fingerprint: its key order is insertion order, which
+    a client does not control, so `{a,b}` and `{b,a}` would 422 as "different requests".
+    Canonicalize (recursive key sort) before hashing.
+  - Expiry needed the CAS treatment too: two callers presenting the same aged-out key
+    would otherwise both reclaim it. `updateMany where {id, createdAt: <the value I read>}`
+    makes exactly one the owner. The begin loop is bounded at 2 passes — the row can be
+    abandoned or reclaimed between our failed create and our read, but a second failure
+    means someone holds a live reservation, which IS the in-flight answer.
+  - Extracting the handler body (POST → thin wrapper + createPayment()) was the only way
+    to make the scope cover every exit. Watch the types when you do it: `req.json()`
+    returns `any`, so the destructuring inside the old handler type-checked on nothing;
+    the extracted function needs a real param type (an all-optional interface documents
+    "unverified until validated" honestly — `Record<string, unknown>` will NOT compile
+    against `NETWORKS[source_network]`).
+  - Prisma unique-violation detection: catch and check `e.code === "P2002"` (no import of
+    Prisma.PrismaClientKnownRequestError needed). Rethrow anything else — swallowing it
+    would turn a real DB fault into a silent duplicate run.
+  - `res.clone().text()` to store a response body: the stream is one-shot and the caller
+    still needs it. Same reason the wrapper reads `req.json()` once and passes it down.
+  - Adding a field to Principal broke two `toEqual` assertions in tests/db/auth.test.ts
+    (nothing else — principalForKey is the only constructor). Cheap, but grep for
+    whole-object assertions before assuming a type-level change is free.
+---

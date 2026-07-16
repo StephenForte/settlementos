@@ -154,6 +154,28 @@ model TreasuryPosition {
   recalledAt    DateTime?
 }
 
+// Safe retries for write endpoints. One row per (principal, Idempotency-Key):
+// the row is created as a *reservation* before the handler runs and stamped with
+// the response afterwards, so a duplicate that arrives mid-flight finds the
+// reservation instead of racing the original. Rows are reclaimed in place once
+// they age out (no cron — expiry is checked when the key is next presented).
+//
+// principalId is an ApiKey.id and deliberately carries no FK: reseeding keys
+// (npm run setup) drops the ApiKey rows, and an orphaned record is harmless —
+// its key can never be presented again.
+model IdempotencyRecord {
+  id             String   @id @default(cuid())
+  principalId    String
+  key            String // the raw Idempotency-Key header value
+  route          String // concrete path, e.g. "POST /api/payments/pay_x/execute"
+  requestHash    String // sha256 of the canonical JSON body
+  responseStatus Int? // null while the request is still in flight
+  responseBody   String?
+  createdAt      DateTime @default(now())
+
+  @@unique([principalId, key])
+}
+
 model LiquidityReservation {
   id        String   @id @default(cuid())
   paymentId String   @unique

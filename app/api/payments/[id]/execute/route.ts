@@ -13,12 +13,19 @@ import {
   notFound,
   requirePrincipal,
 } from "../../../guard";
+import { beginIdempotency } from "../../../idempotency";
+import type { Principal } from "@/lib/auth";
 
 /**
  * Execute a payment. From QUOTED: runs the compliance gate first; if all checks
  * pass the payment auto-approves and settles. A MANUAL_REVIEW outcome parks the
  * payment for a compliance reviewer (POST .../review). From APPROVED (i.e.
  * after reviewer sign-off): settles directly.
+ *
+ * An Idempotency-Key makes the retry of a timed-out execute safe: it replays the
+ * first attempt's response rather than reaching the chain twice. (The execution
+ * lease already makes a *concurrent* double-execute impossible — this is the
+ * cheaper, earlier guard, and the one that survives the first attempt finishing.)
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const principal = await requirePrincipal(req);
@@ -26,6 +33,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const { id } = await params;
   const body = await req.json().catch(() => ({}));
+
+  const idem = await beginIdempotency(req, principal, `POST /api/payments/${id}/execute`, body);
+  if (idem instanceof NextResponse) return idem;
+  try {
+    return await idem.complete(await runExecute(principal, id, body));
+  } catch (e) {
+    await idem.abandon();
+    throw e;
+  }
+}
+
+async function runExecute(principal: Principal, id: string, body: { route_id?: string }): Promise<NextResponse> {
   let payment = await prisma.payment.findUnique({ where: { id } });
   if (!payment) return notFound();
 

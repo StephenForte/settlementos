@@ -15,6 +15,8 @@ import {
   requirePrincipal,
   scrubFailureReason,
 } from "../guard";
+import { beginIdempotency } from "../idempotency";
+import type { Principal } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
   const principal = await requirePrincipal(req);
@@ -39,6 +41,37 @@ export async function POST(req: NextRequest) {
   // Next renders as a 500 (with a stack, in dev).
   const body = await req.json().catch(() => null);
   if (!body || typeof body !== "object") return invalidRequest("body must be a JSON object");
+
+  // Wraps the whole handler, not just the create: a retried request must replay
+  // the answer the first one gave, whatever it was.
+  const idem = await beginIdempotency(req, principal, "POST /api/payments", body);
+  if (idem instanceof NextResponse) return idem;
+  try {
+    return await idem.complete(await createPayment(principal, body));
+  } catch (e) {
+    await idem.abandon();
+    throw e;
+  }
+}
+
+/**
+ * The body as the checks below assume it looks. Every field is optional and
+ * unverified — the validation in createPayment is what makes it true.
+ */
+interface CreatePaymentBody {
+  sender_id?: string;
+  recipient_id?: string;
+  amount?: string;
+  source_currency?: string;
+  destination_currency?: string;
+  source_network?: string;
+  destination_network?: string;
+  purpose?: string;
+  reference_id?: string;
+  memo?: string;
+}
+
+async function createPayment(principal: Principal, body: CreatePaymentBody): Promise<NextResponse> {
   const {
     sender_id,
     recipient_id,

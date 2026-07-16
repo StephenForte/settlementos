@@ -18,12 +18,24 @@ const withCookie = (cookie: string) =>
 describe("API-key identity", () => {
   it("resolves the seeded OPERATOR key from the x-api-key header", async () => {
     const principal = await authenticate(withHeader(API_KEYS.operator));
-    expect(principal).toEqual({ role: "OPERATOR", label: "Platform operator" });
+    // keyId is the ApiKey row's cuid, so it can only be matched loosely here.
+    expect(principal).toEqual({ keyId: expect.any(String), role: "OPERATOR", label: "Platform operator" });
   });
 
   it("resolves the seeded REVIEWER key", async () => {
     const principal = await authenticate(withHeader(API_KEYS.reviewer));
-    expect(principal).toEqual({ role: "REVIEWER", label: "Compliance reviewer" });
+    expect(principal).toEqual({ keyId: expect.any(String), role: "REVIEWER", label: "Compliance reviewer" });
+  });
+
+  it("identifies each key by its own ApiKey id", async () => {
+    const [operator, reviewer] = await Promise.all([
+      principalForKey(API_KEYS.operator),
+      principalForKey(API_KEYS.reviewer),
+    ]);
+    const row = await prisma.apiKey.findFirstOrThrow({ where: { role: "OPERATOR" } });
+
+    expect(operator?.keyId).toBe(row.id);
+    expect(operator?.keyId).not.toBe(reviewer?.keyId);
   });
 
   it("scopes each ENTITY key to its own entity", async () => {

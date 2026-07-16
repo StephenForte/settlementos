@@ -19,6 +19,7 @@ export type ApiErrorCode =
   | "not_found"
   | "invalid_request"
   | "conflict"
+  | "idempotency_conflict"
   | "execution_failed"
   | "internal";
 
@@ -28,6 +29,9 @@ const STATUS: Record<ApiErrorCode, number> = {
   not_found: 404,
   invalid_request: 400,
   conflict: 409,
+  // 422, not 409: the request is well-formed and the resource is fine — the
+  // *key* contradicts an earlier one, which is a client bookkeeping bug.
+  idempotency_conflict: 422,
   execution_failed: 500,
   internal: 500,
 };
@@ -42,6 +46,7 @@ const CANNED: Record<ApiErrorCode, string> = {
   not_found: "not found",
   invalid_request: "invalid request",
   conflict: "the request conflicts with the current state of the resource",
+  idempotency_conflict: "this Idempotency-Key was already used for a different request",
   execution_failed: "execution failed",
   internal: "internal error",
 };

@@ -12,6 +12,8 @@ export type Role = "OPERATOR" | "REVIEWER" | "ENTITY";
 const ROLES: readonly Role[] = ["OPERATOR", "REVIEWER", "ENTITY"];
 
 export type Principal = {
+  /** The ApiKey.id this caller presented — a stable identity for per-caller state. */
+  keyId: string;
   role: Role;
   /** Set only for role=ENTITY — the Entity.id this key acts as. */
   entityId?: string;
@@ -50,6 +52,7 @@ export async function principalForKey(raw: string): Promise<Principal | null> {
   // would otherwise be an unscoped identity.
   if (record.role === "ENTITY" && !record.entityId) return null;
   return {
+    keyId: record.id,
     role: record.role,
     ...(record.entityId ? { entityId: record.entityId } : {}),
     label: record.label,
