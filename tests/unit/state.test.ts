@@ -66,6 +66,32 @@ describe("payment state machine", () => {
     expect(canTransition("FAILED", "REFUNDED")).toBe(true);
   });
 
+  it("compensates instead of refunding once the escrow may be released", () => {
+    // A released escrow cannot be refunded, so the failure exit becomes
+    // COMPENSATION_PENDING → COMPENSATED. It starts anywhere settlement may
+    // already have landed — including CONFIRMED_ONCHAIN, where the settle tx can
+    // be in flight while the DB has not heard back yet.
+    for (const from of ["CONFIRMED_ONCHAIN", "FX_OR_SWAP_COMPLETED", "PAYOUT_PENDING"] as const) {
+      expect(canTransition(from, "COMPENSATION_PENDING"), `${from} → COMPENSATION_PENDING`).toBe(true);
+    }
+    expect(canTransition("COMPENSATION_PENDING", "COMPENSATED")).toBe(true);
+
+    // Before the escrow exists there is nothing to compensate — those failures refund.
+    for (const from of ["DRAFT", "APPROVED", "LIQUIDITY_RESERVED", "SUBMITTED_ONCHAIN"] as const) {
+      expect(canTransition(from, "COMPENSATION_PENDING"), `${from} → COMPENSATION_PENDING`).toBe(false);
+    }
+    // No shortcut past the pending state, and no falling back to a refund once
+    // compensation has started.
+    expect(canTransition("PAYOUT_PENDING", "COMPENSATED")).toBe(false);
+    expect(canTransition("COMPENSATION_PENDING", "REFUNDED")).toBe(false);
+    expect(canTransition("COMPENSATION_PENDING", "FAILED")).toBe(false);
+  });
+
+  it("COMPENSATED is terminal", () => {
+    expect(TERMINAL_STATES).toContain("COMPENSATED");
+    expect(TERMINAL_STATES).not.toContain("COMPENSATION_PENDING");
+  });
+
   it("cancellation is only possible before execution", () => {
     for (const s of CANCELLABLE_STATES) {
       expect(canTransition(s, "CANCELLED"), `${s} → CANCELLED`).toBe(true);

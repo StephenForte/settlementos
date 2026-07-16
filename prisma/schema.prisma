@@ -80,6 +80,7 @@ model Payment {
   txHash              String? // initiate/escrow tx on source network
   settleTxHash        String? // settlement/release tx on source network
   destinationTxHash   String? // bridge payout tx on destination network (cross-chain routes)
+  compensationTxHash  String? // treasury→sender make-good tx on source network (destination leg failed post-settlement)
   failureReason       String?
   executionLeaseId    String? // held for the duration of one execution attempt; NULL = executable
   leasedAt            DateTime?

@@ -50,7 +50,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/chain.ts](lib/chain.ts) | viem chain adapter. Loads/merges `chain/deployments*.json`, per-network accounts via `accountsFor()`, contract ABIs (`SETTLEMENT_ABI`, `MMF_ABI`), `operatorWrite()` (escrow) / `mmfOperatorWrite()` (fund), `treasuryTokenTransfer()`, `ensureTreasuryAllowance()`, `mmfAddress()` (undefined where no fund is deployed) |
 | [lib/state.ts](lib/state.ts) | Payment lifecycle state machine; `assertTransition()` enforces legal moves. Pure — no DB, no framework |
 | [lib/transitions.ts](lib/transitions.ts) | The one way a payment's status changes: `transitionStatus(payment, to, {data, detail, action, actor})` asserts the move is legal, then compare-and-swaps on the observed status (`updateMany where {id, status: from}`). Zero rows → `StaleTransitionError` (an `ApiError` with code `conflict`, so `caughtErrorResponse` renders a 409 with no mapping). Audits only after a successful swap |
-| [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: execution-lease claim, auto-recall of parked MMF liquidity, liquidity reservation, escrow, FX, payout, refund-on-failure. `ExecutionLeaseError` (an `ApiError` with code `conflict` → 409, like `StaleTransitionError`) is a second attempt losing the lease |
+| [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: execution-lease claim, auto-recall of parked MMF liquidity, liquidity reservation, escrow, FX, payout, and the failure exits — refund while the escrow is held, **compensation** once it is released (`compensateSender`). `ExecutionLeaseError` (an `ApiError` with code `conflict` → 409, like `StaleTransitionError`) is a second attempt losing the lease. `executorTestHooks` are the test-only throw points for the two failure exits |
 | [lib/routing.ts](lib/routing.ts) | Route quotes (instant/batched/bridged), treasury liquidity checks. Parked MMF liquidity counts as available: free-short-but-parked-covers still quotes, flagged `recall_required` |
 | [lib/fx.ts](lib/fx.ts) | Simulated FX: static mid rates, spread + tiered slippage, platform fee |
 | [lib/compliance.ts](lib/compliance.ts) | Compliance gate (KYB, sanctions, wallet/tx/corridor risk) → PASS/FAIL/MANUAL_REVIEW. Sanctions + wallet screening dispatch to real providers when env config is set (`OPENSANCTIONS_API_KEY`, `CHAINALYSIS_ORACLE_RPC_URL`), mocks otherwise |
@@ -169,6 +169,18 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   RECALLED in place (status + `recalledAt` + `txHashRecall`); rows are never deleted,
   and a position's current value is always *derived* (`shares × live index`), never
   stored mutably on the row.
+- **Never refund a released escrow; compensate it**: `settlePayment` moves the sender's
+  money to the treasury, so a failure *after* it cannot call `failAndRefund` (the escrow
+  row is SETTLED — the call reverts "not initiated"), and must not just mark the payment
+  FAILED either, which would strand the sender's funds. It goes PAYOUT_PENDING →
+  COMPENSATION_PENDING → treasury-funded transfer of the **source** asset back to the
+  sender's wallet on the **source** network → COMPENSATED. A compensation transfer that
+  itself fails leaves the payment in COMPENSATION_PENDING for an operator, never FAILED.
+- **Reconcile with the chain before undoing anything**: the executor's catch decides
+  refund-vs-compensate from `onchainPaymentState()` (the escrow's own `getPayment`), not
+  from the DB status — they disagree exactly when a step threw mid-flight, which is the
+  only time this path runs. The DB says what the attempt *tried*; the chain says what
+  landed. The status list is only a fallback for when the read itself fails.
 - **Recall before reserve**: when a route carries `recall_required`, the executor
   redeems the parked positions *before* it reserves liquidity or escrows anything —
   otherwise it would reserve against a balance that is still sitting in the fund.

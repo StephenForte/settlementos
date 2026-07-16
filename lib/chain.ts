@@ -251,7 +251,37 @@ export const SETTLEMENT_ABI = [
     ],
     outputs: [],
   },
+  {
+    type: "function",
+    name: "getPayment",
+    stateMutability: "view",
+    inputs: [{ name: "paymentId", type: "bytes32" }],
+    outputs: [
+      {
+        type: "tuple",
+        components: [
+          { name: "sender", type: "address" },
+          { name: "recipient", type: "address" },
+          { name: "asset", type: "address" },
+          { name: "amount", type: "uint256" },
+          { name: "state", type: "uint8" },
+        ],
+      },
+    ],
+  },
 ] as const;
+
+/** PaymentSettlement.PaymentState, by enum ordinal. */
+export const ONCHAIN_PAYMENT_STATES = [
+  "NONE",
+  "INITIATED",
+  "SETTLED",
+  "CANCELLED",
+  "REFUNDED",
+  "FAILED",
+] as const;
+
+export type OnchainPaymentState = (typeof ONCHAIN_PAYMENT_STATES)[number];
 
 export const MMF_ABI = [
   {
@@ -320,6 +350,27 @@ export function mmfAddress(networkId: string): Address | undefined {
 
 export function onchainPaymentId(paymentId: string): Hex {
   return keccak256(toHex(paymentId));
+}
+
+/**
+ * What the escrow contract itself says about a payment. The ground truth when a
+ * DB status and a chain may disagree — an execution that threw mid-flight knows
+ * what it *attempted*, not what landed, so a recovery path must read this before
+ * deciding whether to refund (escrow still held) or compensate (already released).
+ * "NONE" means the escrow was never initiated for this id.
+ */
+export async function onchainPaymentState(
+  networkId: string,
+  paymentId: Hex
+): Promise<OnchainPaymentState> {
+  const dep = loadDeployments();
+  const p = await publicClientFor(networkId).readContract({
+    address: dep.networks[networkId].contracts.PaymentSettlement,
+    abi: SETTLEMENT_ABI,
+    functionName: "getPayment",
+    args: [paymentId],
+  });
+  return ONCHAIN_PAYMENT_STATES[p.state] ?? "NONE";
 }
 
 export async function tokenBalance(

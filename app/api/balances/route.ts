@@ -74,7 +74,12 @@ export async function GET(req: NextRequest) {
   }
 
   const pendingPayments = await prisma.payment.count({
-    where: { status: { notIn: ["SETTLED", "REJECTED", "CANCELLED", "REFUNDED", "EXPIRED", "FAILED", "DRAFT"] } },
+    // COMPENSATION_PENDING stays counted: the sender's funds are still out.
+    where: {
+      status: {
+        notIn: ["SETTLED", "COMPENSATED", "REJECTED", "CANCELLED", "REFUNDED", "EXPIRED", "FAILED", "DRAFT"],
+      },
+    },
   });
 
   return NextResponse.json({

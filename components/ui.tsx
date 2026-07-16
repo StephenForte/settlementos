@@ -12,6 +12,8 @@ const STATUS_STYLES: Record<string, string> = {
   FX_OR_SWAP_COMPLETED: "bg-cyan-500/15 text-cyan-300 border-cyan-500/40",
   PAYOUT_PENDING: "bg-cyan-500/15 text-cyan-300 border-cyan-500/40",
   SETTLED: "bg-emerald-500/15 text-emerald-300 border-emerald-500/40",
+  COMPENSATION_PENDING: "bg-orange-500/15 text-orange-300 border-orange-500/40",
+  COMPENSATED: "bg-orange-500/15 text-orange-300 border-orange-500/40",
   REJECTED: "bg-rose-500/15 text-rose-300 border-rose-500/40",
   FAILED: "bg-rose-500/15 text-rose-300 border-rose-500/40",
   CANCELLED: "bg-slate-700/50 text-slate-400 border-slate-600",

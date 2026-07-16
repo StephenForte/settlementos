@@ -124,6 +124,16 @@ Phase 9 Track A: production hardening per AUDIT.md
   those through `caughtErrorResponse(e, fallback, context)`, which logs the real error
   and answers canned. `(e as Error).message` in a handler is always a bug.
   Clients read `data.message`, never `data.error`.
+- Undoing an on-chain step: decide from the CHAIN, not the DB status. lib/chain's
+  `onchainPaymentState()` reads the escrow's own `getPayment`; the DB only records what
+  an attempt TRIED, and the two disagree exactly when something threw mid-flight (which
+  is the only time a recovery path runs). Refund while the escrow is held, compensate
+  once it is released — a released escrow cannot be refunded (`failAndRefund` reverts
+  "not initiated").
+- Failure paths that no input can provoke on a healthy fixture chain get an exported
+  `executorTestHooks`-style object of optional throw points (lib/executor.ts). Tests
+  assign one and `delete` it in afterEach; nothing in the app ever assigns them. Cheaper
+  and clearer than vi.mock of a whole chain module.
 - A payment's status changes ONLY via `transitionStatus()` (lib/transitions.ts): it
   asserts the move is legal, then compare-and-swaps on the status the caller observed
   (`updateMany where {id, status: from}`), and audits only if a row actually changed.
@@ -564,4 +574,55 @@ Phase 9 Track A: production hardening per AUDIT.md
   - Adding a field to Principal broke two `toEqual` assertions in tests/db/auth.test.ts
     (nothing else — principalForKey is the only constructor). Cheap, but grep for
     whole-object assertions before assuming a type-level change is free.
+---
+
+## 2026-07-16 - US-009
+- Compensation saga for a destination leg that fails AFTER the source escrow was
+  already released to the treasury. Previously that path called failAndRefund (which
+  reverts — the escrow row is SETTLED) and then marked the payment FAILED, stranding
+  the sender's money on a payment the DB called "failed".
+- Files: lib/state.ts (COMPENSATION_PENDING + COMPENSATED, TERMINAL_STATES),
+  lib/chain.ts (getPayment in SETTLEMENT_ABI, ONCHAIN_PAYMENT_STATES,
+  onchainPaymentState()), lib/executor.ts (executorTestHooks, compensateSender(),
+  chain-reconciled catch), prisma/schema.prisma (compensationTxHash),
+  components/ui.tsx + app/page.tsx + app/payments/[id]/page.tsx +
+  app/api/balances/route.ts (new statuses in the badge map and the
+  pending/failed/terminal filters), tests/unit/state.test.ts (+2),
+  tests/integration/compensation.test.ts (+4). Suite 208 -> 214, tsc + lint green.
+- **Learnings for future iterations:**
+  - The executor's catch now decides refund-vs-compensate by READING THE CHAIN
+    (`onchainPaymentState`), not by the DB status list. That is the AC5 requirement, but
+    it also fixes a real hole: the DB records what an attempt tried, the chain records
+    what landed, and they only disagree when something threw mid-flight — which is
+    precisely when this code runs. The old status list is kept solely as a fallback for
+    when the chain read itself fails (RPC down).
+  - Consequence: COMPENSATION_PENDING had to be reachable from CONFIRMED_ONCHAIN too,
+    not just PAYOUT_PENDING as the AC says. If the settle tx lands but its receipt read
+    times out, the DB sits at CONFIRMED_ONCHAIN while the escrow is SETTLED — with only
+    the AC's edge, transitionStatus would throw "invalid transition" from inside the
+    catch and the sender would never be compensated. The state machine must cover every
+    status at which the escrow MAY be released, and the chain read picks which applies.
+  - Compensation is denominated in the SOURCE asset on the SOURCE network (the exact
+    base units that were escrowed — `amountUnits` is hoisted out of the try for this).
+    The destination amount/asset is what FAILED; paying that back would be a bug. The
+    cross-chain test asserts this specifically.
+  - A compensation transfer that itself fails leaves the payment in COMPENSATION_PENDING
+    and audits `payment.compensation_failed` — it must NOT fall back to FAILED, which
+    would claim the sender was made whole. That is the state US-010's repair endpoint
+    picks up; the executor's `finally` frees the lease, so a repair can re-enter.
+  - COMPENSATED joined TERMINAL_STATES, so LEASE_RELEASE_STATES picked it up for free —
+    exactly as US-007's note predicted.
+  - Test-only failure injection: exported `executorTestHooks` object of optional throw
+    points, assigned by tests and deleted in afterEach. Added `beforeSettlement` as well
+    as the AC's `beforeDestinationPayout` — the on-chain refund branch had ZERO test
+    coverage and this story changed its guard condition, so it needed one.
+  - Adding a lifecycle status means touching the UI status maps too: STATUS_STYLES in
+    components/ui.tsx (unknown statuses fall back to grey, so it silently "works"), the
+    dashboard's pending/failed filters in app/page.tsx, the detail page's isTerminalBad,
+    and the balances route's pending `notIn` list. Those are hardcoded literal lists, not
+    derived from lib/state.ts — grep for a neighbouring status (e.g. "REFUNDED") to find
+    them all.
+  - No browser pass: the only UI surface is a status badge + counters for states that
+    cannot be reached without the test hook. The demo flow is untouched (the happy path
+    and the pre-escrow failure path both still run in the suite).
 ---

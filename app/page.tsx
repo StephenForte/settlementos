@@ -22,9 +22,11 @@ export default async function DashboardHome() {
     }
   }, 0);
   const pending = payments.filter(
-    (p) => !["SETTLED", "REJECTED", "CANCELLED", "REFUNDED", "EXPIRED", "FAILED"].includes(p.status)
+    (p) => !["SETTLED", "COMPENSATED", "REJECTED", "CANCELLED", "REFUNDED", "EXPIRED", "FAILED"].includes(p.status)
   );
-  const failed = payments.filter((p) => ["FAILED", "REJECTED", "REFUNDED"].includes(p.status));
+  const failed = payments.filter((p) =>
+    ["FAILED", "REJECTED", "REFUNDED", "COMPENSATION_PENDING", "COMPENSATED"].includes(p.status)
+  );
   const inReview = payments.filter((p) => p.status === "MANUAL_REVIEW");
   const recent = payments.slice(0, 8);
 
