@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { CURRENCY_TO_ASSET } from "@/lib/assets";
+import { canonicalAmount, MoneyError } from "@/lib/money";
 import { supportedCorridors, corridorCode } from "@/lib/fx";
 import { NETWORKS } from "@/lib/networks";
 import { isChainReady, loadDeployments } from "@/lib/chain";
@@ -140,13 +141,20 @@ async function createPayment(principal: Principal, body: CreatePaymentBody): Pro
       "sender_id, recipient_id, amount, source_currency, destination_currency are required"
     );
   }
-  if (Number(amount) <= 0 || Number.isNaN(Number(amount))) {
-    return invalidRequest("amount must be a positive number");
-  }
   const sourceAsset = CURRENCY_TO_ASSET[source_currency];
   const destAsset = CURRENCY_TO_ASSET[destination_currency];
   if (!sourceAsset || !destAsset) {
     return invalidRequest("unsupported currency");
+  }
+  // Currency first, then the amount: the source currency is what says how much
+  // precision is legal. Excess precision is rejected here, never truncated —
+  // this is the boundary, and everything downstream may assume canonical form.
+  let canonical: string;
+  try {
+    canonical = canonicalAmount(amount, source_currency);
+  } catch (e) {
+    if (e instanceof MoneyError) return invalidRequest(e.message);
+    throw e;
   }
   if (
     source_currency !== destination_currency &&
@@ -170,7 +178,7 @@ async function createPayment(principal: Principal, body: CreatePaymentBody): Pro
       id,
       senderId: sender.id,
       recipientId: recipient.id,
-      amount: String(amount),
+      amount: canonical,
       sourceCurrency: source_currency,
       destinationCurrency: destination_currency,
       sourceAsset,
@@ -187,7 +195,7 @@ async function createPayment(principal: Principal, body: CreatePaymentBody): Pro
     {
       sender: sender_id,
       recipient: recipient_id,
-      amount,
+      amount: canonical,
       corridor: `${source_currency}-${destination_currency}`,
       route: `${source_network} → ${destination_network}`,
     },

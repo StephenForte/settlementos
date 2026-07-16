@@ -61,6 +61,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/session.ts](lib/session.ts) | Next-only half of auth: `currentPrincipal()` resolves the `sos_key` cookie via `cookies()` for **server components** (which have no `Request`); `sessionCookieOptions()` is the one place the cookie's flags are defined. Keep `next/headers` out of lib/auth.ts so route tests can pass a plain `Request` |
 | [lib/treasury.ts](lib/treasury.ts) | Tokenized-MMF treasury ops: `park()` (subscribe unreserved liquidity into the fund), `recall()` (T+0 redeem of a position, principal + accrued yield back to the treasury), `accrueDaily()` (advance the fund index by one day at `MMF_ANNUAL_RATE_BPS`, default 3.5% APY; `dailyIndex()`/`valueOfShares()` are the pure bigint math), `freeTreasuryBalance()` (bigint balance − RESERVED rows), `parkedBalance()` (derived value of ACTIVE positions; `0n`, never a throw, where no fund exists), `recallForPayment()` (FIFO auto-recall for the executor), `TreasuryError` (typed codes for route handlers), `TREASURY_*` audit actions |
 | [lib/assets.ts](lib/assets.ts) | Asset metadata, currency↔token mapping, base-unit conversion |
+| [lib/money.ts](lib/money.ts) | The amount gate at the API boundary: `parseAmount(amount, currency)` → bigint **minor units** (canonical grammar only — no exponent/sign/whitespace, at most the currency's decimals, ≤15 integer digits, > 0), `formatMinorUnits()` / `canonicalAmount()` for the stored string, `CURRENCY_DECIMALS` (USD/SGD 2, JPY 0), typed `MoneyError`. Framework-free; routes map it to a 400 |
 | [scripts/setup.mjs](scripts/setup.mjs) | Local deploy (tokens, escrow, TokenizedMMF + its yield buffer and treasury approval) + DB seed (dev-mnemonic accounts, local only) |
 | [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy via argv): env deployer key, per-network gas-dust targets, generated dust wallets, DB registration |
 | `app/api/*` | REST route handlers (thin; logic lives in lib/) |
@@ -101,6 +102,16 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   (`"100000.00"`); on-chain amounts are **bigint** base units via
   `toBaseUnits`/`fromBaseUnits`. mockJPY has **0 decimals**. Never put a JS float
   on-chain.
+- **Amounts are validated at the boundary, and rejected — never repaired**: a
+  client amount enters through `parseAmount` (lib/money.ts), which takes only
+  `^[0-9]+(\.[0-9]+)?$` at no more than the *currency's* precision, so `"1e6"`,
+  `"Infinity"`, `"+5"`, and `25000.001` JPY never become a `Payment` row. Excess
+  precision is a 400, not a truncation: `toBaseUnits` truncates by design (it
+  converts amounts already accepted), and silently doing that to a client's
+  request would settle a sum nobody asked for. `Payment.amount` is stored in
+  canonical form (`canonicalAmount()`: exactly the currency's decimals), so
+  everything downstream may assume it. Never gate an amount with `Number(x)` —
+  it accepts every one of those inputs.
 - **Per-network accounts**: operator/treasury/entity addresses differ per network.
   Always resolve via `accountsFor(networkId)` and look up entity wallets by
   `wallet.network` (with `wallets[0]` fallback) — never assume one shared address

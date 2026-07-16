@@ -675,3 +675,43 @@ Phase 9 Track A: production hardening per AUDIT.md
   - GOTCHA (cost ~15 min): a stale .next/ cache 404'd EVERY api route — including untouched ones
     like /api/networks — while pages rendered fine. rm -rf .next and restart. Now in AGENTS.md.
 ---
+
+## 2026-07-16 - US-011
+- Strict canonical decimal validation at the API boundary. New lib/money.ts:
+  parseAmount(amount, currency) -> bigint MINOR units, accepting only
+  ^[0-9]+(\.[0-9]+)?$ at no more than the currency's decimals, <=15 integer
+  digits, > 0; typed MoneyError; formatMinorUnits/canonicalAmount for the stored
+  string; CURRENCY_DECIMALS (USD/SGD 2, JPY 0). POST /api/payments now validates
+  through it and stores the canonical form; the old `Number(amount) <= 0 ||
+  isNaN(...)` gate is gone (it accepted "1e6", "Infinity", "+5", " 100.00").
+- Files: lib/money.ts (new), app/api/payments/route.ts, AGENTS.md (architecture
+  map row + a new invariant), tests/unit/money.test.ts (new, 15),
+  tests/integration/api.test.ts (3 new cases, 1 fixture fix).
+- Suite 223 -> 241, tsc + lint green.
+- **Learnings for future iterations:**
+  - TWO decimal notions now coexist and are NOT interchangeable: CURRENCY_DECIMALS
+    in lib/money.ts is FIAT minor units (USD 2) and is what the boundary validates
+    against; ASSETS[].decimals in lib/assets.ts is TOKEN base units (mockUSDC 6)
+    and is what toBaseUnits uses downstream. Same number only for JPY. Don't merge.
+  - toBaseUnits TRUNCATES by design and stays that way — it converts amounts we
+    already accepted. Rejection belongs at the boundary (parseAmount), conversion
+    downstream. US-012/US-013 should keep that split.
+  - Validating an amount with Number()/isNaN is the bug, not the fix: Number()
+    happily takes "1e6", "Infinity", " 100.00", "0x10". Grep for `Number(` on a
+    monetary value before trusting any remaining gate (US-012 will find more in
+    lib/fx.ts).
+  - Ordering matters when validation is currency-dependent: the currency-support
+    check has to run before the amount check, since the currency is what says how
+    much precision is legal.
+  - A validator's param should be `unknown`, not `string`, when it runs on a
+    request body — the CreatePaymentBody interface is an assumption the validator
+    is supposed to *establish*, and a JSON number sails through a `string` type.
+  - Tightening a shared rule breaks fixtures that encoded the old looseness:
+    api.test.ts's JPY->JPY case sent the USD-shaped "100000.00". Expect one such
+    hit per tightening; check the demo UI's defaults too (app/payments/new is
+    USD->JPY, so it was safe).
+  - lib/treasury.ts still has its OWN private parseAmount (token decimals,
+    truncating, TreasuryError) — deliberately untouched here since it validates an
+    operator's park/recall against token units, not a tenant's fiat amount. Fold it
+    in during US-013 if the bigint work makes them converge.
+---
