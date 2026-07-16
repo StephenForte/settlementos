@@ -99,8 +99,8 @@
         "Tests pass"
       ],
       "priority": 6,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Done 2026-07-16 (5ac370d). New lib/transitions.ts is now the ONLY way a payment's status changes: transitionStatus(payment, to, {data, detail, action, actor}) runs assertTransition, then CASes with updateMany({where:{id, status: from}}) and audits only if count === 1. lib/state.ts stays pure (no prisma) so the unit layer keeps working; transitions imports db+audit+state, and executor/routes import transitions — no cycle. DECISION: StaleTransitionError extends ApiError('conflict') rather than following treasury's typed-code + per-route mapping precedent, because api-errors.ts explicitly exists for 'a lib that knows what the client should be told' — the payoff is that the routes' existing caughtErrorResponse renders the 409 with zero mapping code. Converted beyond the ACs: the execute route's compliance-gate updates (QUOTED->COMPLIANCE_PENDING->REJECTED/MANUAL_REVIEW/APPROVED) were raw updates, so two concurrent executes could both run (and bill for) compliance — AC1 says 'any raw prisma.payment.update that changes status', so they are in scope. GOTCHA found while converting the executor's catch: it used to raw-update FAILED->FAILED when the refund leg threw after the FAILED write landed; a legal-move assert now rejects that, so the catch returns early when payment.status is already FAILED. The `payment = {...payment, ...(await setStatus(...))}` assignments became load-bearing (they carry the CAS's expected value) — noted in AGENTS.md. Tests: tests/db/transitions.test.ts (5) + tests/integration/cas-routes.test.ts (2, racing reviewers and racing cancels through the real handlers). Suite 184 -> 191, tsc + lint green. No UI change, so no browser pass; the executor E2E integration tests exercise the converted path on the fixture chains."
     },
     {
       "id": "US-007",

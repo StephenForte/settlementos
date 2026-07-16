@@ -381,3 +381,41 @@ Phase 9 Track A: production hardening per AUDIT.md
   - Tests that force a failure should `vi.spyOn(console, "error").mockImplementation()`
     — fromThrown logs by design and otherwise floods the suite output.
 ---
+
+## 2026-07-16 12:30 - US-006 (Compare-and-swap status transitions)
+- Every payment status change now goes through ONE module, lib/transitions.ts:
+  `transitionStatus(payment, to, {data, detail, action, actor})` = assertTransition,
+  then `updateMany({ where: { id, status: from } })`, then (only if count === 1) the
+  audit event. Commit 5ac370d.
+- Files changed:
+  - lib/transitions.ts (new) — transitionStatus() + StaleTransitionError
+  - lib/executor.ts — setStatus() is now a thin wrapper over transitionStatus; the
+    catch path's three raw updates (FAILED after refund, REFUNDED, FAILED fallback)
+    converted
+  - app/api/payments/[id]/{review,cancel,execute}/route.ts — CAS + 409 on a lost race
+  - AGENTS.md — architecture map row, state-machine invariant rewritten, new
+    "audit only what happened" invariant
+  - tests/db/transitions.test.ts (5) + tests/integration/cas-routes.test.ts (2) new.
+    Suite 184 -> 191; tsc + lint green.
+- **Learnings for future iterations:**
+  - lib/state.ts is PURE (no prisma) and must stay that way — tests/unit imports it.
+    The DB-touching half went in a new module. Import direction: executor/routes ->
+    transitions -> {db, audit, state}.
+  - StaleTransitionError extends ApiError("conflict") instead of copying treasury's
+    typed-code + per-route status table. api-errors.ts is explicitly the place for
+    "a lib that knows what the client should be told", and the payoff is real: the
+    routes' EXISTING caughtErrorResponse turns it into a 409 with zero mapping code.
+    Use this shape for any future lib error with an obvious client meaning.
+  - The executor's `payment = { ...payment, ...(await setStatus(...)) }` assignments
+    are now LOAD-BEARING: the local row carries the CAS's expected status. Dropping
+    one makes the next transition compare against a stale status and 409 itself.
+  - Converting a raw `update` to a CAS can surface previously-silent illegal moves.
+    The executor used to raw-update FAILED -> FAILED when the refund leg threw after
+    the FAILED write landed; assertTransition rejects that, so the catch now returns
+    early if payment.status is already FAILED. Read a catch path's reachable states
+    before converting it.
+  - US-007 (execution lease) builds directly on this: the lease CAS wants to be the
+    same `where: { id, status: 'APPROVED', executionLeaseId: null }` shape, inside the
+    prisma.$transaction that creates the reservation. US-016 (atomic audit) will want
+    transitionStatus to take an optional tx client — the audit() call is already the
+    last thing it does, so that is a localized change.
