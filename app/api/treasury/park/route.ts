@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { NETWORKS } from "@/lib/networks";
 import { park } from "@/lib/treasury";
 import { treasuryErrorResponse } from "../errors";
+import { requirePrincipal } from "../../guard";
 
 /**
  * Park idle treasury liquidity into the network's tokenized MMF. The entity must
@@ -9,6 +10,10 @@ import { treasuryErrorResponse } from "../errors";
  * refusal surfaces here as a 403.
  */
 export async function POST(req: NextRequest) {
+  // Identity only — OPERATOR-gating lands in US-004.
+  const principal = await requirePrincipal(req);
+  if (principal instanceof NextResponse) return principal;
+
   const body = await req.json().catch(() => ({}));
   const { network, asset, amount, entity_id } = body;
 

@@ -1,12 +1,12 @@
 {
   "project": "SettlementOS",
   "branchName": "ralph/phase-9-hardening",
-  "description": "Phase 9 Track A: production hardening per AUDIT.md (repo root — read it first; work follows its 'Recommended remediation order'). Six areas: (1) authn/authz/tenant isolation/safe errors, (2) atomic idempotent lifecycle execution, (3) post-settlement compensation saga, (4) fixed-precision monetary model, (5) key custody and approval minimization, (6) audit anchoring + defensive web controls + scalability. Constraints: never break the local demo flow (npm run setup && npm run dev must keep working end to end), keep all AGENTS.md invariants (state machine, append-only hash-chained audit, money types, per-network accounts, compliance fail-safe), and extend the vitest suite with every story.",
+  "description": "Phase 9 Track A: production hardening per AUDIT.md (repo root \u2014 read it first; work follows its 'Recommended remediation order'). Six areas: (1) authn/authz/tenant isolation/safe errors, (2) atomic idempotent lifecycle execution, (3) post-settlement compensation saga, (4) fixed-precision monetary model, (5) key custody and approval minimization, (6) audit anchoring + defensive web controls + scalability. Constraints: never break the local demo flow (npm run setup && npm run dev must keep working end to end), keep all AGENTS.md invariants (state machine, append-only hash-chained audit, money types, per-network accounts, compliance fail-safe), and extend the vitest suite with every story.",
   "userStories": [
     {
       "id": "US-001",
       "title": "API-key identity model: ApiKey table, lib/auth.ts, seeded dev keys",
-      "description": "As an operator, I want every API caller to have an authenticated identity so that no route is anonymous. Foundation only — enforcement comes in US-003/US-004.",
+      "description": "As an operator, I want every API caller to have an authenticated identity so that no route is anonymous. Foundation only \u2014 enforcement comes in US-003/US-004.",
       "acceptanceCriteria": [
         "Prisma model ApiKey: id, keyHash (sha256 hex of the raw key), role enum string ('OPERATOR' | 'REVIEWER' | 'ENTITY'), entityId nullable FK (required when role=ENTITY), label, createdAt",
         "lib/auth.ts: authenticate(request) reads x-api-key header, falls back to sos_key cookie; returns Principal { role, entityId?, label } or null; sha256 lookup, no plaintext keys stored",
@@ -17,7 +17,7 @@
       ],
       "priority": 1,
       "passes": true,
-      "notes": "Done 2026-07-16 (b7545d3). lib/auth.ts exports authenticate(request), principalForKey(raw) (for US-002's cookies() server-component path), generateKey, hashKey, API_KEY_HEADER, API_KEY_COOKIE. Fails closed on malformed rows (ENTITY key with no entityId, unrecognized role) -> null. scripts/setup.mjs is .mjs and CANNOT import lib/auth.ts, so it carries a duplicated key format + hashKey — keep in sync (noted in AGENTS.md). Tests use fixed API_KEYS in tests/fixture.ts (dev-mnemonic pattern) seeded by global-setup.ts. chain/dev-api-keys.json needed a new .gitignore line (deployments*.json did not cover it). Suite 135 -> 144."
+      "notes": "Done 2026-07-16 (b7545d3). lib/auth.ts exports authenticate(request), principalForKey(raw) (for US-002's cookies() server-component path), generateKey, hashKey, API_KEY_HEADER, API_KEY_COOKIE. Fails closed on malformed rows (ENTITY key with no entityId, unrecognized role) -> null. scripts/setup.mjs is .mjs and CANNOT import lib/auth.ts, so it carries a duplicated key format + hashKey \u2014 keep in sync (noted in AGENTS.md). Tests use fixed API_KEYS in tests/fixture.ts (dev-mnemonic pattern) seeded by global-setup.ts. chain/dev-api-keys.json needed a new .gitignore line (deployments*.json did not cover it). Suite 135 -> 144."
     },
     {
       "id": "US-002",
@@ -33,7 +33,7 @@
       ],
       "priority": 2,
       "passes": true,
-      "notes": "Done 2026-07-16. lib/session.ts holds the Next-only half of auth (currentPrincipal() via cookies(), sessionCookieOptions()) so lib/auth.ts stays framework-free and route-testable — that is the server-component pattern, documented in AGENTS.md's architecture map rather than scripts/ralph/CLAUDE.md (which is the generic Ralph template; AGENTS.md is where this repo's durable learnings live). Login stores the RAW key in the httpOnly cookie because authenticate() re-hashes it on read; `secure` is env-gated for the plain-http demo. Root layout is now async, so every page is dynamically rendered and must tolerate a null principal. Generic 401 for missing/empty/non-string/unknown keys alike (no existence oracle). Browser-verified end to end on :3000 (anonymous -> bad key -> operator key -> logout, all 7 pages 200). Suite 144 -> 149."
+      "notes": "Done 2026-07-16. lib/session.ts holds the Next-only half of auth (currentPrincipal() via cookies(), sessionCookieOptions()) so lib/auth.ts stays framework-free and route-testable \u2014 that is the server-component pattern, documented in AGENTS.md's architecture map rather than scripts/ralph/CLAUDE.md (which is the generic Ralph template; AGENTS.md is where this repo's durable learnings live). Login stores the RAW key in the httpOnly cookie because authenticate() re-hashes it on read; `secure` is env-gated for the plain-http demo. Root layout is now async, so every page is dynamically rendered and must tolerate a null principal. Generic 401 for missing/empty/non-string/unknown keys alike (no existence oracle). Browser-verified end to end on :3000 (anonymous -> bad key -> operator key -> logout, all 7 pages 200). Suite 144 -> 149."
     },
     {
       "id": "US-003",
@@ -50,8 +50,8 @@
         "Tests pass"
       ],
       "priority": 3,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Done 2026-07-16. Authorization glue lives in app/api/guard.ts (requirePrincipal / requireRole / isPlatformRole), returning Principal | NextResponse so handlers narrow with `instanceof NextResponse`. Scoping is a prisma `where` filter, never a post-filter. Generic errors throughout: anonymous == invalid key == 401 unauthorized; another tenant's payment == nonexistent == 404 with a byte-identical body (asserted). Writes got the 401 identity gate too (AC1 says 'any API route') but their ROLE rules are still open and marked with comments \u2014 that is US-004. Known-and-intended: ENTITY /api/entities returns only itself, which narrows the payments/new recipient dropdown for a tenant session; the demo uses the OPERATOR key. Server components still read prisma unscoped \u2014 page-level authz remains an open gap. Verified against a real dev server on a freshly seeded DB incl. a full create->quote->execute->SETTLED run. Suite 149 -> 163."
     },
     {
       "id": "US-004",
@@ -59,7 +59,7 @@
       "description": "As a platform owner, I want writes authorized by role and the audit trail to record who actually acted, not what the request body claims.",
       "acceptanceCriteria": [
         "POST /api/payments: OPERATOR, or ENTITY whose entityId matches sender_id; quote/execute/cancel: OPERATOR or the payment's sender entity",
-        "POST /api/payments/[id]/review: REVIEWER (or OPERATOR) only; the reviewer identity comes from the principal — remove any reviewer/actor field from the request body",
+        "POST /api/payments/[id]/review: REVIEWER (or OPERATOR) only; the reviewer identity comes from the principal \u2014 remove any reviewer/actor field from the request body",
         "Treasury routes (park/recall/accrue): OPERATOR only; positions GET: OPERATOR/REVIEWER",
         "audit() actor is the authenticated principal's label/role everywhere a route triggers an audit event (grep for audit( call sites in app/api)",
         "Integration tests: ENTITY cannot review, ENTITY cannot create a payment with another sender_id, REVIEWER decision audits the reviewer principal as actor",
@@ -91,9 +91,9 @@
       "title": "Compare-and-swap status transitions",
       "description": "As a platform owner, I want every lifecycle transition to be conditional on the expected current status so that concurrent writers cannot corrupt state.",
       "acceptanceCriteria": [
-        "Executor setStatus (and any raw prisma.payment.update that changes status) becomes updateMany({ where: { id, status: expectedFrom }, data }) — zero rows updated throws a typed StaleTransitionError; assertTransition still runs first",
+        "Executor setStatus (and any raw prisma.payment.update that changes status) becomes updateMany({ where: { id, status: expectedFrom }, data }) \u2014 zero rows updated throws a typed StaleTransitionError; assertTransition still runs first",
         "The review and cancel routes use the same CAS path",
-        "DB test: two simulated concurrent transitions from the same status — exactly one wins, the loser gets StaleTransitionError and the payment ends in a single consistent status",
+        "DB test: two simulated concurrent transitions from the same status \u2014 exactly one wins, the loser gets StaleTransitionError and the payment ends in a single consistent status",
         "Audit event is only written when the CAS update succeeded",
         "Typecheck passes",
         "Tests pass"
@@ -110,7 +110,7 @@
         "Payment gets executionLeaseId + leasedAt columns; execute claims the lease with a CAS update (WHERE id = ? AND executionLeaseId IS NULL AND status = 'APPROVED') inside the same prisma.$transaction that creates the LiquidityReservation",
         "Second concurrent execute returns 409 conflict (error_code conflict) without touching chain state",
         "Lease is cleared on terminal states (SETTLED/FAILED/REFUNDED/COMPENSATED) so operator retries stay possible where the state machine allows",
-        "Integration test: fire two executes concurrently at one APPROVED payment on the local fixture chains — exactly one settles, the other 409s, exactly one escrow tx exists on-chain",
+        "Integration test: fire two executes concurrently at one APPROVED payment on the local fixture chains \u2014 exactly one settles, the other 409s, exactly one escrow tx exists on-chain",
         "Typecheck passes",
         "Tests pass"
       ],
@@ -125,7 +125,7 @@
       "acceptanceCriteria": [
         "IdempotencyRecord prisma model: key (unique per principal), route, requestHash, responseStatus, responseBody, createdAt",
         "POST /api/payments and POST /api/payments/[id]/execute honor an Idempotency-Key header: same key + same request body replays the stored response; same key + different body returns 422",
-        "Records expire after 24h (checked at read time — no cron needed)",
+        "Records expire after 24h (checked at read time \u2014 no cron needed)",
         "Integration tests: duplicate create with same key returns the same payment_id and creates one row; conflicting body 422s",
         "Typecheck passes",
         "Tests pass"
@@ -141,7 +141,7 @@
       "acceptanceCriteria": [
         "New lifecycle statuses in lib/state.ts: COMPENSATION_PENDING (reachable from PAYOUT_PENDING) and COMPENSATED (terminal, from COMPENSATION_PENDING), enforced by assertTransition; state-machine unit tests updated",
         "Executor: if the destination payout or ledger-credit step throws AFTER settlePayment succeeded, do NOT call failAndRefund (escrow is already released); instead transition to COMPENSATION_PENDING, send a treasury-funded transfer of the source asset amount back to the sender wallet on the source network, then transition to COMPENSATED",
-        "Every compensation step audited (tx hashes as strings, never bigint, in audit detail — AGENTS.md gotcha)",
+        "Every compensation step audited (tx hashes as strings, never bigint, in audit detail \u2014 AGENTS.md gotcha)",
         "Liquidity reservation released; integration test forces a destination failure after settlement (injectable test-only failure hook in the executor) and asserts the sender's source-asset balance is restored",
         "Reconcile on-chain facts before compensating: read the escrow contract's payment status to confirm SETTLED on-chain rather than trusting the DB alone",
         "Typecheck passes",
@@ -173,7 +173,7 @@
       "title": "Strict canonical decimal validation at the API boundary",
       "description": "As a platform owner, I want malformed or over-precise amounts rejected so that '1e6', 'Infinity', and 25000.001 JPY can never enter the system.",
       "acceptanceCriteria": [
-        "lib/money.ts: parseAmount(amountStr, currency) accepting only ^[0-9]+(\\.[0-9]+)?$ with at most the currency's decimal places (JPY 0, USD/SGD 2), no leading '+', no exponent, max 15 integer digits; returns bigint minor units; throws typed MoneyError otherwise — excess precision is REJECTED, never truncated",
+        "lib/money.ts: parseAmount(amountStr, currency) accepting only ^[0-9]+(\\.[0-9]+)?$ with at most the currency's decimal places (JPY 0, USD/SGD 2), no leading '+', no exponent, max 15 integer digits; returns bigint minor units; throws typed MoneyError otherwise \u2014 excess precision is REJECTED, never truncated",
         "POST /api/payments validates amount via parseAmount and stores the canonical string form; invalid input returns 400 invalid_request with a safe message",
         "Unit tests: scientific notation, Infinity, NaN, negative, empty, '25000.001' JPY rejected; '25000.00' USD, '0.01' USD, '100' JPY accepted with correct minor units",
         "Typecheck passes",
@@ -205,8 +205,8 @@
       "description": "As a platform owner, I want liquidity checks exact so that reservation accounting can never drift from float rounding.",
       "acceptanceCriteria": [
         "lib/routing.ts availableLiquidity/liquidityOk and reservation sums use bigint end to end (reserved amounts parsed from DB strings via lib/money.ts)",
-        "Executor liquidity reservation + treasury.freeTreasuryBalance callers agree on bigint units (treasury.ts is already bigint — do not regress it)",
-        "Import direction preserved: routing → treasury only (AGENTS.md gotcha)",
+        "Executor liquidity reservation + treasury.freeTreasuryBalance callers agree on bigint units (treasury.ts is already bigint \u2014 do not regress it)",
+        "Import direction preserved: routing \u2192 treasury only (AGENTS.md gotcha)",
         "Unit test: liquidity boundary exact-equal passes, one minor unit over fails (both directions)",
         "Typecheck passes",
         "Tests pass"
@@ -237,7 +237,7 @@
       "description": "As a security owner, I want signing behind one interface and chain/key code impossible to bundle client-side, so custody can later move to a KMS without touching callers.",
       "acceptanceCriteria": [
         "lib/signers.ts: Signer interface (address + viem account construction) with LocalKeySigner implementation; lib/chain.ts wallet construction goes through it; a KmsSigner stub documents the extension point (throws 'not configured')",
-        "import 'server-only' added to lib/chain.ts, lib/signers.ts, lib/treasury.ts, lib/executor.ts; app builds (npm run build) — lib/networks.ts must stay client-safe",
+        "import 'server-only' added to lib/chain.ts, lib/signers.ts, lib/treasury.ts, lib/executor.ts; app builds (npm run build) \u2014 lib/networks.ts must stay client-safe",
         "Deployment credentials separated from runtime: deploy scripts read DEPLOYER_PRIVATE_KEY directly; runtime operator writes resolve via the signer layer; document the boundary in AGENTS.md",
         "Typecheck passes",
         "Tests pass"

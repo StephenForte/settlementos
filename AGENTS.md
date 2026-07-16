@@ -62,6 +62,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [scripts/setup.mjs](scripts/setup.mjs) | Local deploy (tokens, escrow, TokenizedMMF + its yield buffer and treasury approval) + DB seed (dev-mnemonic accounts, local only) |
 | [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy via argv): env deployer key, per-network gas-dust targets, generated dust wallets, DB registration |
 | `app/api/*` | REST route handlers (thin; logic lives in lib/) |
+| [app/api/guard.ts](app/api/guard.ts) | Authorization glue: `requirePrincipal(req)` / `requireRole(req, ...roles)` return a `Principal` **or** the `NextResponse` to return (`if (x instanceof NextResponse) return x`), plus `isPlatformRole()` for the OPERATOR/REVIEWER-see-everything check. HTTP concerns live here, not in lib/auth.ts |
 | `app/api/treasury/*` | MMF routes: `park`, `recall`, `positions` (GET, derived value per position), `accrue`. `errors.ts` holds the single `TreasuryErrorCode` → HTTP status table — add a code there when you add one to lib/treasury |
 | `app/liquidity/` | Treasury dashboard. `page.tsx` is a server component (all chain/DB reads, per-network sections); `mmf-card.tsx` is the `"use client"` MMF card — park form, per-position Recall, Accrue demo control — which POSTs to the treasury routes and then `router.refresh()`es |
 | `contracts/` | Solidity 0.8.24: `MockERC20` (permissionless mint, by design), `PaymentSettlement` escrow, `TokenizedMMF` (operator-gated share fund for parked treasury liquidity; monotonic index, no cross-calls with escrow) |
@@ -90,6 +91,15 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 - **Public RPC resilience**: anything that reads a real-network RPC must degrade
   gracefully (see balances route / liquidity page pattern) — one flaky endpoint
   must not 500 a whole page.
+- **No API route is anonymous** except `/api/networks` (static registry) and
+  `/api/auth/*` (the login exchange itself): every handler starts with a
+  `requirePrincipal`/`requireRole` guard. Errors stay generic and leak nothing —
+  anonymous and invalid keys get the same 401, and a tenant asking for another
+  tenant's row gets a **404, never a 403**, so no response confirms an id exists.
+- **Tenant scoping is a query filter, not a post-filter**: an ENTITY principal's
+  reads are narrowed in the `where` clause (`isPlatformRole(p) ? {} : { ... }`),
+  so a row it may not see is never loaded and cannot leak through a count, an
+  aggregate, or a forgotten field.
 - **Compliance fail-safe**: a screening that cannot be performed (provider
   error, timeout, malformed response) resolves MANUAL_REVIEW — never PASS.
   Mocks stay the default when no provider env keys are set, so demos work

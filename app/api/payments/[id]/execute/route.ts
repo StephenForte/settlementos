@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { runComplianceChecks } from "@/lib/compliance";
 import { executePayment } from "@/lib/executor";
+import { requirePrincipal } from "../../../guard";
 
 /**
  * Execute a payment. From QUOTED: runs the compliance gate first; if all checks
@@ -11,6 +12,10 @@ import { executePayment } from "@/lib/executor";
  * after reviewer sign-off): settles directly.
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  // Identity only — role/tenant rules for writes land in US-004.
+  const principal = await requirePrincipal(req);
+  if (principal instanceof NextResponse) return principal;
+
   const { id } = await params;
   const body = await req.json().catch(() => ({}));
   let payment = await prisma.payment.findUnique({ where: { id } });

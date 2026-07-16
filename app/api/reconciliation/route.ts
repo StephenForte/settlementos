@@ -1,9 +1,14 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
+import { requireRole } from "../guard";
 
 /** Reconciliation export: one CSV row per payment with full settlement detail. */
-export async function GET() {
+export async function GET(req: NextRequest) {
+  // The export spans every tenant's payments, so it is platform-roles only.
+  const principal = await requireRole(req, "OPERATOR", "REVIEWER");
+  if (principal instanceof NextResponse) return principal;
+
   const payments = await prisma.payment.findMany({
     orderBy: { createdAt: "asc" },
     include: { sender: true, recipient: true, ledgerCredits: true },

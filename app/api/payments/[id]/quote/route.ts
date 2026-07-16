@@ -3,8 +3,13 @@ import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { assertTransition } from "@/lib/state";
 import { quoteRoutes } from "@/lib/routing";
+import { requirePrincipal } from "../../../guard";
 
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  // Identity only — role/tenant rules for writes land in US-004.
+  const principal = await requirePrincipal(req);
+  if (principal instanceof NextResponse) return principal;
+
   const { id } = await params;
   const payment = await prisma.payment.findUnique({ where: { id } });
   if (!payment) return NextResponse.json({ error: "payment not found" }, { status: 404 });

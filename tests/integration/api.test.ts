@@ -6,11 +6,13 @@ import { NextRequest } from "next/server";
 import { GET as networksGET } from "@/app/api/networks/route";
 import { POST as paymentsPOST } from "@/app/api/payments/route";
 import { prisma } from "@/lib/db";
+import { API_KEY_HEADER } from "@/lib/auth";
+import { API_KEYS } from "../fixture";
 
-function postJson(body: Record<string, unknown>) {
+function postJson(body: Record<string, unknown>, key: string = API_KEYS.operator) {
   return new NextRequest("http://test.local/api/payments", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", [API_KEY_HEADER]: key },
     body: JSON.stringify(body),
     // undici requires duplex when a body is present on a constructed Request
     ...({ duplex: "half" } as object),

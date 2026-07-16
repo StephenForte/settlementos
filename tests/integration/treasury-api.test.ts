@@ -8,6 +8,8 @@
 
 import { describe, it, expect, afterAll } from "vitest";
 import { NextRequest } from "next/server";
+import { API_KEY_HEADER } from "@/lib/auth";
+import { API_KEYS } from "../fixture";
 import { POST as accruePOST } from "@/app/api/treasury/accrue/route";
 import { POST as parkPOST } from "@/app/api/treasury/park/route";
 import { GET as positionsGET } from "@/app/api/treasury/positions/route";
@@ -21,10 +23,17 @@ const NETWORK = "base-local";
 function postJson(path: string, body: Record<string, unknown>) {
   return new NextRequest(`http://test.local/api/treasury/${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", [API_KEY_HEADER]: API_KEYS.operator },
     body: JSON.stringify(body),
     // undici requires duplex when a body is present on a constructed Request
     ...({ duplex: "half" } as object),
+  });
+}
+
+/** Authenticated GET for the positions handler (reads are OPERATOR/REVIEWER only). */
+function getRequest(path: string) {
+  return new NextRequest(`http://test.local/api/treasury/${path}`, {
+    headers: { [API_KEY_HEADER]: API_KEYS.operator },
   });
 }
 
@@ -126,7 +135,7 @@ describe("GET /api/treasury/positions and POST /api/treasury/recall", () => {
   it("lists a parked position with its derived value, then recalls it T+0", async () => {
     const parked = await (await parkPOST(postJson("park", parkBody({ amount: "20000.00" })))).json();
 
-    const listed = await (await positionsGET()).json();
+    const listed = await (await positionsGET(getRequest("positions"))).json();
     expect(listed.positions).toHaveLength(1);
     const active = listed.positions[0];
     expect(active).toMatchObject({
@@ -154,7 +163,7 @@ describe("GET /api/treasury/positions and POST /api/treasury/recall", () => {
     expect(Number(recalled.amount)).toBeGreaterThanOrEqual(20_000 - 0.000_001);
 
     // The row is history now: still listed, flipped in place, with both tx hashes.
-    const after = await (await positionsGET()).json();
+    const after = await (await positionsGET(getRequest("positions"))).json();
     expect(after.positions[0]).toMatchObject({
       position_id: parked.position_id,
       status: "RECALLED",

@@ -117,6 +117,26 @@ Phase 9 Track A: production hardening per AUDIT.md
   handler and read `res.cookies.get(NAME)` off the returned `NextResponse` — it exposes
   `value`/`httpOnly`/`sameSite`/`path`, and a `.delete()` shows up as value `""`.
   A no-arg handler (`POST()`) needs no Request at all.
+- Route authorization goes through `app/api/guard.ts`: `requirePrincipal(req)` /
+  `requireRole(req, ...roles)` return `Principal | NextResponse`, so every handler opens
+  with `const p = await requireX(...); if (p instanceof NextResponse) return p;`. HTTP
+  concerns (status codes, bodies) live under app/api, never in lib/auth.ts.
+- Security responses stay GENERIC and identical: anonymous == invalid key == 401
+  `{error:"unauthorized"}`; another tenant's row == nonexistent row == 404 (never 403,
+  which would confirm the id exists). Assert byte-identical bodies in tests, not just
+  matching statuses.
+- Tenant scoping belongs in the prisma `where` clause
+  (`isPlatformRole(p) ? {} : { OR: [...] }`), not a filter over already-fetched rows —
+  a row that was never loaded cannot leak via a count, an aggregate, or a new field.
+- Adding auth to a route BREAKS every existing test that calls the handler — they all
+  construct requests without a key. Fix at the test's request-builder helper (add
+  `[API_KEY_HEADER]: API_KEYS.operator` in one place), not call by call.
+- `chain/dev-api-keys.json` maps name -> raw key STRING (`.operator`, not
+  `.operator.key`). Reading it wrong yields a literal "undefined" header and a
+  confusing wall of 401s that looks like an app bug.
+- A dev.db restored by the backup/restore dance predates any schema added since —
+  hitting a new table on it 500s ("The table `main.X` does not exist"). That is the
+  restore, not your code; `npm run setup` (with both chains up) is the fix.
 - To exercise something against the DEV db (not the fixture), write a throwaway
   vitest file that news up its own `PrismaClient({ datasourceUrl: file:<dev.db> })`
   — `setup-env.ts` pins DATABASE_URL to the fixture for every worker, so an explicit
@@ -197,4 +217,45 @@ Phase 9 Track A: production hardening per AUDIT.md
   - Next up US-003 (enforce authz + tenant scoping on reads). currentPrincipal() covers
     server components; authenticate(req) covers routes. Both already fail closed, so
     US-003 is mostly "null -> generic 401" + an ENTITY sender/recipient filter.
+---
+
+## 2026-07-16 12:05 - US-003 (enforce authz + tenant scoping on reads)
+- Every API route except /api/networks (public registry) and /api/auth/* now requires an
+  authenticated principal; reads are role- and tenant-scoped. Writes get the 401 gate too
+  (AC1 says "any API route"), but their ROLE rules are deliberately still open — that is
+  US-004's job, and each write handler carries a comment saying so.
+- Files changed:
+  - app/api/guard.ts (new) — requirePrincipal / requireRole / isPlatformRole +
+    unauthorized()/forbidden()/notFound(). Returns Principal | NextResponse; handlers
+    narrow with `instanceof NextResponse`.
+  - Reads scoped: payments (list filter by sender/recipient), payments/[id] (404 for a
+    non-party), entities (ENTITY sees only itself), balances + reconciliation + audit +
+    treasury/positions (OPERATOR/REVIEWER only).
+  - Writes gated on identity only: payments POST, quote, execute, cancel, review,
+    treasury park/recall/accrue.
+  - AGENTS.md — guard.ts in the architecture map + two new invariants (no anonymous
+    routes / generic non-leaking errors; tenant scoping as a query filter).
+  - tests/integration/authz.test.ts (new) — 14 tests. Existing api/treasury-api/
+    treasury-guardrails tests updated to send an operator key. Suite 149 -> 163.
+- Verified beyond the suite, against a real dev server + freshly seeded dev DB (the
+  backup/restore dance): anon 401 / operator 200 / entity 200 on payments; entity 403 on
+  audit+balances+reconciliation, reviewer 200; entity /api/entities returns ONLY
+  ent_acme_us while operator sees 4; /api/networks still public 200. Then drove the full
+  demo flow authenticated — create -> quote -> execute -> SETTLED — so the PRD's
+  "never break the demo" constraint holds. Dev state restored afterwards.
+- **Learnings for future iterations:**
+  - The AC deliberately makes ENTITY /api/entities return only itself. app/payments/new
+    fetches that endpoint to fill the sender/recipient dropdowns, so an ENTITY-signed-in
+    browser now sees a one-option recipient list. The demo drives everything with the
+    OPERATOR key so this is not a demo break, but if a future story wants tenant users to
+    address counterparties, it needs a separate, deliberately-narrow counterparty
+    endpoint — do NOT loosen /api/entities to fix it.
+  - Server COMPONENTS (dashboard, liquidity) still read prisma directly and are NOT
+    scoped by this story — only API routes are. Page-level authz is still an open gap;
+    US-010 adds an operator-only view and will have to face it.
+  - execute/review/cancel now resolve a principal they do not yet use (the comment marks
+    it). US-004 should replace the `requirePrincipal` with `requireRole`/sender checks
+    and pass `principal.label` into audit() instead of the body's `reviewer` field.
+  - `verifyAuditChain()` returns `{ valid: boolean; brokenAtId?: number }` — NOT a
+    `{status:"INTACT"}` shape (that string is the UI's rendering of it).
 ---

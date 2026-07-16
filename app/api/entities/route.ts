@@ -2,9 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { randomBytes } from "node:crypto";
 import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
+import { isPlatformRole, requirePrincipal } from "../guard";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const principal = await requirePrincipal(req);
+  if (principal instanceof NextResponse) return principal;
+
   const entities = await prisma.entity.findMany({
+    where: isPlatformRole(principal) ? {} : { id: principal.entityId },
     include: { wallets: true, ledgerCredits: true },
     orderBy: { createdAt: "asc" },
   });
@@ -12,6 +17,9 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  const principal = await requirePrincipal(req);
+  if (principal instanceof NextResponse) return principal;
+
   const body = await req.json();
   const { name, country, role = "RECIPIENT", wallet_address, approved_corridors = [] } = body;
   if (!name || !country) {

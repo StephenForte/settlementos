@@ -6,9 +6,17 @@ import { CURRENCY_TO_ASSET } from "@/lib/assets";
 import { supportedCorridors, corridorCode } from "@/lib/fx";
 import { NETWORKS } from "@/lib/networks";
 import { isChainReady, loadDeployments } from "@/lib/chain";
+import { isPlatformRole, requirePrincipal } from "../guard";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const principal = await requirePrincipal(req);
+  if (principal instanceof NextResponse) return principal;
+
+  // A tenant sees only the payments it is party to; operators and reviewers see all.
   const payments = await prisma.payment.findMany({
+    where: isPlatformRole(principal)
+      ? {}
+      : { OR: [{ senderId: principal.entityId }, { recipientId: principal.entityId }] },
     orderBy: { createdAt: "desc" },
     include: { sender: true, recipient: true },
   });
@@ -16,6 +24,9 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  const principal = await requirePrincipal(req);
+  if (principal instanceof NextResponse) return principal;
+
   const body = await req.json();
   const {
     sender_id,

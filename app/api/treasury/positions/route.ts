@@ -1,14 +1,19 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { ASSETS, fromBaseUnits, type AssetSymbol } from "@/lib/assets";
 import { prisma } from "@/lib/db";
 import { currentIndexOf, valueOfShares } from "@/lib/treasury";
+import { requireRole } from "../../guard";
 
 /**
  * Parked MMF positions, newest first. A position's value is always derived
  * (shares x the fund's live index), never stored on the row — so ACTIVE rows
  * carry a live value and accrued yield, RECALLED rows carry their history.
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
+  // Platform treasury positions, not a tenant's own funds.
+  const principal = await requireRole(req, "OPERATOR", "REVIEWER");
+  if (principal instanceof NextResponse) return principal;
+
   const positions = await prisma.treasuryPosition.findMany({ orderBy: { createdAt: "desc" } });
 
   // One index read per network rather than per row, and a network whose fund is

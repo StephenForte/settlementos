@@ -1,10 +1,15 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { accountsFor, isChainReady, loadDeployments, tokenBalance } from "@/lib/chain";
 import { fromBaseUnits } from "@/lib/assets";
+import { requireRole } from "../guard";
 
 /** Treasury + entity balances by network and asset, reservations, and ledger credits. */
-export async function GET() {
+export async function GET(req: NextRequest) {
+  // Platform-wide treasury and cross-tenant balances — never a tenant's to read.
+  const principal = await requireRole(req, "OPERATOR", "REVIEWER");
+  if (principal instanceof NextResponse) return principal;
+
   if (!isChainReady()) {
     return NextResponse.json(
       { error: "Chains not set up. Run: npm run chain, npm run chain:polygon, then npm run setup" },
