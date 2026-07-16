@@ -1,7 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { prisma } from "@/lib/db";
-import { StaleTransitionError, transitionStatus } from "@/lib/transitions";
+import { StaleTransitionError, transitionStatus, transitionTestHooks } from "@/lib/transitions";
+import { verifyAuditChain } from "@/lib/audit";
 import { createDraftPayment } from "../helpers/payments";
+
+afterEach(() => {
+  delete transitionTestHooks.beforeCommit;
+});
 
 // Payments here get audited, so they are never deleted — an AuditEvent's
 // paymentId is inside its hash and Prisma would NULL it on delete, breaking the
@@ -79,5 +84,45 @@ describe("compare-and-swap status transitions", () => {
     const after = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
     expect(events).toHaveLength(1);
     expect(events[0].action).toBe(`payment.status.${after.status.toLowerCase()}`);
+  });
+});
+
+describe("atomic domain change + audit event", () => {
+  it("rolls back the status change and its audit event together", async () => {
+    const payment = await createDraftPayment();
+    const eventsBefore = await prisma.auditEvent.count();
+
+    // Throws inside the transaction, after BOTH the status swap and the audit
+    // event have been written — the only point where a non-atomic implementation
+    // would leave one of them behind.
+    transitionTestHooks.beforeCommit = () => {
+      throw new Error("forced failure after the domain write");
+    };
+    await expect(transitionStatus(payment, "QUOTED", { actor: "tester" })).rejects.toThrow(
+      /forced failure/
+    );
+
+    const after = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(after.status).toBe("DRAFT");
+    expect(await prisma.auditEvent.count()).toBe(eventsBefore);
+    expect(
+      await prisma.auditEvent.findMany({ where: { paymentId: payment.id } })
+    ).toHaveLength(0);
+  });
+
+  it("leaves the hash chain intact after a rolled-back transition", async () => {
+    const payment = await createDraftPayment();
+
+    transitionTestHooks.beforeCommit = () => {
+      throw new Error("forced failure after the domain write");
+    };
+    await expect(transitionStatus(payment, "QUOTED")).rejects.toThrow(/forced failure/);
+    delete transitionTestHooks.beforeCommit;
+
+    // The rolled-back event must not have consumed a link: the next real event
+    // still chains onto the tip that was there before it.
+    const updated = await transitionStatus(payment, "QUOTED");
+    expect(updated.status).toBe("QUOTED");
+    await expect(verifyAuditChain()).resolves.toEqual({ valid: true });
   });
 });

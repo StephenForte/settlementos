@@ -219,28 +219,39 @@ export async function park({ networkId, asset, amount, entityId }: ParkArgs): Pr
   const tx = await mmfOperatorWrite(networkId, "subscribe", [treasury, assetAmount]);
   const shares = (await sharesOf()) - sharesBefore;
 
-  const position = await prisma.treasuryPosition.create({
-    data: {
-      network: networkId,
-      asset: symbol,
-      shares: shares.toString(),
-      assetAmountIn: assetAmount.toString(),
-      indexAtEntry: indexAtEntry.toString(),
-      txHashPark: tx.hash,
-    },
-  });
-
-  await audit(TREASURY_PARKED, {
-    positionId: position.id,
-    network: networkId,
-    asset: symbol,
-    amount: fromBaseUnits(assetAmount, decimals),
-    assetAmountUnits: assetAmount.toString(),
-    shares: shares.toString(),
-    indexAtEntry: indexAtEntry.toString(),
-    fund,
-    txHash: tx.hash,
-    ...(entityId ? { entityId } : {}),
+  // The position row and its audit event commit together — the subscribe is
+  // already on chain, so a position the log does not know about would be
+  // parked liquidity nothing can account for.
+  const position = await prisma.$transaction(async (db) => {
+    const created = await db.treasuryPosition.create({
+      data: {
+        network: networkId,
+        asset: symbol,
+        shares: shares.toString(),
+        assetAmountIn: assetAmount.toString(),
+        indexAtEntry: indexAtEntry.toString(),
+        txHashPark: tx.hash,
+      },
+    });
+    await audit(
+      TREASURY_PARKED,
+      {
+        positionId: created.id,
+        network: networkId,
+        asset: symbol,
+        amount: fromBaseUnits(assetAmount, decimals),
+        assetAmountUnits: assetAmount.toString(),
+        shares: shares.toString(),
+        indexAtEntry: indexAtEntry.toString(),
+        fund,
+        txHash: tx.hash,
+        ...(entityId ? { entityId } : {}),
+      },
+      undefined,
+      "system",
+      db
+    );
+    return created;
   });
 
   return { positionId: position.id, shares, assetAmount, indexAtEntry, txHash: tx.hash };
@@ -287,26 +298,38 @@ export async function recall(positionId: string): Promise<RecallResult> {
   const tx = await mmfOperatorWrite(position.network, "redeem", [treasury, shares]);
   const assetAmount = (await tokenBalance(position.network, token, treasury)) - balanceBefore;
 
-  const recalled = await prisma.treasuryPosition.update({
-    where: { id: position.id },
-    data: { status: "RECALLED", recalledAt: new Date(), txHashRecall: tx.hash },
-  });
-
   const assetAmountIn = BigInt(position.assetAmountIn);
-  await audit(TREASURY_RECALLED, {
-    positionId: position.id,
-    network: position.network,
-    asset: symbol,
-    shares: shares.toString(),
-    amount: fromBaseUnits(assetAmount, decimals),
-    assetAmountUnits: assetAmount.toString(),
-    principal: fromBaseUnits(assetAmountIn, decimals),
-    yield: fromBaseUnits(assetAmount > assetAmountIn ? assetAmount - assetAmountIn : 0n, decimals),
-    indexAtEntry: position.indexAtEntry,
-    indexAtExit: indexAtExit.toString(),
-    fund,
-    txHash: tx.hash,
-    recalledAt: recalled.recalledAt?.toISOString(),
+  // Status flip and audit event commit together: a position left ACTIVE after a
+  // redeem would double-count liquidity that is already back in the treasury.
+  await prisma.$transaction(async (db) => {
+    const recalled = await db.treasuryPosition.update({
+      where: { id: position.id },
+      data: { status: "RECALLED", recalledAt: new Date(), txHashRecall: tx.hash },
+    });
+    await audit(
+      TREASURY_RECALLED,
+      {
+        positionId: position.id,
+        network: position.network,
+        asset: symbol,
+        shares: shares.toString(),
+        amount: fromBaseUnits(assetAmount, decimals),
+        assetAmountUnits: assetAmount.toString(),
+        principal: fromBaseUnits(assetAmountIn, decimals),
+        yield: fromBaseUnits(
+          assetAmount > assetAmountIn ? assetAmount - assetAmountIn : 0n,
+          decimals
+        ),
+        indexAtEntry: position.indexAtEntry,
+        indexAtExit: indexAtExit.toString(),
+        fund,
+        txHash: tx.hash,
+        recalledAt: recalled.recalledAt?.toISOString(),
+      },
+      undefined,
+      "system",
+      db
+    );
   });
 
   return { positionId: position.id, shares, assetAmount, indexAtExit, txHash: tx.hash };
@@ -371,6 +394,9 @@ export async function accrueDaily(
 
   const tx = await mmfOperatorWrite(networkId, "accrue", [newIndex]);
 
+  // No transaction to enlist in: accrual writes no domain row. The index lives on
+  // chain and every position's value is derived from it, so this event has nothing
+  // it could disagree with.
   await audit(TREASURY_ACCRUED, {
     network: networkId,
     fund,

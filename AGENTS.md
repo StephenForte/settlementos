@@ -56,7 +56,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/fx.ts](lib/fx.ts) | Simulated FX, **all bigint**: static mid rates, spread + tiered slippage, platform fee. Amounts are currency **minor units**; rates are integers scaled by `10^RATE_DECIMALS` (18) — `midRate()` returns a scaled bigint, `formatRate()` renders it. `convert()` (minor units across currencies at a rate), `applyBps()` (worsen a rate), `usdEquivalent()` (→ USD minor units, for tiering/risk thresholds) |
 | [lib/compliance.ts](lib/compliance.ts) | Compliance gate (KYB, sanctions, wallet/tx/corridor risk) → PASS/FAIL/MANUAL_REVIEW. Sanctions + wallet screening dispatch to real providers when env config is set (`OPENSANCTIONS_API_KEY`, `CHAINALYSIS_ORACLE_RPC_URL`), mocks otherwise |
 | `lib/providers/` | Real vendor adapters: OpenSanctions (sanctions match API), Chainalysis sanctions oracle (keyless on-chain `isSanctioned()` read for wallet screening). **Fail-safe: any provider error/timeout → MANUAL_REVIEW, never fail-open.** Verbatim provider evidence persisted on `ComplianceCheck.rawResponse` |
-| [lib/audit.ts](lib/audit.ts) | Append-only hash-chained audit log + chain verifier |
+| [lib/audit.ts](lib/audit.ts) | Append-only hash-chained audit log + chain verifier. `audit(action, detail, paymentId, actor, tx?)` — pass the caller's `Prisma.TransactionClient` to enlist the event in the transaction that writes the change it describes |
 | [lib/auth.ts](lib/auth.ts) | API-key identity: `authenticate(request)` (`x-api-key` header → `sos_key` cookie) → `Principal { keyId, role, entityId?, label }` or null. Roles OPERATOR/REVIEWER/ENTITY; only sha256 hashes are stored. `keyId` is the `ApiKey.id` — the stable per-caller identity anything keyed by principal uses. **Identity only — routes enforce authorization** |
 | [lib/idempotency.ts](lib/idempotency.ts) | Idempotent-write records: `beginIdempotent()` (reserve the key or report replay/mismatch/in-flight), `completeIdempotent()` / `abandonIdempotent()`, `hashRequest()` (canonical, key-order-independent body fingerprint), `IDEMPOTENCY_TTL_MS` (24h, checked at read time — no cron). Framework-free; the response half is app/api/idempotency.ts |
 | [lib/session.ts](lib/session.ts) | Next-only half of auth: `currentPrincipal()` resolves the `sos_key` cookie via `cookies()` for **server components** (which have no `Request`); `sessionCookieOptions()` is the one place the cookie's flags are defined. Keep `next/headers` out of lib/auth.ts so route tests can pass a plain `Request` |
@@ -93,9 +93,16 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   the terminal set + FAILED), and the executor's `finally` is the backstop for throws that never
   reach a transition — a stranded lease locks a payment out of every retry. The status check
   before the claim is *not* what decides the race; the claim is.
-- **Audit only what happened**: a status change is audited *after* its CAS reports a
-  row was updated. A writer that lost the race must leave no event — an append-only
-  log recording a change that never landed is worse than no log at all.
+- **Audit only what happened, in the same transaction as what happened**: a status
+  change is audited *after* its CAS reports a row was updated, and inside the same
+  `prisma.$transaction` — a writer that lost the race must leave no event, and a
+  domain write that rolls back must take its event with it. An append-only log
+  recording a change that never landed is worse than no log at all. So any path
+  that writes a domain row *and* an event passes its tx to `audit(..., tx)`
+  (`transitionStatus`, treasury `park`/`recall`); only an event that describes no
+  row (an export, a quote, the MMF accrual, whose index lives on chain) may take
+  the no-tx form. The tip read and the create stay in one transaction — that is what
+  serializes the chain.
 - **Audit everything**: any state change or fund movement gets an `audit(...)`
   event. The log is append-only — never update or delete `AuditEvent` rows; that
   breaks the hash chain (`GET /api/audit` verifies it, the UI shows INTACT/BROKEN).
@@ -262,6 +269,11 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   A failed auto-recall fails the payment (APPROVED → FAILED) with nothing escrowed.
 
 ## Gotchas
+
+- **Calling `audit()` without a `tx` from inside an open `prisma.$transaction` deadlocks.**
+  It opens its own transaction on another connection, which blocks on the outer one's
+  SQLite write lock until the busy timeout fires — the symptom is every test in the file
+  timing out at ~5s, not an error naming a lock. Thread the tx through.
 
 - `audit()` JSON-stringifies its detail, and `JSON.stringify` **throws on a bigint**.
   Convert base units to strings (`.toString()` / `fromBaseUnits`) before putting them

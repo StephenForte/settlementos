@@ -59,6 +59,22 @@ Phase 9 Track A: production hardening per AUDIT.md
   `TreasuryErrorCode` union rather than throwing a bare Error, so US-007's routes can
   map cause -> HTTP status in one place. Tests assert with
   `.rejects.toMatchObject({ code: "..." })`.
+- A domain write and the audit event describing it go in ONE `prisma.$transaction`:
+  `audit(action, detail, paymentId, actor, tx?)` takes the caller's
+  `Prisma.TransactionClient`. Pass it whenever the event describes a row written in
+  that same tx (transitionStatus, treasury park/recall); omit it only for an event
+  that describes no row (exports, quotes, MMF accrual — its index lives on chain).
+- DEADLOCK TRAP: calling `audit()` WITHOUT a tx from inside an open
+  `prisma.$transaction` hangs — a second connection blocks on the outer tx's SQLite
+  write lock until the busy timeout. The symptom is every test in the file timing out
+  at ~5s with no lock error. Same applies to any lib/ helper that opens its own tx.
+- `git checkout <file>` to undo a THROWAWAY experiment wipes uncommitted real work in
+  the same file. `cp` the file to /tmp first and restore from there, or commit before
+  experimenting.
+- A rollback/atomicity test can pass vacuously. Prove it non-vacuous by temporarily
+  rewriting the impl to the non-atomic shape and confirming the new tests fail with a
+  real AssertionError while the neighbours still pass — a failure mode of TIMEOUTS
+  instead means the experiment deadlocked and proved nothing.
 - Fixed-point money math (lib/money.ts, lib/fx.ts): amounts are bigint MINOR units,
   rates are bigint integers scaled by 10^n. Two rounding rules, and they are not the
   same rule: a monetary division FLOORS in the platform's favour (fees, effective
@@ -921,4 +937,48 @@ Phase 9 Track A: production hardening per AUDIT.md
     account, env key read at SIGNING time not construction, KmsSigner refuses but still
     exposes its address, KMS-over-inline precedence, and resolveKey's three error paths).
     tsc + lint green.
+---
+
+## 2026-07-16 - US-016
+- Atomic domain-change + audit-event writes. `audit()` now takes an optional
+  `Prisma.TransactionClient` (5th arg) and enlists in the caller's transaction;
+  `transitionStatus` and treasury `park`/`recall` write their domain row and their
+  audit event in one `prisma.$transaction`.
+- Files: lib/audit.ts (AuditTx type, appendEvent extracted, optional tx param),
+  lib/transitions.ts (CAS + row read + audit inside one tx; new `transitionTestHooks`),
+  lib/treasury.ts (park create + audit in one tx, recall update + audit in one tx,
+  accrue commented as deliberately tx-free), tests/db/transitions.test.ts (+2),
+  AGENTS.md.
+- **Learnings for future iterations:**
+  - Review + cancel needed NO changes: both already go through `transitionStatus`, so
+    making that atomic covered them. The AC listing them separately is about behaviour,
+    not call sites — check what already funnels through the chokepoint before editing
+    routes.
+  - `accrueDaily` is the deliberate exception and stays tx-free: it writes no domain
+    row at all (the index lives on chain, every position's value is derived from it),
+    so its event has nothing it could disagree with. Documented in the code + AGENTS.
+  - DEADLOCK, cost a confusing run: calling `audit()` without a tx from inside an open
+    `prisma.$transaction` opens a second connection that blocks on the outer tx's SQLite
+    write lock until the busy timeout. Symptom is EVERY test in the file timing out at
+    ~5s — no error naming a lock. This is now a real hazard for any future code that
+    audits from inside a tx, so it is in AGENTS gotchas.
+  - The hash-chain serialization argument is now a comment in `appendEvent`: the tip
+    findFirst and the create MUST stay in one tx, because SQLite admits one writer at a
+    time — that is what stops two appenders building on the same prevHash. Passing an
+    outer tx preserves this (the append is still inside a single transaction); reading
+    the tip outside a tx would fork the chain.
+  - Vacuity check that is worth repeating: I rewrote transitionStatus to the non-atomic
+    shape and confirmed the 2 new tests fail with `expected 'QUOTED' to be 'DRAFT'` while
+    the other 5 passed. A first attempt at this instead produced 6 TIMEOUTS (the deadlock
+    above) — a timeout failure proves nothing, so re-run the experiment until it fails
+    with an assertion.
+  - GOTCHA that cost the file: `git checkout lib/transitions.ts` to undo the experiment
+    also wiped the story's real edits. `cp` to /tmp before an experiment.
+  - `transitionTestHooks.beforeCommit` follows the `executorTestHooks` precedent and
+    fires INSIDE the tx after both writes — the only point where a non-atomic impl would
+    strand an event. Tests `delete` it in afterEach.
+  - No UI/runtime surface changed (same behaviour, narrower failure window), so no
+    browser pass; the executor E2E tests drive the new transactional transitionStatus
+    on the fixture chains.
+  - Suite 271 -> 273. tsc + lint green.
 ---

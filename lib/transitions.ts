@@ -7,7 +7,8 @@
 // StaleTransitionError rather than overwriting whatever the winner just did.
 //
 // The audit event is written only after a successful swap — a losing writer must
-// not leave a record of a change it did not make.
+// not leave a record of a change it did not make — and in the *same* transaction
+// as the swap, so the log can never disagree with the state it describes.
 //
 // Framework-free (same reason as lib/auth.ts and lib/api-errors.ts): callable
 // from plain vitest, no next/server import.
@@ -72,20 +73,39 @@ export async function transitionStatus(
     ? { executionLeaseId: null, leasedAt: null }
     : {};
 
-  // The CAS: `status: from` in the WHERE is what makes this safe. A plain
-  // update({ where: { id } }) would clobber a concurrent writer's result.
-  const { count } = await prisma.payment.updateMany({
-    where: { id: payment.id, status: from },
-    data: { status: to, ...data, ...releaseLease },
-  });
-  if (count === 0) throw new StaleTransitionError(payment.id, from, to as PaymentStatus);
+  // Swap and audit commit together or not at all: a throw anywhere in here (the
+  // audit's own write included) leaves the payment in `from` with no event
+  // claiming otherwise. `audit` is handed this tx — calling it without one from
+  // inside here would open a second connection that blocks on this transaction's
+  // write lock and deadlock until SQLite's busy timeout fires.
+  return prisma.$transaction(async (tx) => {
+    // The CAS: `status: from` in the WHERE is what makes this safe. A plain
+    // update({ where: { id } }) would clobber a concurrent writer's result.
+    const { count } = await tx.payment.updateMany({
+      where: { id: payment.id, status: from },
+      data: { status: to, ...data, ...releaseLease },
+    });
+    if (count === 0) throw new StaleTransitionError(payment.id, from, to as PaymentStatus);
 
-  const updated = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
-  await audit(
-    action ?? `payment.status.${to.toLowerCase()}`,
-    { from, to, ...data, ...detail },
-    payment.id,
-    actor
-  );
-  return updated;
+    const updated = await tx.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    await audit(
+      action ?? `payment.status.${to.toLowerCase()}`,
+      { from, to, ...data, ...detail },
+      payment.id,
+      actor,
+      tx
+    );
+    await transitionTestHooks.beforeCommit?.(updated);
+    return updated;
+  });
 }
+
+/**
+ * Test-only throw points, same shape as `executorTestHooks` (lib/executor.ts):
+ * `beforeCommit` fires inside the transaction, after both the swap and the audit
+ * event, which is the only way to make a committed-looking write roll back.
+ * Nothing in the app ever assigns these.
+ */
+export const transitionTestHooks: {
+  beforeCommit?: (payment: Payment) => void | Promise<void>;
+} = {};
