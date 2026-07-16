@@ -4,7 +4,11 @@
 // chain/deployments.<network>.json overlay per live network (real testnets,
 // written by scripts/deploy-testnet.mjs). Real networks carry their own account
 // set; hot keys for them live in .env and are referenced via privateKeyEnv.
+//
+// No key is resolved here: every write signs through lib/signers.ts, so custody
+// has one seam. Server-only — this module reads the filesystem and .env.
 
+import "server-only";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -18,22 +22,16 @@ import {
   type Hex,
   type PublicClient,
 } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import { LIVE_NETWORK_IDS, NETWORKS, networkInfo } from "./networks";
+import { signerFor, type AccountRef, type Signer } from "./signers";
+
+export type { AccountRef, Signer };
 
 export interface NetworkContracts {
   PaymentSettlement: Address;
   /** Tokenized MMF for parked treasury liquidity. Absent on networks without one. */
   TokenizedMMF?: Address;
   tokens: Record<string, { address: Address; decimals: number }>;
-}
-
-/** An account role. Either the key is stored inline (local dev chains, generated
- *  testnet wallets holding faucet dust) or referenced via an env var (funded keys). */
-export interface AccountRef {
-  address: Address;
-  privateKey?: Hex;
-  privateKeyEnv?: string;
 }
 
 export interface NetworkAccounts {
@@ -103,19 +101,6 @@ export function accountsFor(networkId: string): NetworkAccounts {
   return accounts;
 }
 
-/** Resolve an account's signing key (inline or from the env var it references). */
-export function resolveKey(ref: AccountRef, role: string): Hex {
-  const key = ref.privateKey ?? (ref.privateKeyEnv ? process.env[ref.privateKeyEnv] : undefined);
-  if (!key || !key.startsWith("0x")) {
-    throw new Error(
-      `Missing private key for ${role} (${ref.address}). ${
-        ref.privateKeyEnv ? `Set ${ref.privateKeyEnv} in .env` : "Re-run the deploy script"
-      }`
-    );
-  }
-  return key as Hex;
-}
-
 export function networkContracts(networkId: string): NetworkContracts {
   const dep = loadDeployments();
   const net = dep.networks[networkId];
@@ -146,12 +131,14 @@ export function publicClientFor(networkId: string): PublicClient {
   return publicClients[networkId];
 }
 
-export function walletFor(networkId: string, privateKey: Hex) {
+/** A wallet client that signs as `signer`. Key material (if there is any) is the
+ *  signer's business — see lib/signers.ts. */
+export async function walletFor(networkId: string, signer: Signer) {
   const info = networkInfo(networkId);
   return createWalletClient({
     chain: viemChain(networkId),
     transport: http(info.rpcUrl),
-    account: privateKeyToAccount(privateKey),
+    account: await signer.account(),
   });
 }
 
@@ -430,7 +417,7 @@ export async function operatorWrite(
 ): Promise<TxResult> {
   const dep = loadDeployments();
   const operator = accountsFor(networkId).operator;
-  const wallet = walletFor(networkId, resolveKey(operator, `${networkId} operator`));
+  const wallet = await walletFor(networkId, signerFor(operator, `${networkId} operator`));
   // Every call here depends on state a previous tx wrote, so the matching revert
   // right after that tx confirmed is replica lag rather than a real failure:
   // every function except initiatePayment needs the escrow row, and
@@ -465,7 +452,7 @@ export async function mmfOperatorWrite(
   const fund = mmfAddress(networkId);
   if (!fund) throw new Error(`No TokenizedMMF deployed on ${networkId}`);
   const operator = accountsFor(networkId).operator;
-  const wallet = walletFor(networkId, resolveKey(operator, `${networkId} operator`));
+  const wallet = await walletFor(networkId, signerFor(operator, `${networkId} operator`));
   const hash = await wallet.writeContract({
     address: fund,
     abi: MMF_ABI,
@@ -507,7 +494,7 @@ export async function ensureTreasuryAllowance(
   const treasury = accountsFor(networkId).treasury;
   if ((await tokenAllowance(networkId, token.address, treasury.address, spender)) >= amount) return;
 
-  const wallet = walletFor(networkId, resolveKey(treasury, `${networkId} treasury`));
+  const wallet = await walletFor(networkId, signerFor(treasury, `${networkId} treasury`));
   const hash = await wallet.writeContract({
     address: token.address,
     abi: ERC20_ABI,
@@ -544,7 +531,10 @@ export async function ensureSenderAllowance(
   if (!sender) throw new Error(`No wallet configured for ${entityExternalId} on ${networkId}`);
   if ((await tokenAllowance(networkId, token.address, sender.address, spender)) >= amount) return null;
 
-  const wallet = walletFor(networkId, resolveKey(sender, `${networkId} wallet for ${entityExternalId}`));
+  const wallet = await walletFor(
+    networkId,
+    signerFor(sender, `${networkId} wallet for ${entityExternalId}`)
+  );
   const hash = await wallet.writeContract({
     address: token.address,
     abi: ERC20_ABI,
@@ -569,7 +559,7 @@ export async function treasuryTokenTransfer(
   const token = dep.networks[networkId].contracts.tokens[tokenSymbol];
   if (!token) throw new Error(`Token ${tokenSymbol} not deployed on ${networkId}`);
   const treasury = accountsFor(networkId).treasury;
-  const wallet = walletFor(networkId, resolveKey(treasury, `${networkId} treasury`));
+  const wallet = await walletFor(networkId, signerFor(treasury, `${networkId} treasury`));
   const hash = await wallet.writeContract({
     address: token.address,
     abi: ERC20_ABI,

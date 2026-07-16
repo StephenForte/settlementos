@@ -8,6 +8,7 @@
 // recipient's wallet ON the destination network (a real ERC-20 transfer on
 // chain 2), giving the payment transaction hashes on both networks.
 
+import "server-only";
 import { randomUUID } from "node:crypto";
 import type { Payment, Prisma } from "@prisma/client";
 import { prisma } from "./db";

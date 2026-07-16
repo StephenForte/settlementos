@@ -102,6 +102,16 @@ Phase 9 Track A: production hardening per AUDIT.md
   (USD→USD is a legal corridor — `midRate` returns unity when source == dest; since
   US-012 that is the scaled bigint RATE_SCALE, not the number 1). A USD→JPY
   payment reserves mockJPY and never touches the fund.
+- Private keys have ONE resolution point: lib/signers.ts (`signerFor(ref, role)` ->
+  `Signer`, passed to `walletFor`). Never call `privateKeyToAccount` or read a key env
+  var anywhere else in lib/ or app/ — the whole point is that custody swaps by adding a
+  Signer implementation, not by auditing call sites.
+- `server-only` modules (lib/chain, lib/signers, lib/treasury, lib/executor) are enforced
+  by the BUNDLER, not tsc: `npm run build` is the only check that catches a client
+  component reaching them, and an UNUSED import is tree-shaken so it passes — reference
+  the symbol when proving the guard. vitest aliases the package to tests/stubs/server-only.ts
+  (it is a bare `throw` outside an RSC bundle), so a new server-only module needs no test
+  change, but keep lib/networks.ts client-safe.
 - `scripts/*.mjs` CANNOT import anything from `lib/` (TS, and there is no TS runner —
   no tsx/ts-node installed). Any logic a seed/deploy script shares with lib/ must be
   duplicated inline and kept in sync BY HAND (see setup.mjs's `hashKey`/`generateKey`
@@ -864,4 +874,51 @@ Phase 9 Track A: production hardening per AUDIT.md
     The treasury is the platform's own account, not a customer wallet, and AC1 names entity
     wallets only. If a later story tightens it, note that `subscribe` pulls per park, so it
     would need the same just-in-time exact approval.
+---
+
+## 2026-07-16 - US-015
+- Signer abstraction + server-only chain modules. Key resolution moved out of lib/chain.ts
+  into a new lib/signers.ts; chain/signers/treasury/executor marked `server-only`.
+- Files: NEW lib/signers.ts, tests/unit/signers.test.ts, tests/stubs/server-only.ts;
+  lib/chain.ts (walletFor now takes a Signer and is async; AccountRef + resolveKey moved
+  out and re-exported for compatibility), lib/treasury.ts + lib/executor.ts (marker only),
+  vitest.config.ts (alias), tests/integration/allowance.test.ts (walletFor signature),
+  package.json (server-only dep), AGENTS.md.
+- **Learnings for future iterations:**
+  - DECISION — `Signer.account()` is ASYNC while `address` stays sync. A KMS fetch is a
+    network call, so a sync `account()` would have made KmsSigner unimplementable and the
+    "extension point" a lie; keeping `address` sync matters because callers check balances
+    and allowances BEFORE deciding to sign (ensureSenderAllowance's short-circuit reads the
+    address and never signs). That made walletFor async — 5 internal call sites + 1 test.
+  - DECISION — dispatch on the AccountRef (`kmsKeyId` -> KmsSigner, else LocalKeySigner)
+    rather than a global env switch, so custody is per-account: a live network's treasury
+    can move to a KMS while the local dev chains keep mnemonic keys. `kmsKeyId` is a new
+    optional AccountRef field, so the stub is a real branch and not dead code. KMS WINS over
+    an inline key when a ref carries both (asserted) — a ref migrated to KMS must not
+    silently keep hot-signing.
+  - AC3 ("deployment credentials separated from runtime") is satisfied STRUCTURALLY, and the
+    limit is worth knowing: deploy scripts read DEPLOYER_PRIVATE_KEY directly and cannot
+    import the signer layer (.mjs + server-only), but on live testnets the operator ref still
+    POINTS AT DEPLOYER_PRIVATE_KEY, because the deployer is the on-chain operator those
+    contracts were deployed with — re-keying needs an on-chain grant, not a config edit.
+    Deliberately not done: it would strand the live base-sepolia/polygon-amoy deployments.
+    Documented in AGENTS.md "Key custody" instead.
+  - GOTCHA (cost a false-negative verification): `server-only` is enforced by the bundler and
+    an UNUSED import is TREE-SHAKEN — my first check imported loadDeployments into a client
+    component and the build passed. Only once the symbol was actually referenced did the
+    build fail (exit 1). Prove the guard by CALLING the thing.
+  - GOTCHA: `server-only` resolves to a bare `throw` outside an RSC bundle (its react-server
+    export condition swaps in the empty module), so vitest needs the alias to
+    tests/stubs/server-only.ts or the whole suite dies at import. tsc is indifferent either
+    way — neither typecheck nor lint catches a marker violation, only `npm run build` does.
+  - The package is optional per the Next docs (Next aliases it internally) but installed
+    anyway, so tsc/vitest can resolve it and lint won't flag an extraneous dep.
+  - Verified: `npm run build` green with the markers; deliberately broken (client component
+    calling loadDeployments) -> build exit 1 with "You're importing a module that depends on
+    server-only", then restored (git diff clean). No UI/runtime change, so no browser pass —
+    the executor E2E tests drive the new async walletFor on the fixture chains.
+  - Suite 264 -> 271 (7 new in tests/unit/signers.test.ts: LocalKeySigner builds the matching
+    account, env key read at SIGNING time not construction, KmsSigner refuses but still
+    exposes its address, KMS-over-inline precedence, and resolveKey's three error paths).
+    tsc + lint green.
 ---

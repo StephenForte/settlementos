@@ -47,7 +47,8 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | Module | Responsibility |
 |---|---|
 | [lib/networks.ts](lib/networks.ts) | Network registry (local sims + real base-sepolia and polygon-amoy), explorer URL helpers. **Client-safe — no node imports, no secrets.** |
-| [lib/chain.ts](lib/chain.ts) | viem chain adapter. Loads/merges `chain/deployments*.json`, per-network accounts via `accountsFor()`, contract ABIs (`SETTLEMENT_ABI`, `MMF_ABI`), `operatorWrite()` (escrow) / `mmfOperatorWrite()` (fund), `treasuryTokenTransfer()`, `ensureSenderAllowance()` (exact per-payment escrow approval) / `ensureTreasuryAllowance()`, `mmfAddress()` (undefined where no fund is deployed) |
+| [lib/chain.ts](lib/chain.ts) | viem chain adapter. Loads/merges `chain/deployments*.json`, per-network accounts via `accountsFor()`, contract ABIs (`SETTLEMENT_ABI`, `MMF_ABI`), `operatorWrite()` (escrow) / `mmfOperatorWrite()` (fund), `treasuryTokenTransfer()`, `ensureSenderAllowance()` (exact per-payment escrow approval) / `ensureTreasuryAllowance()`, `mmfAddress()` (undefined where no fund is deployed). Resolves no keys itself — `walletFor(networkId, signer)` takes a `Signer`. **`server-only`** |
+| [lib/signers.ts](lib/signers.ts) | The custody seam: `Signer` (`address` + async `account()`), `signerFor(ref, role)` dispatching on the `AccountRef` (`kmsKeyId` → `KmsSigner`, else `LocalKeySigner`), `resolveKey()` (inline key or `privateKeyEnv` → .env), `AccountRef`. `KmsSigner` is the documented extension point and throws "not configured". **`server-only`** |
 | [lib/state.ts](lib/state.ts) | Payment lifecycle state machine; `assertTransition()` enforces legal moves. Pure — no DB, no framework |
 | [lib/transitions.ts](lib/transitions.ts) | The one way a payment's status changes: `transitionStatus(payment, to, {data, detail, action, actor})` asserts the move is legal, then compare-and-swaps on the observed status (`updateMany where {id, status: from}`). Zero rows → `StaleTransitionError` (an `ApiError` with code `conflict`, so `caughtErrorResponse` renders a 409 with no mapping). Audits only after a successful swap |
 | [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: execution-lease claim, auto-recall of parked MMF liquidity, liquidity reservation, escrow, FX, payout, and the failure exits — refund while the escrow is held, **compensation** once it is released (`compensateSender`). `ExecutionLeaseError` (an `ApiError` with code `conflict` → 409, like `StaleTransitionError`) is a second attempt losing the lease. Also the operator-repair half: `stuckPayments()` (payments still holding funds, each with its escrow state read live) and `repairCompensation()` (re-run a compensation transfer that failed). `executorTestHooks` are the test-only throw points for every failure exit |
@@ -130,6 +131,26 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   `wallet.network` (with `wallets[0]` fallback) — never assume one shared address
   set. Signing keys resolve inline (generated dust wallets) or via `privateKeyEnv`
   → `.env` (funded keys). Funded keys must never be written anywhere but `.env`.
+- **Key custody has one seam, and runtime is not deploy-time**: nothing at runtime
+  reads a private key out of `process.env` or hands one to viem — a write resolves
+  `signerFor(ref, role)` (lib/signers.ts) and passes the `Signer` to
+  `walletFor(networkId, signer)`. Adding a `privateKeyToAccount` call anywhere else
+  re-opens the seam this exists to close: swapping custody to a KMS/HSM must be one
+  new `Signer` implementation (`KmsSigner` is the stub that marks the spot), not an
+  audit of every call site. The **deploy** half is deliberately separate and stays
+  that way: `scripts/*.mjs` read `DEPLOYER_PRIVATE_KEY` straight from the
+  environment and cannot import this layer (they are `.mjs`, and it is
+  `server-only`). Today a live network's operator ref still *points at*
+  `DEPLOYER_PRIVATE_KEY` — the deployer is the on-chain operator those contracts
+  were deployed with, so re-keying it needs an on-chain grant, not just a config
+  edit. A production deployment gives the runtime operator its own key or a
+  `kmsKeyId`; that ref is the only thing that changes.
+- **Chain/key/money modules are `server-only`**: lib/chain.ts, lib/signers.ts,
+  lib/treasury.ts, and lib/executor.ts import `server-only`, so a client component
+  that reaches them fails `npm run build` rather than shipping deployment records
+  and `.env` reads to a browser. lib/networks.ts is the client-safe half and must
+  stay that way — anything a `"use client"` file needs about a network belongs
+  there. (Tests alias the marker away; see the gotcha.)
 - **Secrets**: `.env` and `chain/deployments*.json` are gitignored and must stay
   out of git. Never use the Hardhat dev-mnemonic keys on a public network; never
   put a mainnet key anywhere in this project.
@@ -280,6 +301,14 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   with `mmfAddress(networkId)` from `lib/chain.ts`, which returns `undefined` (never
   throws) where no fund exists — real testnets included. Treat "no MMF here" as a
   normal state to degrade to, not an error.
+- The `server-only` marker is enforced by the **bundler**, so two things follow.
+  (1) `npm test` would die at import time without help — outside a React Server
+  Components bundle the package resolves to a bare `throw` (its `react-server`
+  export condition is what swaps in the empty module), so vitest.config.ts aliases
+  it to `tests/stubs/server-only.ts`. (2) An **unused** import of a server-only
+  module gets tree-shaken and the build stays green — a violation only surfaces
+  once the imported symbol is actually referenced. So proving the guard works
+  means calling the thing, not just importing it.
 - Interactive pages keep chain/DB reads in the **server** component and pass plain
   serializable props to a `"use client"` child that owns the buttons (see
   `app/liquidity/`). The child POSTs to an API route, then calls `router.refresh()`,

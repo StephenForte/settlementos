@@ -7,6 +7,7 @@
 // API/DB boundary. A position row is append-only history: its current value is
 // always derived (shares x live contract index), never stored.
 
+import "server-only";
 import type { Address } from "viem";
 import { prisma } from "./db";
 import { audit } from "./audit";

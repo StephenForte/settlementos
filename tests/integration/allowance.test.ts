@@ -15,6 +15,7 @@ import {
   publicClientFor,
   walletFor,
 } from "@/lib/chain";
+import { signerFor } from "@/lib/signers";
 import { toBaseUnits } from "@/lib/assets";
 import { createApprovedPayment } from "../helpers/payments";
 
@@ -29,7 +30,7 @@ const escrowAllowance = () => tokenAllowance(NET, usdc(), acme().address, settle
 
 /** Set ACME's allowance directly, so a test starts from a known grant. */
 async function setAllowance(amount: bigint) {
-  const wallet = walletFor(NET, acme().privateKey!);
+  const wallet = await walletFor(NET, signerFor(acme(), "acme test wallet"));
   const hash = await wallet.writeContract({
     address: usdc(),
     abi: ERC20_ABI,

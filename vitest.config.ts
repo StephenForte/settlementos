@@ -6,7 +6,11 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   resolve: {
-    alias: { "@": root },
+    alias: {
+      "@": root,
+      // The `server-only` marker throws outside an RSC bundle — see the stub.
+      "server-only": path.join(root, "tests/stubs/server-only.ts"),
+    },
   },
   test: {
     environment: "node",
