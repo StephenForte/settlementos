@@ -8,6 +8,7 @@ import { supportedCorridors, corridorCode } from "@/lib/fx";
 import { NETWORKS } from "@/lib/networks";
 import { isChainReady, loadDeployments } from "@/lib/chain";
 import { stuckPayments } from "@/lib/executor";
+import { PaginationError, parsePageRequest, toPage } from "@/lib/pagination";
 import {
   actorOf,
   forbidden,
@@ -19,6 +20,7 @@ import {
   scrubFailureReason,
 } from "../guard";
 import { beginIdempotency } from "../idempotency";
+import { beginWrite } from "../limits";
 import type { Principal } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
@@ -33,15 +35,36 @@ export async function GET(req: NextRequest) {
   const principal = await requirePrincipal(req);
   if (principal instanceof NextResponse) return principal;
 
-  // A tenant sees only the payments it is party to; operators and reviewers see all.
-  const payments = await prisma.payment.findMany({
+  let page;
+  try {
+    page = parsePageRequest(req.nextUrl.searchParams);
+  } catch (e) {
+    if (e instanceof PaginationError) return invalidRequest(e.message);
+    throw e;
+  }
+
+  // A tenant sees only the payments it is party to; operators and reviewers see
+  // all. Tenant scoping stays a `where` filter, never a post-filter — a page of
+  // rows a caller may not see would otherwise be silently short.
+  const rows = await prisma.payment.findMany({
     where: isPlatformRole(principal)
       ? {}
       : { OR: [{ senderId: principal.entityId }, { recipientId: principal.entityId }] },
-    orderBy: { createdAt: "desc" },
+    // Tiebroken by id: createdAt alone is not unique (two payments created in
+    // the same millisecond are ordinary), and an unstable order makes a cursor
+    // walk skip or repeat rows.
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     include: { sender: true, recipient: true },
+    take: page.limit + 1,
+    ...(page.cursor ? { cursor: { id: page.cursor }, skip: 1 } : {}),
   });
-  return NextResponse.json({ payments: payments.map((p) => scrubFailureReason(principal, p)) });
+
+  const { rows: payments, nextCursor, hasMore } = toPage(rows, page.limit, (p) => p.id);
+  return NextResponse.json({
+    payments: payments.map((p) => scrubFailureReason(principal, p)),
+    next_cursor: nextCursor,
+    has_more: hasMore,
+  });
 }
 
 /**
@@ -61,9 +84,12 @@ export async function POST(req: NextRequest) {
   const principal = await requirePrincipal(req);
   if (principal instanceof NextResponse) return principal;
 
-  // An unparseable body must be a 400 we chose, not an unhandled throw that
-  // Next renders as a 500 (with a stack, in dev).
-  const body = await req.json().catch(() => null);
+  // Rate-limits and caps the body before anything reads it. An unparseable body
+  // must be a 400 we chose, not an unhandled throw that Next renders as a 500
+  // (with a stack, in dev).
+  const gate = await beginWrite(req, principal);
+  if (gate instanceof NextResponse) return gate;
+  const body = gate.body;
   if (!body || typeof body !== "object") return invalidRequest("body must be a JSON object");
 
   // Wraps the whole handler, not just the create: a retried request must replay
@@ -71,7 +97,7 @@ export async function POST(req: NextRequest) {
   const idem = await beginIdempotency(req, principal, "POST /api/payments", body);
   if (idem instanceof NextResponse) return idem;
   try {
-    return await idem.complete(await createPayment(principal, body));
+    return await idem.complete(await createPayment(principal, body as CreatePaymentBody));
   } catch (e) {
     await idem.abandon();
     throw e;

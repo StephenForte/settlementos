@@ -20,6 +20,8 @@ export type ApiErrorCode =
   | "invalid_request"
   | "conflict"
   | "idempotency_conflict"
+  | "payload_too_large"
+  | "rate_limited"
   | "execution_failed"
   | "internal";
 
@@ -32,6 +34,8 @@ const STATUS: Record<ApiErrorCode, number> = {
   // 422, not 409: the request is well-formed and the resource is fine — the
   // *key* contradicts an earlier one, which is a client bookkeeping bug.
   idempotency_conflict: 422,
+  payload_too_large: 413,
+  rate_limited: 429,
   execution_failed: 500,
   internal: 500,
 };
@@ -47,6 +51,8 @@ const CANNED: Record<ApiErrorCode, string> = {
   invalid_request: "invalid request",
   conflict: "the request conflicts with the current state of the resource",
   idempotency_conflict: "this Idempotency-Key was already used for a different request",
+  payload_too_large: "request body is too large",
+  rate_limited: "too many requests",
   execution_failed: "execution failed",
   internal: "internal error",
 };

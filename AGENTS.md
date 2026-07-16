@@ -59,6 +59,9 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/audit.ts](lib/audit.ts) | Append-only hash-chained audit log + chain verifier. `audit(action, detail, paymentId, actor, tx?)` — pass the caller's `Prisma.TransactionClient` to enlist the event in the transaction that writes the change it describes. Also the anchoring half: `createCheckpoint()` (on demand; automatic every `AUDIT_CHECKPOINT_INTERVAL` events, default 100, signed with `AUDIT_ANCHOR_KEY`), `verifyAuditChain()` → `AuditIntegrity` (verdict + `mode`/`anchored`/`checkpoint`/`eventsVerified` coverage), `AuditAnchorError` |
 | [lib/auth.ts](lib/auth.ts) | API-key identity: `authenticate(request)` (`x-api-key` header → `sos_key` cookie) → `Principal { keyId, role, entityId?, label }` or null. Roles OPERATOR/REVIEWER/ENTITY; only sha256 hashes are stored. `keyId` is the `ApiKey.id` — the stable per-caller identity anything keyed by principal uses. **Identity only — routes enforce authorization** |
 | [lib/idempotency.ts](lib/idempotency.ts) | Idempotent-write records: `beginIdempotent()` (reserve the key or report replay/mismatch/in-flight), `completeIdempotent()` / `abandonIdempotent()`, `hashRequest()` (canonical, key-order-independent body fingerprint), `IDEMPOTENCY_TTL_MS` (24h, checked at read time — no cron). Framework-free; the response half is app/api/idempotency.ts |
+| [lib/rate-limit.ts](lib/rate-limit.ts) | In-memory sliding-window limiter: `consumeRateLimit(key, {limit, windowMs, now})` → `RateLimitDecision`, `resetRateLimits()` (test-only). `now` is a **parameter**, so the window is testable without fake timers. Per-process by design — behind >1 instance it becomes a per-instance limit, and the fix is a shared store, not a cleverer Map |
+| [lib/pagination.ts](lib/pagination.ts) | The bound on every list read: `parsePageRequest(searchParams)` → `{limit, cursor}` (default 50, max 200, canonical-integer grammar — `Number("1e3")` is 1000, so a regex decides), `toPage(rows, limit, idOf)` (fetch `limit + 1`, the extra row *is* the `has_more` evidence and is dropped), `PaginationError` → a route's 400 |
+| [app/api/limits.ts](app/api/limits.ts) | The HTTP half of both: `beginWrite(req, principal)` → `{body}` **or** the 429/413 to return (same narrowing convention as guard.ts), `enforceWriteRateLimit()` for the bodyless writes, `rateLimitKey()` (principal → `key:<keyId>`, else `ip:<addr>`), `WRITE_RATE_LIMIT` (30/min, `RATE_LIMIT_WRITES_PER_MINUTE` overrides), `MAX_BODY_BYTES` (64KB) |
 | [lib/session.ts](lib/session.ts) | Next-only half of auth: `currentPrincipal()` resolves the `sos_key` cookie via `cookies()` for **server components** (which have no `Request`); `sessionCookieOptions()` is the one place the cookie's flags are defined. Keep `next/headers` out of lib/auth.ts so route tests can pass a plain `Request` |
 | [lib/treasury.ts](lib/treasury.ts) | Tokenized-MMF treasury ops: `park()` (subscribe unreserved liquidity into the fund), `recall()` (T+0 redeem of a position, principal + accrued yield back to the treasury), `accrueDaily()` (advance the fund index by one day at `MMF_ANNUAL_RATE_BPS`, default 3.5% APY; `dailyIndex()`/`valueOfShares()` are the pure bigint math), `freeTreasuryBalance()` (bigint balance − RESERVED rows), `parkedBalance()` (derived value of ACTIVE positions; `0n`, never a throw, where no fund exists), `recallForPayment()` (FIFO auto-recall for the executor), `TreasuryError` (typed codes for route handlers), `TREASURY_*` audit actions |
 | [lib/assets.ts](lib/assets.ts) | Asset metadata, currency↔token mapping, base-unit conversion |
@@ -224,6 +227,34 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   answered (including its errors); only a *throw* abandons the key, since an unknown
   outcome must stay retryable.
 
+- **Every write is rate-limited and size-capped, after the auth check**: a write
+  handler's second move (once it has a principal) is `beginWrite(req, principal)`
+  — 30 writes/min per principal and a 64KB body, or the 429/413 it hands back.
+  The order is load-bearing twice over: **after** auth, so the limiter counts
+  against the `keyId` rather than an `x-forwarded-for` anyone can retype; and
+  **before** the body is read or a row is touched, so a refused write reaches no
+  DB and no chain. A refused hit is deliberately *not* recorded, or a caller
+  hammering the limit would push its own window forward forever and never
+  recover. The IP fallback exists for the one endpoint with no principal yet
+  (`/api/auth/login`, where key-guessing would go) and is best-effort — that is
+  why it is the fallback and not the key. Content-Length is a free first check
+  but never the enforcement: the body stream is measured as it arrives and
+  cancelled at the cap, because a client sets that header.
+- **Every list read is bounded, and the cursor is tiebroken**: `GET /api/payments`
+  and `GET /api/audit` page through `parsePageRequest`/`toPage` (default 50, max
+  200) — an unbounded `findMany` over an append-only log is a denial of service a
+  caller need not even intend. A limit past the cap is a **400, not a clamp**:
+  clamping quietly answers a different question than the one asked. Ordering ends
+  in `id` (`[{createdAt: "desc"}, {id: "desc"}]`), since `createdAt` is not unique
+  and an unstable sort makes a walk skip or repeat rows. Tenant scoping stays a
+  `where` filter, so a page is never silently short.
+- **Exports are bounded by a range, and audited once**: the reconciliation CSV
+  takes `from`/`to` and defaults to the last 30 days. One
+  `reconciliation.exported` event per export naming the range and the row count —
+  never one per row, which would bury the chain in noise proportional to the
+  table (AUDIT.md). A bare `YYYY-MM-DD` upper bound means the **whole day**: read
+  as an instant it is that day's midnight, which silently drops everything
+  exported-for made since.
 - **API shape**: JSON request/response fields are `snake_case`; Prisma models are
   `camelCase`. Keep route handlers thin.
 - **Reserved liquidity is untouchable, and "free" is defined once**: only the treasury
@@ -400,6 +431,20 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   allowance any more. See `approveAmount()` in tests/integration/contract.test.ts.
 - Polygon Amoy enforces a ~30 gwei minimum gas price (Base Sepolia is sub-gwei),
   so Amoy gas-dust targets in the deploy script are ~100× higher.
+- **The rate limiter is per-process, and the whole test suite shares one.** At the
+  real 30/min the operator key would 429 whichever file happened to run after the
+  busy ones — a failure that looks like a bug in the test that lost. `FIXTURE_ENV`
+  pins `RATE_LIMIT_WRITES_PER_MINUTE` effectively off; a test that wants the limit
+  lowers it *and* calls `resetRateLimits()`, then restores both
+  (`withWriteLimit()` in tests/integration/limits.test.ts). Same trap for anything
+  else built on module-level state.
+- **Security headers come from `next.config.ts`'s `headers()`**, so they are on
+  pages *and* API routes but only from a **running server** — a route handler
+  called directly in vitest returns a bare NextResponse with none of them. Verify
+  headers with curl against `npm run dev`, not with a route test. The CSP still
+  carries `script-src 'unsafe-inline'` because the App Router bootstraps hydration
+  with inline scripts; removing it needs a per-request nonce threaded from
+  middleware, and `'unsafe-eval'` is dev-only (react-refresh).
 - A **stale `.next/` cache** can make every API route 404 while pages still render
   (seen live after a branch's worth of route changes: `/api/networks` 404'd too).
   `rm -rf .next` and restart before believing a 404 you cannot explain — the routes

@@ -3,6 +3,7 @@ import { NETWORKS } from "@/lib/networks";
 import { park } from "@/lib/treasury";
 import { treasuryErrorResponse } from "../errors";
 import { invalidRequest, requireRole } from "../../guard";
+import { beginWrite } from "../../limits";
 
 /**
  * Park idle treasury liquidity into the network's tokenized MMF. Platform
@@ -14,13 +15,14 @@ export async function POST(req: NextRequest) {
   const principal = await requireRole(req, "OPERATOR");
   if (principal instanceof NextResponse) return principal;
 
-  const body = await req.json().catch(() => ({}));
-  const { network, asset, amount, entity_id } = body;
+  const gate = await beginWrite(req, principal);
+  if (gate instanceof NextResponse) return gate;
+  const { network, asset, amount, entity_id } = (gate.body ?? {}) as Record<string, unknown>;
 
   if (!network || !asset || amount === undefined || amount === null || !entity_id) {
     return invalidRequest("network, asset, amount, entity_id are required");
   }
-  if (!NETWORKS[network]) {
+  if (typeof network !== "string" || !NETWORKS[network]) {
     return invalidRequest(`unknown network — supported: ${Object.keys(NETWORKS).join(", ")}`);
   }
 

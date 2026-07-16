@@ -10,10 +10,17 @@ import {
   notFound,
   requirePrincipal,
 } from "../../../guard";
+import { enforceWriteRateLimit } from "../../../limits";
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const principal = await requirePrincipal(req);
   if (principal instanceof NextResponse) return principal;
+
+  // After the auth check, so the limiter counts against the principal rather
+  // than an address anyone can spoof. Quoting is cheap but not free: it reads
+  // treasury balances off a chain.
+  const limited = enforceWriteRateLimit(req, principal);
+  if (limited) return limited;
 
   const { id } = await params;
   const payment = await prisma.payment.findUnique({ where: { id } });

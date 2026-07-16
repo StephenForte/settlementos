@@ -9,6 +9,7 @@ import {
   notFound,
   requireRole,
 } from "../../../guard";
+import { beginWrite } from "../../../limits";
 
 /**
  * Compliance reviewer decision on a MANUAL_REVIEW payment. The four-eyes check
@@ -19,8 +20,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const principal = await requireRole(req, "REVIEWER", "OPERATOR");
   if (principal instanceof NextResponse) return principal;
 
+  const gate = await beginWrite(req, principal);
+  if (gate instanceof NextResponse) return gate;
+  const body = (gate.body ?? {}) as { decision?: unknown; note?: unknown };
+
   const { id } = await params;
-  const body = await req.json().catch(() => ({}));
   const decision = body.decision as string;
   const note = (body.note as string) || "";
 

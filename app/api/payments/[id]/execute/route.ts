@@ -14,6 +14,7 @@ import {
   requirePrincipal,
 } from "../../../guard";
 import { beginIdempotency } from "../../../idempotency";
+import { beginWrite } from "../../../limits";
 import type { Principal } from "@/lib/auth";
 
 /**
@@ -31,9 +32,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const principal = await requirePrincipal(req);
   if (principal instanceof NextResponse) return principal;
 
-  const { id } = await params;
-  const body = await req.json().catch(() => ({}));
+  const gate = await beginWrite(req, principal);
+  if (gate instanceof NextResponse) return gate;
+  const body = (gate.body ?? {}) as { route_id?: string };
 
+  const { id } = await params;
   const idem = await beginIdempotency(req, principal, `POST /api/payments/${id}/execute`, body);
   if (idem instanceof NextResponse) return idem;
   try {

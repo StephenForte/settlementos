@@ -58,8 +58,19 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
   audit events (chain INTACT). Suite now 135 tests. Deployer has ~0.33 POL
   left on Amoy (deploy cost ~0.23; faucet drips ~0.185/day if more needed —
   see auto-memory polygon-amoy-faucet-lessons).
-- NEXT: Phase 9 (production hardening per AUDIT.md + regulatory package) per
-  PRD.
+- Phase 9 Track A complete (2026-07-16, branch ralph/phase-9-hardening — built
+  autonomously by the Ralph loop in `scripts/ralph/`, 18/18 stories): production
+  hardening per AUDIT.md. API-key identity + login cookie (US-001/2), authz +
+  tenant scoping on every route (US-003/4), safe error vocabulary (US-005),
+  compare-and-swap transitions + execution leases (US-006/7), idempotency keys
+  (US-008), the compensation saga + operator repair view (US-009/10), bigint
+  money/FX/liquidity math with canonical amount validation (US-011/12/13), exact
+  per-payment allowances (US-014), the signer custody seam (US-015), atomic
+  domain+audit writes (US-016), signed audit checkpoints (US-017), and baseline
+  web hardening — CSP + security headers, 30 writes/min per principal, a 64KB
+  body cap, cursor pagination, and a date-bounded CSV export (US-018). Suite now
+  327 tests; lint, tsc, and build green.
+- NEXT: Phase 9 Track B (regulatory package) per PRD.
 
 ## Base Sepolia (live)
 - Deployed 2026-07-07, verified with a real settled payment.

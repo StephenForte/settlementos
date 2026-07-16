@@ -10,11 +10,15 @@ import {
   notFound,
   requirePrincipal,
 } from "../../../guard";
+import { enforceWriteRateLimit } from "../../../limits";
 
 /** Cancel a payment before execution. */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const principal = await requirePrincipal(req);
   if (principal instanceof NextResponse) return principal;
+
+  const limited = enforceWriteRateLimit(req, principal);
+  if (limited) return limited;
 
   const { id } = await params;
   const payment = await prisma.payment.findUnique({ where: { id } });

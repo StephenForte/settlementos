@@ -173,6 +173,35 @@ Phase 9 Track A: production hardening per AUDIT.md
 - Route handlers can be tested WITHOUT an HTTP server, including cookies: call the
   handler and read `res.cookies.get(NAME)` off the returned `NextResponse` — it exposes
   `value`/`httpOnly`/`sameSite`/`path`, and a `.delete()` shows up as value `""`.
+- ...but anything from `next.config.ts` (security headers) does NOT exist in a
+  direct handler call — those are applied by a running server. Header work is verified
+  with curl against `npm run dev`, not with a route test. Know which layer owns the
+  behaviour before writing the test for it.
+- MODULE-LEVEL STATE IS SHARED BY THE WHOLE SUITE (the rate limiter's Map, and any
+  cache like it). A per-process limit at its real value will 429 whichever file runs
+  after the busy ones — a failure that looks like a bug in the innocent test. Pin it
+  off in FIXTURE_ENV, and have the one test that wants it lower it + reset + restore.
+- Framework-free lib + HTTP glue is now the standard split THREE times over
+  (auth→guard.ts, idempotency→app/api/idempotency.ts, rate-limit/pagination→
+  app/api/limits.ts). New cross-cutting concern: put the decision in lib/ taking plain
+  values, the response in app/api/. Keep the `X | NextResponse` return + `instanceof`
+  narrowing convention — every handler already reads that way.
+- Time-dependent lib code takes `now` as a PARAMETER (consumeRateLimit). No fake
+  timers, and the window boundary becomes an ordinary assertion. Note the boundary is
+  EXCLUSIVE (`t > cutoff`), so a hit at t=1000 with a 60s window is gone at exactly
+  61_000, not 61_001 — a test that guesses this is off by one.
+- Rejecting > repairing applies to pagination too, not just money: `limit=201` is a
+  400, never a clamp to 200 — clamping quietly answers a different question. And the
+  grammar is a regex, because `Number("1e3")` is 1000 (same trap as parseAmount).
+- Cursor pagination needs a TIEBROKEN order (`[{createdAt:"desc"},{id:"desc"}]`):
+  createdAt is not unique, and rows created in one loop share a millisecond, so an
+  untiebroken sort makes a walk skip or repeat. Fetch `limit+1` — the extra row IS the
+  `has_more` evidence, and costs no second count query.
+- Prove a size/limit guard non-vacuous the same way as the atomicity ones: strip the
+  real check out of the impl and confirm the test fails. Did this for the body cap —
+  both 413 tests failed with only the Content-Length check left, proving the streaming
+  counter (not the header) is what enforces it. NextRequest does not set content-length
+  in tests, so a header-only impl would have passed nothing.
   A no-arg handler (`POST()`) needs no Request at all.
 - EVERY API error body is `{ error_code, message }` (codes in `lib/api-errors.ts`).
   Split by provenance: a message a route CHOSE is safe to ship (`invalidRequest(...)`,
@@ -1042,4 +1071,65 @@ Phase 9 Track A: production hardening per AUDIT.md
     checkpoint_chain_hash_mismatch and the compliance badge goes BROKEN at #201. Reset,
     re-ran 25k USD->JPY to SETTLED, checkpoint signed tip #225, INTACT/incremental.
   - Suite 271 -> 289. tsc + lint + build green.
+---
+
+## 2026-07-16 14:45 - US-018
+- Baseline web hardening, the last of the Phase 9 Track A stories: security headers on
+  every response, write rate limits + a body size cap, cursor pagination on the two
+  unbounded list reads, and a date-bounded reconciliation export.
+- Files: next.config.ts (CSP + 4 headers via headers()), lib/rate-limit.ts (new),
+  lib/pagination.ts (new), app/api/limits.ts (new), lib/api-errors.ts (+rate_limited 429,
+  +payload_too_large 413), app/api/payments/route.ts (paginated GET + beginWrite),
+  app/api/audit/route.ts (paginated), app/api/reconciliation/route.ts (from/to range),
+  the 9 other write routes (beginWrite / enforceWriteRateLimit), app/payments/page.tsx
+  (paging params + Older/Newest links), tests/fixture.ts (+RATE_LIMIT_WRITES_PER_MINUTE),
+  tests/unit/rate-limit.test.ts (new, 7), tests/unit/pagination.test.ts (new, 11),
+  tests/integration/limits.test.ts (new, 20), AGENTS.md (map + 3 invariants + 2 gotchas).
+- **Learnings for future iterations:**
+  - ORDER IS THE DESIGN, twice: beginWrite goes AFTER the auth guard (so the limiter
+    counts against the keyId, not a spoofable x-forwarded-for) and BEFORE the body is
+    read or a row touched (so a refused write reaches no DB and no chain — asserted:
+    the 429'd payment leaves no row and no audit event).
+  - A refused hit is deliberately NOT recorded. Record it and a caller hammering the
+    limit pushes its own window forward forever and never recovers — has its own test
+    that hammers every second across the whole window and checks recovery.
+  - Content-Length is a hint, never the enforcement (a client sets it). The stream is
+    measured as it arrives and cancelled at the cap. Proven non-vacuous by stripping
+    the streaming counter: BOTH 413 tests then failed, i.e. NextRequest never sets
+    content-length in tests and a header-trusting impl enforces nothing.
+  - The window boundary is EXCLUSIVE (`t > cutoff`): a hit at t=1000 in a 60s window is
+    gone at exactly 61_000. First test draft was off by one and failed — the impl was
+    right.
+  - `limit=201` is a 400, not a clamp (reject-never-repair, same rule as money), and the
+    grammar is a regex because `Number("1e3")` is 1000.
+  - Cursor order must be tiebroken by id — createdAt is not unique and the walk test
+    creates 5 payments in one loop, which is exactly the colliding-millisecond case.
+  - Audit pagination pages the EVENTS but still verifies the WHOLE chain: integrity is a
+    property of the log, not of the rows a caller asked for.
+  - `to=YYYY-MM-DD` means the whole day, not its midnight — read as a bare instant, an
+    export "through today" silently drops everything made today. Date-only upper bound
+    extends +1 day and the query uses `lt`.
+  - Reconciliation already audited one summary event (not per-row) before this story;
+    the change was adding the range to the detail. AC was already half-met — read the
+    code before assuming an AC describes work.
+  - Named the export's error class ExportRangeError: `class RangeError` shadows the
+    global one.
+  - THE SUITE SHARES ONE RATE LIMITER (module-level Map). Pinned effectively off in
+    FIXTURE_ENV or it would 429 whichever file ran after the busy ones; limits.test.ts
+    lowers it with withWriteLimit() and restores.
+  - Security headers do NOT exist in a direct handler call — next.config.ts's headers()
+    is applied by a running server. Verified live with curl instead: all 5 headers on
+    both pages and API routes, the real 30/min default allows exactly 30 then 429s with
+    Retry-After: 60, a 70KB body 413s while an ordinary one still 400s, the audit cursor
+    walk covers 12 events in 3 pages with no repeats and INTACT/incremental integrity,
+    and bad from=/limit= are 400s. All 7 pages 200 with no external script/style origins
+    (so default-src 'self' breaks nothing).
+  - RESIDUAL, documented in next.config.ts not papered over: CSP keeps
+    script-src 'unsafe-inline' because the App Router bootstraps hydration with inline
+    scripts; removing it needs a per-request nonce from middleware. 'unsafe-eval' is
+    dev-only (react-refresh) and never ships.
+  - No browser MCP tools in this environment, so the browser AC was met by curl against
+    a live dev server. A human should still click through once to confirm hydration and
+    Tailwind under CSP — the one thing curl cannot see.
+  - Suite 289 -> 327. tsc + lint + build green.
 ---

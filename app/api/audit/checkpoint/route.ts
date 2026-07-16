@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { AuditAnchorError, createCheckpoint } from "@/lib/audit";
 import { caughtErrorResponse, conflict, requireRole } from "../../guard";
+import { enforceWriteRateLimit } from "../../limits";
 
 /** Sign the audit chain at its current tip. OPERATOR only — this is the anchor
  * an auditor later checks the log against. */
 export async function POST(req: NextRequest) {
   const principal = await requireRole(req, "OPERATOR");
   if (principal instanceof NextResponse) return principal;
+
+  const limited = enforceWriteRateLimit(req, principal);
+  if (limited) return limited;
 
   try {
     const checkpoint = await createCheckpoint();

@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { actorOf, invalidRequest, isPlatformRole, requirePrincipal, requireRole } from "../guard";
+import { beginWrite } from "../limits";
 
 export async function GET(req: NextRequest) {
   const principal = await requirePrincipal(req);
@@ -21,9 +22,23 @@ export async function POST(req: NextRequest) {
   const principal = await requireRole(req, "OPERATOR");
   if (principal instanceof NextResponse) return principal;
 
-  const body = await req.json().catch(() => null);
+  const gate = await beginWrite(req, principal);
+  if (gate instanceof NextResponse) return gate;
+  const body = gate.body;
   if (!body || typeof body !== "object") return invalidRequest("body must be a JSON object");
-  const { name, country, role = "RECIPIENT", wallet_address, approved_corridors = [] } = body;
+  const {
+    name,
+    country,
+    role = "RECIPIENT",
+    wallet_address,
+    approved_corridors = [],
+  } = body as {
+    name?: string;
+    country?: string;
+    role?: string;
+    wallet_address?: string;
+    approved_corridors?: string[];
+  };
   if (!name || !country) {
     return invalidRequest("name and country are required");
   }

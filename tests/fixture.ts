@@ -28,6 +28,11 @@ export const FIXTURE_ENV = {
   // Audit anchoring is on for the suite (so the whole run verifies through the
   // checkpoint path), pinned to a fixed key rather than the dev .env's.
   AUDIT_ANCHOR_KEY: "test_anchor_key_not_for_any_real_deployment",
+  // The write rate limiter is per-process and the whole suite shares one, so at
+  // the real 30/min the operator key would start 429ing whichever test file
+  // happened to run after the busy ones. Pinned effectively off; the limiter's
+  // own test lowers it and resets the windows itself.
+  RATE_LIMIT_WRITES_PER_MINUTE: "1000000",
 };
 
 // Raw API keys seeded into the fixture DB by global-setup. Fixed rather than

@@ -3,6 +3,7 @@ import { NETWORKS } from "@/lib/networks";
 import { accrueDaily } from "@/lib/treasury";
 import { treasuryErrorResponse } from "../errors";
 import { invalidRequest, requireRole } from "../../guard";
+import { beginWrite } from "../../limits";
 
 /**
  * Demo control: advance the network's fund by one day of simulated yield.
@@ -13,13 +14,14 @@ export async function POST(req: NextRequest) {
   const principal = await requireRole(req, "OPERATOR");
   if (principal instanceof NextResponse) return principal;
 
-  const body = await req.json().catch(() => ({}));
-  const { network } = body;
+  const gate = await beginWrite(req, principal);
+  if (gate instanceof NextResponse) return gate;
+  const { network } = (gate.body ?? {}) as Record<string, unknown>;
 
   if (!network) {
     return invalidRequest("network is required");
   }
-  if (!NETWORKS[network]) {
+  if (typeof network !== "string" || !NETWORKS[network]) {
     return invalidRequest(`unknown network — supported: ${Object.keys(NETWORKS).join(", ")}`);
   }
 
