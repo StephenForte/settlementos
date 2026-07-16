@@ -1,0 +1,559 @@
+# Ralph Progress Log
+Started: Tue Jul 14 07:44:50 PDT 2026
+---
+
+## Codebase Patterns
+- Read AGENTS.md first — it is the engineering guide (architecture map, invariants,
+  gotchas) and CLAUDE.md just points at it. Add durable learnings there, not to a new
+  CLAUDE.md.
+- Quality gate for every commit: `npm test` (self-contained: compiles contracts, boots
+  Hardhat on ports 9545/9546, builds a fresh SQLite fixture under tests/.tmp — never
+  touches dev chains or the dev DB), then `npx tsc --noEmit`, then `npm run lint`.
+- Run `npm run compile` after ANY contract change — tests read artifacts from
+  `chain/artifacts/` (gitignored) and will use stale bytecode otherwise.
+- Contract tests: `tests/integration/*.test.ts`, driven with viem via
+  `helpers/deploy.ts` (`clientsFor(rpc, chainId)` + `artifact(name)`), fixture accounts
+  from `tests/fixture.ts` ACCOUNTS. Assert reverts with
+  `await expect(...).rejects.toThrow(/require message/)`.
+- A test can deploy its own contract instance against the fixture chain (see the rogue
+  token in contract.test.ts) — no need to wire something into global-setup just to test it.
+- Addresses read from a contract are EIP-55 checksummed; deployments.json stores them
+  lowercase. Lowercase both sides before comparing.
+- Money: fiat = decimal strings, on-chain = bigint base units. Never a JS float on-chain.
+- Solidity contracts follow one house style: `admin` + `operators` mapping,
+  `onlyAdmin`/`onlyOperator` modifiers, constructor makes the deployer both, short
+  lowercase revert strings ("not operator").
+- No Prisma migrations directory: the schema is applied with `prisma db push`.
+  `npm run setup` runs `prisma generate && prisma db push` before seeding, so after
+  editing prisma/schema.prisma that is the command that syncs the dev DB + client.
+  The test fixture pushes the schema itself in tests/global-setup.ts, so `npm test`
+  picks up schema changes with no extra step.
+- Demo entities are seeded in TWO places that must stay in sync: `scripts/setup.mjs`
+  (dev DB) and `ENTITIES` in `tests/helpers/deploy.ts` (test fixture). Adding an
+  Entity field means editing both.
+- `npm run setup` needs BOTH local chains up (8545 + 8546) or it exits. To verify it
+  without destroying the user's dev state: back up `chain/deployments.json` and
+  `prisma/dev.db`, start the chains, run setup, then kill the chains and restore.
+- Contract deploys are wired in TWO places that must stay in sync: `setupChain()` in
+  `scripts/setup.mjs` (dev chains) and `deployChain()` in `tests/helpers/deploy.ts`
+  (test fixture). Anything a new contract needs to be usable — token approvals,
+  minted balances — belongs in both, and its address goes in the returned
+  `contracts` object so it lands in deployments.json.
+- `lib/chain.ts` ABI exports are `as const`, so viem narrows `functionName` to a
+  literal union. A test helper taking `functionName: string` will NOT typecheck
+  against them — type the param as the union (or cast the ABI to `Abi`).
+- Optional per-network contracts resolve through a lookup that returns `undefined`
+  instead of throwing (`mmfAddress`), because live testnets legitimately lack them.
+  Follow that shape for anything deployed only on some networks.
+- The dev server may find :3000 taken and fall back to :3001 — read the actual port
+  out of the dev log before curling it.
+- `audit()` JSON-stringifies its detail, and JSON.stringify THROWS on a bigint. Convert
+  base units to strings before auditing them.
+- viem writes return a receipt, not the contract function's return value. Read the
+  relevant view before/after (or decode the event) to capture what a mutator returned.
+- Contract writes go through the operator helpers in lib/chain: `operatorWrite()` for
+  PaymentSettlement, `mmfOperatorWrite()` for TokenizedMMF. Don't hand-roll a wallet.
+- Tests that move fixture funds (parking, minting, accruing) must unwind at the end —
+  the chains, the DB, and the MMF are shared across test files, which run sequentially.
+- lib/treasury throws only `TreasuryError` with a typed `code` — add a code to the
+  `TreasuryErrorCode` union rather than throwing a bare Error, so US-007's routes can
+  map cause -> HTTP status in one place. Tests assert with
+  `.rejects.toMatchObject({ code: "..." })`.
+- Rows that model financial history (TreasuryPosition, AuditEvent) are append-only:
+  update status in place (ACTIVE -> RECALLED), never delete. Derive current value
+  (shares x live index) instead of storing a mutable balance.
+- MMF accrual is IRREVERSIBLE (the contract's index is monotonic). Any suite that
+  accrues the shared fixture fund leaves it above par forever, so tests must assert
+  invariants (index >= par, shares = value/index, round-trip >= principal) rather than
+  par-equality, and a test file that accrues should do it in its LAST block. Vitest
+  file order is sequential but NOT alphabetical, so never rely on "my file runs last":
+  derive expected amounts from the LIVE index (`valueOfShares(shares, index)` is exactly
+  what `redeem` pays), not from par.
+- API routes: `route.ts` is the only routable filename, so shared glue colocates fine
+  under `app/api/**` (e.g. `app/api/treasury/errors.ts` maps `TreasuryErrorCode` ->
+  HTTP status in one place). Keep HTTP concerns out of lib/; keep handlers thin.
+- Route tests import the handler directly (`import { POST } from "@/app/api/.../route"`)
+  and call it with a `NextRequest` — no HTTP server. A constructed Request with a body
+  needs the `{ duplex: "half" }` cast (undici).
+- Module import direction inside lib/ is executor → routing → treasury → chain/db.
+  Adding an import that points back up the chain (treasury → routing) cycles the graph.
+  If two modules need the same fact, put it in the LOWER one and have the higher import
+  it (e.g. `parkedBalance` lives in treasury; routing calls it).
+- Anything frozen into `Payment.quoteJson` at quote time (route id, fees, and now
+  `recall_required`) is a SNAPSHOT — the chain and the DB can move before execution.
+  Treat those fields as a hint, and keep the executor's own re-checks. Corollary: a
+  helper the executor calls off such a flag should be a safe no-op when the condition
+  no longer holds.
+- The MMF is backed by mockUSDC only, and the executor reserves the DESTINATION asset.
+  So a payment can only exercise MMF liquidity when its destination currency is USD
+  (USD→USD is a legal corridor — `midRate` returns 1 when source == dest). A USD→JPY
+  payment reserves mockJPY and never touches the fund.
+
+## 2026-07-14 07:53 - US-001 (TokenizedMMF Solidity contract)
+- Implemented `contracts/TokenizedMMF.sol`: permissioned share fund holding one ERC-20.
+  Operator-only `subscribe(onBehalfOf, assetAmount)` pulls the asset (account must have
+  approved the fund) and mints shares at the live index; operator-only
+  `redeem(onBehalfOf, shares)` burns and returns asset; operator-only `accrue(newIndex)`
+  with `require(newIndex >= currentIndex)`. Index starts at 1e18 (INDEX_SCALE = par).
+  Events: Subscribed / Redeemed / Accrued. Views: `assetValueOf(account)`,
+  `yieldBuffer()`. No imports of or calls to PaymentSettlement — segregation by design.
+- Added `tests/integration/mmf.test.ts` (7 tests): par round-trip, redeem-after-accrual
+  pays more, monotonic index reverts on decrease, non-operator reverts on all three
+  mutators, over-redemption reverts, and an escrow-segregation balance assertion.
+- Files changed: contracts/TokenizedMMF.sol (new), tests/integration/mmf.test.ts (new),
+  AGENTS.md (architecture map row, MMF segregation invariant, two gotchas).
+- Checks: 100 tests pass (was 93), `npx tsc --noEmit` clean, `npm run lint` clean.
+- **Learnings for future iterations:**
+  - Branching: PRD says branch from main, but main was 1 commit BEHIND the phase-7 tip
+    (Phase 7 is unmerged). Branched `ralph/phase-8-tokenized-mmf` from phase-7-polygon-amoy
+    instead so the Amoy work isn't dropped. Phase 8 sits on top of Phase 7.
+  - **Yield needs funding.** Advancing the index raises redemption value without adding any
+    asset to the contract, so redeeming accrued yield draws on a buffer. Mint mock asset to
+    the MMF address wherever it is deployed (US-003 setup.mjs + test fixture) or redeem will
+    revert with "ERC20: insufficient balance" the moment anyone redeems above par.
+  - The parking account (treasury) must `approve` the MMF for the asset before `subscribe`
+    — the fund pulls via transferFrom. Wire this into setup.mjs/the fixture in US-003.
+  - MockERC20.mint is permissionless by design, which is how the yield buffer gets funded
+    on testnet.
+  - Share math is floor division both ways: shares = amount * 1e18 / index,
+    asset = shares * index / 1e18. At par they are 1:1, so tests that assume
+    shares == base units only hold BEFORE the first accrual — order matters within a file.
+  - Left for US-003: the contract is not in `chain/deployments.json`, `lib/chain.ts`, or the
+    test fixture yet — mmf.test.ts deploys its own instance in beforeAll.
+---
+
+## 2026-07-14 08:05 - US-002 (TreasuryPosition table and entity MMF eligibility flags)
+- `prisma/schema.prisma`: new `TreasuryPosition` model (id, network, asset, shares,
+  assetAmountIn, indexAtEntry, status ACTIVE|RECALLED default ACTIVE, txHashPark,
+  txHashRecall?, createdAt, recalledAt?) — append-only by design; current value is
+  always derived (shares x live contract index), never stored on the row. `Entity`
+  gains `mmfEligible` and `mmfOptIn`, both Boolean default false (guardrail: BOTH
+  must be true to park).
+- `package.json`: `setup` script is now
+  `npm run compile && prisma generate && prisma db push && node scripts/setup.mjs`
+  — there is no migrations dir, so without this a schema change never reaches dev.db
+  and setup.mjs dies on "no such column".
+- `scripts/setup.mjs`: wipes `treasuryPosition` rows in the reset (parked positions
+  point at contracts that no longer exist after a redeploy) and seeds `ent_acme_us`
+  as the single mmfEligible + mmfOptIn institution.
+- `tests/helpers/deploy.ts`: ENTITIES mirrors the same ACME flags so the fixture has
+  an eligible institution for US-007/US-010.
+- Files changed: prisma/schema.prisma, package.json, scripts/setup.mjs,
+  tests/helpers/deploy.ts, AGENTS.md (setup/schema gotchas).
+- Checks: 100 tests pass, `npx tsc --noEmit` clean, `npm run lint` clean. Also ran
+  `npm run setup` end to end against freshly-started local chains and confirmed in
+  the DB that exactly one entity has mmfEligible/mmfOptIn true and that
+  TreasuryPosition queries — then restored the pre-existing dev.db + deployments.json.
+- **Learnings for future iterations:**
+  - Run `npx prisma format` after editing schema.prisma — it realigns columns, and
+    otherwise the next agent's diff is polluted by the formatter.
+  - `prisma db push` is non-interactive for additive changes (new table, new column
+    with a default), so it is safe inside the `setup` npm script.
+  - US-003 still owes: deploy TokenizedMMF in setup.mjs + the test fixture, record the
+    address in deployments.json, expose it from lib/chain.ts, mint a yield buffer to
+    the MMF address, and have the treasury `approve` the MMF (subscribe uses
+    transferFrom) — see the US-001 learnings above.
+  - TreasuryPosition intentionally has NO entityId (the platform treasury parks; the
+    entity only supplies the opt-in guardrail at the API layer, per US-007). Don't add
+    a relation unless a later story actually needs per-entity positions.
+---
+
+## 2026-07-14 08:10 - US-003 (Deploy TokenizedMMF locally and wire it into lib/chain.ts)
+- `scripts/setup.mjs`: deploys `TokenizedMMF(mockUSDC)` on both local chains alongside
+  PaymentSettlement, mints the fund a 50,000 mockUSDC yield buffer (`MMF_YIELD_BUFFER`),
+  has the treasury `approve` the fund for MAX (subscribe pulls via transferFrom), and
+  records `contracts.TokenizedMMF` per network in chain/deployments.json.
+- `tests/helpers/deploy.ts`: the same three steps in `deployChain()`, exporting
+  `MMF_YIELD_BUFFER` so tests can assert against it. The fixture fund is what the app
+  layer (lib/chain) resolves, so US-004+ integration tests can park through it.
+- `lib/chain.ts`: `NetworkContracts.TokenizedMMF?: Address`; new `MMF_ABI` (subscribe,
+  redeem, accrue + the views), `MMF_INDEX_SCALE` (1e18), and
+  `mmfAddress(networkId): Address | undefined` — returns undefined for live testnets and
+  unknown ids rather than throwing, so callers degrade instead of 500ing.
+- `tests/integration/mmf.test.ts`: kept the 7 behavior tests on a throwaway MMF instance
+  (their index/share assertions must not be perturbed by other suites) and added a
+  "deployment wiring" block (3 tests) against the FIXTURE fund: address resolves per local
+  network / undefined elsewhere, fund is backed by that network's mockUSDC at par with the
+  buffer funded, and a treasury subscribe→redeem succeeds (proving the approval), leaving
+  the shared fund back at par with zero shares.
+- `AGENTS.md`: architecture-map rows for lib/chain + setup.mjs, plus gotchas (buffer +
+  approval must exist at every deploy target; mmfAddress returns undefined by design).
+- Files changed: scripts/setup.mjs, tests/helpers/deploy.ts, lib/chain.ts,
+  tests/integration/mmf.test.ts, AGENTS.md.
+- Checks: 103 tests pass (was 100), `npx tsc --noEmit` clean, `npm run lint` clean. Also
+  ran `npm run setup` against freshly-started local chains: MMF deployed on both, index at
+  par, yieldBuffer = 50000000000, treasury allowance MAX, and the app served /api/networks
+  (all 4 networks) + /liquidity 200. Dev chains killed and dev.db/deployments.json restored.
+- **Learnings for future iterations:**
+  - The shared FIXTURE fund is stateful across test files (`fileParallelism: false`, so
+    files run sequentially and share the chains + DB). If you mutate it — subscribe or
+    especially `accrue`, which is irreversible by design — either restore par/zero-shares
+    at the end of your test or deploy a throwaway instance. Never assume the fixture fund
+    is at index 1e18 unless you just checked.
+  - viem `as const` ABIs narrow `functionName` to a literal union: `readContract` with a
+    `functionName: string` param fails tsc. Type the helper's param as the union.
+  - Local deploy addresses are nonce-derived, so base-local and polygon-local end up with
+    the SAME MMF address. Don't let a test pass by reading the wrong network's fund —
+    assert per-network via `networkContracts(networkId)`.
+  - `MMF_YIELD_BUFFER` (50k mockUSDC) bounds how much simulated yield can ever be redeemed
+    across all positions on a chain. If a future story accrues aggressively, top it up in
+    both deploy paths or `redeem` will revert on an insufficient ERC-20 balance.
+  - Still owed before park/recall works end to end (US-004/005): `operatorWrite()` is hard-
+    wired to PaymentSettlement's address + ABI and its `functionName` union — parking needs
+    an MMF-targeted equivalent (or a generalized operatorWrite) rather than a reuse of it.
+---
+
+## 2026-07-14 08:15 - US-004 (Park: sweep idle treasury balance into the MMF)
+- `lib/treasury.ts` (new): `park({ networkId, asset, amount, entityId? })` resolves the
+  network's fund via `mmfAddress`, asserts the fund is actually backed by that asset
+  (reads `asset()` and compares lowercased), converts the decimal amount with
+  `toBaseUnits` (bigint end to end), ensures the treasury's approval, subscribes as the
+  operator, and writes an ACTIVE `TreasuryPosition` with the park tx hash. Minted shares
+  come from the treasury's sharesOf delta (a write only yields a receipt, so subscribe's
+  return value is not readable). Also exports `freeTreasuryBalance()` and a typed
+  `TreasuryError` with codes NO_FUND / UNSUPPORTED_ASSET / INVALID_AMOUNT /
+  INSUFFICIENT_FREE_BALANCE / NOT_ELIGIBLE (US-007 maps these to HTTP statuses).
+- Guardrails: park refuses when the amount exceeds treasury balance minus RESERVED
+  LiquidityReservation rows (all bigint — no float rounding), and the optional
+  `entityId` enforces mmfEligible && mmfOptIn at the lib layer, so US-007's API guard
+  and US-010's rejection test both have a single source of truth.
+- `lib/chain.ts`: `mmfOperatorWrite(networkId, "subscribe"|"redeem"|"accrue", args)`
+  (operatorWrite is hard-wired to PaymentSettlement's address/ABI, so the fund needed its
+  own operator-signed path), `tokenAllowance()`, `ensureTreasuryAllowance()` (approves MAX
+  only when the current allowance is short — parking self-heals if a fund is redeployed
+  under an existing DB), plus `allowance` in ERC20_ABI.
+- Audit: `TREASURY_PARKED` (exported constant) with network, asset, decimal amount, base
+  units, shares, index at entry, fund address, tx hash, and the entity when supplied.
+- `tests/db/treasury.test.ts` (new, 3 tests): park records the position and shrinks
+  `availableLiquidity` by exactly the parked amount with the asset landing in the fund;
+  reserved liquidity cannot be parked but the unreserved remainder still can; bad amount /
+  wrong asset / no-fund network raise the right typed codes and create no row.
+- Files changed: lib/treasury.ts (new), lib/chain.ts, tests/db/treasury.test.ts (new),
+  AGENTS.md (architecture-map row, reserved-liquidity invariant, bigint-audit gotcha).
+- Checks: 106 tests pass (was 103), `npx tsc --noEmit` clean, `npm run lint` clean.
+- **Learnings for future iterations:**
+  - **`audit()` JSON-stringifies its detail and JSON.stringify THROWS on a bigint.**
+    Stringify base units (or use `fromBaseUnits`) before putting them in an audit detail.
+  - `operatorWrite()` only talks to PaymentSettlement. Use `mmfOperatorWrite()` for the
+    fund — US-005 (`redeem`) and US-006 (`accrue`) go through it.
+  - viem writes return a receipt, not the function's return value. To capture a value a
+    mutator returns (subscribe → shares, redeem → assetAmount), read the relevant view
+    before and after, or decode the event log.
+  - Any test that parks MUST unwind (redeem all treasury shares) — the fixture MMF and the
+    treasury's mockUSDC balance are shared across suites, and `tests/integration/mmf.test.ts`
+    asserts the fund sits at par with exactly MMF_YIELD_BUFFER.
+  - `availableLiquidity()` (lib/routing) is the float/decimal-string view for quotes;
+    `freeTreasuryBalance()` (lib/treasury) is the bigint view used for guards. Parking
+    reduces both automatically because it really moves tokens out of the treasury wallet.
+---
+
+## 2026-07-14 08:20 - US-005 (Recall: T+0 redemption back to the settlement asset)
+- `lib/treasury.ts`: `recall(positionId)` loads the position, refuses anything that is
+  not ACTIVE, re-resolves the network's fund via the existing `fundAssetFor()` (so a
+  position whose fund was redeployed under a different asset fails loudly rather than
+  redeeming the wrong token), reads the live index, redeems the position's shares as the
+  operator via `mmfOperatorWrite(network, "redeem", [treasury, shares])`, and flips the
+  row to RECALLED **in place** with `recalledAt` + `txHashRecall`. The asset returned
+  (principal + any yield accrued since entry) is measured as the treasury's token-balance
+  delta, since a viem write only yields a receipt.
+- Two new `TreasuryErrorCode`s: `POSITION_NOT_FOUND`, `POSITION_NOT_ACTIVE` — US-007 maps
+  both to 404/409-style route errors.
+- Audit: `TREASURY_RECALLED` with positionId, network, asset, shares, amount returned
+  (decimal + base units), principal, yield, index at entry and exit, fund, tx hash. All
+  base units stringified (JSON.stringify throws on bigint).
+- `tests/db/treasury.test.ts` (+2 tests, 106 -> 108): a real on-chain park -> recall
+  round-trip at an unchanged index returns exactly the principal — treasury token balance
+  and `availableLiquidity()` both back to their pre-park values, fund balance down by the
+  principal, treasury shares at 0, position RECALLED with both tx hashes, TREASURY_RECALLED
+  on an INTACT audit chain; and unknown / already-recalled positions throw the typed codes
+  while the history row survives untouched.
+- Files changed: lib/treasury.ts, tests/db/treasury.test.ts, AGENTS.md (architecture-map
+  row + append-only-positions invariant).
+- Checks: 108 tests pass, `npx tsc --noEmit` clean, `npm run lint` clean.
+- **Learnings for future iterations:**
+  - No contract change was needed — `redeem` already existed from US-001 and `MMF_ABI` /
+    `mmfOperatorWrite` from US-003/US-004, so no `npm run compile` step and no fixture
+    change. US-006 (`accrue`) is in the same position: the contract and the operator path
+    are already there, only lib + tests are owed.
+  - Shares are stored on the row, so recall does NOT need `sharesOf` — it redeems exactly
+    `BigInt(position.shares)`. That is what keeps multiple concurrent positions on the same
+    treasury wallet independent (the contract only tracks an aggregate per account).
+  - At an unchanged index a round-trip is exact (no floor-division dust) because
+    `shares = amount * 1e18 / index` then `asset = shares * index / 1e18` inverts cleanly at
+    par. After US-006 accrues the index, do NOT expect park/recall to be exact — assert
+    `>= principal` instead.
+  - `recall()` reads the index for the audit trail *before* redeeming; if a future story
+    accrues between the read and the write, the audited `indexAtExit` could lag the actual
+    payout. Fine today (single-threaded demo), worth knowing if accrual ever runs on a timer.
+  - Test isolation: the file's existing `unwind()` (redeem all treasury shares + delete the
+    file's position rows) is still the right ending for every new treasury test — the
+    fixture fund is shared and `tests/integration/mmf.test.ts` asserts it sits at par with
+    exactly MMF_YIELD_BUFFER.
+---
+
+## 2026-07-14 08:25 - US-006 (Simulated daily yield accrual)
+- `lib/treasury.ts`: `accrueDaily(networkId, annualRateBps = MMF_ANNUAL_RATE_BPS)` reads the
+  fund's live index, computes one day of yield, advances the contract via
+  `mmfOperatorWrite(networkId, "accrue", [newIndex])`, and audits `TREASURY_ACCRUED`
+  (network, fund, old index, new index, rate in bps, days, tx hash). Rate is a constant —
+  `MMF_ANNUAL_RATE_BPS = 350n` (3.5% APY) — overridable per call.
+- Pure math, exported and unit-tested so it is deterministic and chain-free:
+  `dailyIndex(index, bps) = index + (index * bps) / (10_000n * 365n)` (bigint, floor) and
+  `valueOfShares(shares, index) = shares * index / 1e18`. Floor division means the index
+  can only rise or stay put, which is exactly what the contract's monotonic `accrue`
+  requires. Also `currentIndexOf(networkId)` for the API/UI stories.
+- A position's value stays DERIVED: accrual writes nothing to TreasuryPosition — the row
+  keeps only `shares` + `indexAtEntry`, and value = shares x live index.
+- New `TreasuryErrorCode` `INVALID_RATE` (negative bps); `fundFor(networkId)` factored out
+  of `fundAssetFor` so accrual can resolve the fund without naming an asset (NO_FUND).
+- Tests: `tests/unit/treasury.test.ts` (new, 6 tests — par + 3.5% APY gives exactly
+  1000095890410958904, rate scaling, compounding, dust index cannot decrease, negative rate
+  throws) and 2 in `tests/db/treasury.test.ts` (on-chain park 100k -> accrueDaily -> recall
+  returns principal + ~9.589 mockUSDC of yield paid out of the fund's buffer, position row
+  untouched, TREASURY_ACCRUED on an INTACT audit chain; accrue on base-sepolia -> NO_FUND).
+- `tests/integration/mmf.test.ts`: the fixture-fund wiring assertions were par-equality
+  (`currentIndex == 1e18`, `yieldBuffer == MMF_YIELD_BUFFER`, `shares == PARK`). Once the db
+  suite accrues that fund those are false and file order is not guaranteed, so they now
+  assert invariants: index >= par, 0 < buffer <= MMF_YIELD_BUFFER, totalShares == 0, balance
+  == buffer, shares == PARK * 1e18 / index, and a round-trip within 1 base unit of dust.
+- Files changed: lib/treasury.ts, tests/unit/treasury.test.ts (new), tests/db/treasury.test.ts,
+  tests/integration/mmf.test.ts, AGENTS.md (architecture-map row + "accrual is one-way" gotcha).
+- Checks: 116 tests pass (was 108), `npx tsc --noEmit` clean, `npm run lint` clean. No contract
+  change, so no `npm run compile` and no fixture change were needed.
+- **Learnings for future iterations:**
+  - **Accrual is irreversible and the fixture fund is shared.** Put anything that accrues in
+    the LAST describe of its file, and never assert "at par" against the fixture fund from
+    another file — assert invariants. This bit tests/integration/mmf.test.ts; expect it to bite
+    US-010 too (a park -> accrue -> recall chain test cannot leave the fund as it found it).
+  - Yield is redeemed out of `MMF_YIELD_BUFFER` (50k mockUSDC per chain, minted at deploy).
+    Each accrual+recall drains it a little and it is never topped up during a run. A story that
+    accrues aggressively (many days, or a loop) must raise the buffer in BOTH deploy paths
+    (scripts/setup.mjs and tests/helpers/deploy.ts) or `redeem` reverts on an ERC-20 shortfall.
+  - After an accrual, park/recall no longer round-trips exactly: shares = floor(amount * 1e18 /
+    index) then asset = floor(shares * index / 1e18) can lose a base unit. Assert `>=` principal
+    (or a 1-unit dust band), never `==`.
+  - US-007 (routes) can now map the full typed-error set: NO_FUND, UNSUPPORTED_ASSET,
+    INVALID_AMOUNT, INVALID_RATE, INSUFFICIENT_FREE_BALANCE, NOT_ELIGIBLE, POSITION_NOT_FOUND,
+    POSITION_NOT_ACTIVE. `currentIndexOf()` + `valueOfShares()` are what GET /api/treasury/positions
+    should use for "current value per position" (one index read per network, not per row).
+---
+
+## 2026-07-14 08:32 - US-007 (Treasury API routes: park, recall, positions, accrue)
+- Four route handlers under `app/api/treasury/`, all snake_case in and out, all thin
+  (validate the body, delegate to lib/treasury, map the typed error):
+  - `POST park` { network, asset, amount, entity_id } -> { position_id, status, tx_hash,
+    shares, index_at_entry }. entity_id is REQUIRED here (the lib arg is optional) so the
+    institutional-only guardrail is always enforced server-side.
+  - `POST recall` { position_id } -> { position_id, status, tx_hash, shares, amount,
+    index_at_exit }.
+  - `GET positions` -> positions newest-first with a DERIVED current_value / accrued_yield
+    (shares x the fund's live index). One index read per network, not per row; a RECALLED
+    row reports null for the live fields.
+  - `POST accrue` { network } -> { network, old_index, new_index, annual_rate_bps, tx_hash }.
+- `app/api/treasury/errors.ts`: the single TreasuryErrorCode -> HTTP status table —
+  NOT_ELIGIBLE 403, POSITION_NOT_FOUND 404, INSUFFICIENT_FREE_BALANCE + POSITION_NOT_ACTIVE
+  409, NO_FUND / UNSUPPORTED_ASSET / INVALID_AMOUNT / INVALID_RATE 400, anything else 500.
+  Response shape is `{ error, code }`, so `{ error }` still matches the other routes.
+- `tests/integration/treasury-api.test.ts` (new, 6 tests): eligible park round-trip,
+  403 for a non-eligible/unknown entity with no row left behind, 400 matrix (missing fields,
+  unknown network, bad amounts, unbacked asset, no-fund network), 409 over-park,
+  park -> positions -> recall -> positions (row flips in place, both tx hashes, live fields
+  null once RECALLED), recall 400/404/409, and the accrue happy path + validation.
+- `tests/db/treasury.test.ts` hardened: its par-exact assertions now derive from the live
+  index (see learnings) — behaviour unchanged at par, correct once the fund is above it.
+- Files changed: app/api/treasury/{errors.ts,park/route.ts,recall/route.ts,
+  positions/route.ts,accrue/route.ts} (new), tests/integration/treasury-api.test.ts (new),
+  tests/db/treasury.test.ts, AGENTS.md (architecture-map row + test-order gotcha).
+- Checks: 124 tests pass (was 116), `npx tsc --noEmit` clean, `npm run lint` clean. No UI in
+  this story (US-009 owns the Liquidity page), so no browser verification was needed; the
+  routes are exercised by invoking the handlers directly, the house pattern in
+  tests/integration/api.test.ts.
+- **Learnings for future iterations:**
+  - **Vitest file order is NOT alphabetical** (sequential, but the sequencer orders files
+    itself), so "my accruing file runs last" is not a guarantee you can lean on. Once ANY
+    file accrues the shared fixture fund, every other file may see an above-par index.
+    Fix is to derive expectations from the live index — `valueOfShares(shares, index)` is
+    the exact amount `redeem` pays — instead of asserting par-derived constants. Only
+    genuine token movements (subscribe pulls exactly `assetAmount`) stay exact.
+  - Non-route files colocate fine under `app/api/**` — only `route.ts` is routable, so
+    `app/api/treasury/errors.ts` is a normal module. Put cross-route glue there rather than
+    leaking HTTP concerns into lib/.
+  - Route tests import the handler (`import { POST } from "@/app/api/.../route"`) and call it
+    with a `NextRequest`; the `{ duplex: "half" }` cast in the postJson helper is required by
+    undici whenever the constructed Request has a body.
+  - Any route test that parks must `unwind()` (redeem all treasury shares + delete the file's
+    position rows) exactly like tests/db/treasury.test.ts — the fixture fund and the treasury
+    balance are shared across files.
+  - US-008 (auto-recall in the executor) can reuse the same typed errors; US-009's UI can hit
+    these four routes directly — `GET /api/treasury/positions` already returns everything the
+    card needs (parked value, shares, current index, accrued yield, status).
+---
+
+## 2026-07-14 08:40 - US-008 (Route engine treats parked liquidity as available-with-recall-delay)
+- `lib/treasury.ts`: two additions on top of park/recall/accrue.
+  - `parkedBalance(networkId, symbol)` — derived value of every ACTIVE position on that
+    network (sum of `shares x live index`), in base units. Returns `0n` (never throws)
+    where no fund is deployed, so quoting can call it on any network including the real
+    testnets.
+  - `recallForPayment({ networkId, asset, amount, paymentId })` — frees `amount` for a
+    payment by recalling parked positions oldest-first (FIFO: the oldest has accrued
+    longest). No-op when the free balance already covers the amount. Pre-checks
+    `parkedBalance >= shortfall` so it never half-recalls into a doomed payment, and
+    still re-checks after the loop (floor-division dust / a row-vs-fund disagreement).
+    Audits a payment-linked `TREASURY_AUTO_RECALLED` (needed, free before, shortfall,
+    amount recalled, position ids, tx hashes) on top of the per-position
+    `TREASURY_RECALLED` events that `recall()` already writes.
+- `lib/routing.ts`: `liquidityOk` (boolean) became `liquidityCheck` returning
+  `{ ok, recallRequired }`. Free liquidity short but free + parked covers it → the quote
+  is STILL offered, with `recall_required: true`. `RouteOption` gains `recall_required`,
+  wired into all four route branches (instant, batched, bridged, source-chain fallback)
+  and defaulting to `false` in `common`, so quotes with ample free liquidity are byte-for-
+  byte unchanged. Also exports `parkedLiquidity(asset, network)` (the decimal-string view,
+  mirroring `availableLiquidity`). The parked lookup only runs in the shortfall branch —
+  a normal quote costs no extra queries.
+- `lib/executor.ts`: new step 0 — when `route.recall_required`, `recallForPayment()` runs
+  BEFORE the liquidity reservation and the escrow (reserving first would reserve against a
+  balance still sitting in the fund). A failed recall releases any stale reservation and
+  takes the payment APPROVED → FAILED (a legal transition) with nothing on-chain.
+- `app/payments/[id]/page.tsx`: the route panel's Liquidity row now distinguishes
+  "Available" (emerald) from "Available — MMF recall (T+0)" (amber) from "Shortfall".
+- `tests/integration/auto-recall.test.ts` (new, 4 tests): parks all but 20k of the
+  treasury's mockUSDC, then (1) a $100k USD→USD quote flags `recall_required` on every
+  route while staying `liquidity_available`, (2) with nothing parked the same quote leaves
+  the flag false, (3) executing auto-recalls the position, settles end to end, flips the row
+  to RECALLED in place, leaves zero shares, and puts TREASURY_AUTO_RECALLED on the payment's
+  audit trail BEFORE `payment.status.liquidity_reserved` with the reservation CONSUMED and
+  the chain INTACT, (4) failure injection — delete the position row without redeeming, so
+  the fund still holds the asset but nothing is recallable — the payment goes FAILED with no
+  tx hash and no RESERVED row.
+- Files changed: lib/treasury.ts, lib/routing.ts, lib/executor.ts, app/payments/[id]/page.tsx,
+  tests/integration/auto-recall.test.ts (new), AGENTS.md (architecture map, recall-before-
+  reserve invariant, quote-snapshot gotcha).
+- Checks: 128 tests pass (was 124), `npx tsc --noEmit` clean, `npm run lint` clean. No
+  contract change, so no `npm run compile` and no fixture change. The UI edit is a one-line
+  conditional on an existing `<dd>`; no browser MCP tool is configured in this environment,
+  so the route panel still wants a manual eyeball (US-009 rebuilds this area anyway).
+- **Learnings for future iterations:**
+  - **Import direction in lib/ is executor → routing → treasury → chain/db.** Routing
+    importing treasury is fine; treasury importing routing would cycle. When two modules
+    need the same fact, it belongs in the lower one.
+  - **The MMF holds mockUSDC, and the executor reserves the DESTINATION asset.** So only a
+    payment whose destination currency is USD can ever exercise parked liquidity — a
+    USD→JPY payment reserves mockJPY and never touches the fund. `midRate` returns 1 when
+    source == dest, so USD→USD is a legal corridor and is what the auto-recall test uses.
+  - `recall_required` is frozen into `quoteJson` at quote time. It can be stale by
+    execution time (someone parks or recalls in between), which is why `recallForPayment()`
+    no-ops when free liquidity already covers the amount and the executor's original
+    insufficient-liquidity check still runs after it.
+  - Injecting a recall failure is easiest by deleting the `TreasuryPosition` row WITHOUT
+    redeeming: the asset stays stranded in the fund, so free liquidity is short and nothing
+    is recallable. `unwind()` (redeem `sharesOf(treasury)`) still cleans it up afterwards,
+    because it redeems by on-chain share balance rather than by row.
+  - US-009's Liquidity-page card can read `parkedBalance()` / `parkedLiquidity()` for
+    "parked value" without touching the MMF ABI, and `GET /api/treasury/positions` already
+    returns the per-position derived value.
+---
+
+## 2026-07-14 08:47 - US-009 (Treasury parking UI on the Liquidity page)
+- Replaced the old "Tokenized Treasury Products — NOT ENABLED — FUTURE" placeholder card
+  with a LIVE Tokenized MMF card, rendered per network that has a fund.
+- `app/liquidity/page.tsx` (server component, unchanged role): for each network it resolves
+  the fund with `mmfAddress()`, reads the asset the fund is actually backed by (`asset()`,
+  matched case-insensitively against that network's tokens rather than assuming mockUSDC),
+  the live share index (`currentIndexOf`), and the unreserved treasury balance
+  (`freeTreasuryBalance`). Position values are DERIVED there (`valueOfShares(shares, index)`),
+  never read off the row. Also finds the single mmfEligible+mmfOptIn entity for the park form.
+- `app/liquidity/mmf-card.tsx` (new, `"use client"`): parked value, accrued yield, share
+  index (exact 6-dp bigint formatting — `Number(1e18)` loses the low digits), free-to-park,
+  and a positions table with StatusBadge + per-row "Recall T+0". Park form and an
+  "Accrue 1 day" demo control. Every mutation POSTs the US-007 route then calls
+  `router.refresh()`, which re-renders the server parent and flows fresh props down — the
+  view updates with no full page reload.
+- Guardrails visible in the UI: "Institutional only" + "Simulated yield — testnet only"
+  pills; park input and button are disabled (with an amber explainer) when no entity is
+  eligible+opted-in. The API re-checks the guardrail server-side regardless.
+- Resilience: no fund on the network (base-sepolia) → dashed "Not deployed" placeholder;
+  fund present but its RPC read throws → "unreachable" placeholder. The page never 500s.
+- `components/ui.tsx`: STATUS_STYLES gains ACTIVE (emerald) / RECALLED (slate) so the
+  shared StatusBadge covers position status too.
+- Files changed: app/liquidity/mmf-card.tsx (new), app/liquidity/page.tsx,
+  components/ui.tsx, AGENTS.md (architecture-map row + the server-props/router.refresh gotcha).
+- Checks: 128 tests pass (unchanged — this story adds no lib/contract behavior),
+  `npx tsc --noEmit` clean, `npm run lint` clean.
+- **Verification (no browser MCP is configured in this environment):** drove the REAL dev
+  server instead of a headless browser — started both local chains, `npm run setup`, served
+  the app on :3001, and asserted on the server-rendered HTML. Card shows index 1.000000 and
+  500,000.00 free on both local networks; base-sepolia shows the "not deployed" placeholder.
+  Then exercised exactly the calls the buttons make: park 200,000 → card reads
+  200,000.00 parked / 300,000.00 free; accrue 1 day → index 1.000095, yield +19.18
+  (= 200000 × 3.5% ÷ 365, exact); recall → returns 200,019.178082, position flips to
+  RECALLED in place with live fields blank, free-to-park rises to 500,019.18 (yield paid out
+  of the buffer), and `GET /api/audit` reports `integrity.valid: true`. Killed the chains and
+  my :3001 server and restored the pre-existing dev.db + deployments.json afterwards.
+  A human eyeball on the actual rendered card (spacing/colour) is still worth one minute.
+- **Learnings for future iterations:**
+  - **The Liquidity page's data path is server-side.** Chain/DB reads belong in
+    `page.tsx`; the client child gets plain serializable props. After a mutation the child
+    calls `router.refresh()`, which re-renders the server parent and passes NEW props down.
+    So do NOT copy a server prop into `useState` — it would go stale after every park/recall.
+    (`app/payments/*` predates this and fetches client-side; both patterns live in the repo.)
+  - The `/api/audit` response shape is `{ integrity: { valid }, events }` — not `{ intact }`.
+  - Formatting the 1e18 share index through `Number()` silently loses the low digits
+    (1e18 > 2^53). Format it with BigInt division (`i / 1e18n` + a scaled remainder).
+  - Port 3000 may already hold the user's dev server: serve verification runs on another
+    port (`npx next dev -p 3001`) rather than killing theirs.
+  - Reading the fund's `asset()` and matching it against `deployments.json` tokens (both
+    lowercased) is only ~4 lines and beats hardcoding mockUSDC — it keeps the card honest if
+    a fund is ever deployed against a different token.
+  - US-010 is all that remains: it is largely a consolidation story (guardrail + segregation
+    + audit-chain tests). Much of it already exists — reserved-liquidity-cannot-be-parked and
+    the not-opted-in rejection are covered in tests/db/treasury.test.ts and
+    tests/integration/treasury-api.test.ts. What is genuinely new is the on-chain SEGREGATION
+    assertion (balanceOf(TokenizedMMF) rises while balanceOf(PaymentSettlement) is unchanged
+    across park/recall) and a single ordered park → accrue → recall audit-chain test.
+---
+
+## 2026-07-14 08:52 - US-010 (End-to-end guardrail and segregation tests)
+- `tests/integration/treasury-guardrails.test.ts` (new, 3 tests) — the consolidation
+  story: the properties a compliance reviewer needs, asserted in one file.
+  1. **Institutional-only guardrail.** ACME (the one seeded mmfEligible+mmfOptIn
+     entity) has its opt-in revoked in a try/finally, so the opt-in dimension itself
+     is exercised rather than only the never-cleared counterparty: `park({entityId})`
+     rejects with TreasuryError NOT_ELIGIBLE and `POST /api/treasury/park` returns 403.
+     A never-cleared entity (ent_tokyo_supplier) is refused too. Afterwards: zero
+     position rows, zero shares — a refused park leaves nothing behind.
+  2. **Reserved liquidity is untouchable.** Everything but 500 mockUSDC is RESERVED
+     against an in-flight payment; parking 600 fails at the lib layer
+     (INSUFFICIENT_FREE_BALANCE) and via the API (409), and the treasury's token
+     balance is byte-for-byte unchanged.
+  3. **Segregation + ordered audit chain.** park 80k -> accrueDaily -> recall, with
+     `balanceOf(PaymentSettlement)` snapshotted before and re-asserted after EVERY
+     step: the escrow is never on the path. balanceOf(TokenizedMMF) rises by exactly
+     the principal on park, is untouched by accrual (an index bump moves no asset),
+     and falls by principal + yield on recall, which lands in the treasury wallet.
+     The three TREASURY_* audit actions come back from the log in exactly the order
+     they happened (queried by id > a pre-flight watermark), the recall event carries
+     the derived yield and exit index, `verifyAuditChain()` is `{ valid: true }`, and
+     the position row is RECALLED in place with both tx hashes.
+- Files changed: tests/integration/treasury-guardrails.test.ts (new), AGENTS.md (the
+  Tests paragraph now names the MMF guardrail/segregation layer).
+- Checks: 131 tests pass (was 128), `npx tsc --noEmit` clean, `npm run lint` clean.
+  No skipped treasury tests. No lib/contract/UI change in this story, so nothing to
+  verify in a browser.
+- **Learnings for future iterations:**
+  - To test a guardrail that the fixture seeds as *satisfied*, flip the seeded entity's
+    flag inside a `try/finally` and restore it — the fixture DB is shared across files
+    and a leaked `mmfOptIn: false` would fail every later park.
+  - Segregation is cheap to assert and worth asserting at every step, not just at the
+    end: snapshot `balanceOf(PaymentSettlement)` up front and re-check it after park,
+    after accrue, and after recall. Accrual in particular moves NO asset — only the
+    index — and a test that only checks the endpoints would not catch a cross-call.
+  - Audit-ordering assertions should anchor on a watermark (`id > lastIdBeforeTest`)
+    rather than `findFirst({orderBy: {id: "desc"}})` per action: the log is shared with
+    every other suite, so a per-action "latest row" lookup can silently read another
+    file's event.
+  - Phase 8 is COMPLETE: all ten stories pass. The MMF is local-chains-only by design
+    (`mmfAddress()` returns undefined on the real testnets); deploying a fund to
+    base-sepolia/polygon-amoy would need the yield buffer minted and the treasury
+    approval granted there too (see the US-003 learnings), and is the natural next step.
+---
