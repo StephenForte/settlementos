@@ -56,6 +56,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | `lib/providers/` | Real vendor adapters: OpenSanctions (sanctions match API), Chainalysis sanctions oracle (keyless on-chain `isSanctioned()` read for wallet screening). **Fail-safe: any provider error/timeout → MANUAL_REVIEW, never fail-open.** Verbatim provider evidence persisted on `ComplianceCheck.rawResponse` |
 | [lib/audit.ts](lib/audit.ts) | Append-only hash-chained audit log + chain verifier |
 | [lib/auth.ts](lib/auth.ts) | API-key identity: `authenticate(request)` (`x-api-key` header → `sos_key` cookie) → `Principal { role, entityId?, label }` or null. Roles OPERATOR/REVIEWER/ENTITY; only sha256 hashes are stored. **Identity only — routes enforce authorization** |
+| [lib/session.ts](lib/session.ts) | Next-only half of auth: `currentPrincipal()` resolves the `sos_key` cookie via `cookies()` for **server components** (which have no `Request`); `sessionCookieOptions()` is the one place the cookie's flags are defined. Keep `next/headers` out of lib/auth.ts so route tests can pass a plain `Request` |
 | [lib/treasury.ts](lib/treasury.ts) | Tokenized-MMF treasury ops: `park()` (subscribe unreserved liquidity into the fund), `recall()` (T+0 redeem of a position, principal + accrued yield back to the treasury), `accrueDaily()` (advance the fund index by one day at `MMF_ANNUAL_RATE_BPS`, default 3.5% APY; `dailyIndex()`/`valueOfShares()` are the pure bigint math), `freeTreasuryBalance()` (bigint balance − RESERVED rows), `parkedBalance()` (derived value of ACTIVE positions; `0n`, never a throw, where no fund exists), `recallForPayment()` (FIFO auto-recall for the executor), `TreasuryError` (typed codes for route handlers), `TREASURY_*` audit actions |
 | [lib/assets.ts](lib/assets.ts) | Asset metadata, currency↔token mapping, base-unit conversion |
 | [scripts/setup.mjs](scripts/setup.mjs) | Local deploy (tokens, escrow, TokenizedMMF + its yield buffer and treasury approval) + DB seed (dev-mnemonic accounts, local only) |
@@ -173,6 +174,13 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   too, or every seeded key silently stops resolving. Tests use fixed keys
   (`API_KEYS` in `tests/fixture.ts`, seeded by `tests/global-setup.ts`) the same way
   they use the dev mnemonic.
+- **Signing in is how the browser demo gets an identity**: `/login` POSTs a raw key to
+  `/api/auth/login`, which sets the httpOnly `sos_key` cookie that `authenticate()`
+  already reads. Reseeding keys (`npm run setup`) invalidates live sessions — the old
+  cookie resolves to null and the shell falls back to "not signed in", which is the
+  intended fail-closed behaviour, not a bug. Because the root layout awaits
+  `currentPrincipal()`, **every page is dynamically rendered**; anything added there
+  must tolerate an anonymous principal, since `/login` itself renders in that shell.
 - `chain/deployments.json` (local) and one `chain/deployments.<network>.json`
   overlay per live network (real testnets) are merged at read time by
   `loadDeployments()`. The app only offers networks present in the merged result

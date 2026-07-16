@@ -32,8 +32,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 2,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Done 2026-07-16. lib/session.ts holds the Next-only half of auth (currentPrincipal() via cookies(), sessionCookieOptions()) so lib/auth.ts stays framework-free and route-testable — that is the server-component pattern, documented in AGENTS.md's architecture map rather than scripts/ralph/CLAUDE.md (which is the generic Ralph template; AGENTS.md is where this repo's durable learnings live). Login stores the RAW key in the httpOnly cookie because authenticate() re-hashes it on read; `secure` is env-gated for the plain-http demo. Root layout is now async, so every page is dynamically rendered and must tolerate a null principal. Generic 401 for missing/empty/non-string/unknown keys alike (no existence oracle). Browser-verified end to end on :3000 (anonymous -> bad key -> operator key -> logout, all 7 pages 200). Suite 144 -> 149."
     },
     {
       "id": "US-003",

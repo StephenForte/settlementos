@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Link from "next/link";
+import { PrincipalBadge } from "./principal-badge";
+import { currentPrincipal } from "@/lib/session";
 import "./globals.css";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
@@ -20,7 +22,9 @@ const NAV = [
   { href: "/compliance", label: "Compliance Queue" },
 ];
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const principal = await currentPrincipal();
+
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
       <body className="min-h-screen bg-slate-950 text-slate-100">
@@ -47,8 +51,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </Link>
               ))}
             </nav>
-            <div className="mt-auto rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-[11px] leading-snug text-amber-300">
-              Testnet demo. Mock assets, simulated FX and payout. No real funds.
+            <div className="mt-auto flex flex-col gap-3">
+              <PrincipalBadge label={principal?.label ?? null} role={principal?.role ?? null} />
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-[11px] leading-snug text-amber-300">
+                Testnet demo. Mock assets, simulated FX and payout. No real funds.
+              </div>
             </div>
           </aside>
           <main className="flex-1 overflow-x-hidden p-8">{children}</main>

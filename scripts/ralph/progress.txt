@@ -108,6 +108,15 @@ Phase 9 Track A: production hardening per AUDIT.md
   both answer, run setup, then `pkill -f "hardhat node"` and restore both files.
   The restored dev.db predates any schema change you just made — that is expected;
   `npm run setup` is what re-syncs it.
+- Framework-free lib/ modules stay testable: `lib/auth.ts` takes a plain `Request` and
+  never imports `next/headers`, so route tests can call it directly. The Next-only glue
+  (`cookies()`) lives in a SEPARATE module, `lib/session.ts` (`currentPrincipal()` for
+  server components). Follow that split for anything else that needs request context —
+  putting `next/headers` in a lib/ module makes it uncallable from plain vitest.
+- Route handlers can be tested WITHOUT an HTTP server, including cookies: call the
+  handler and read `res.cookies.get(NAME)` off the returned `NextResponse` — it exposes
+  `value`/`httpOnly`/`sameSite`/`path`, and a `.delete()` shows up as value `""`.
+  A no-arg handler (`POST()`) needs no Request at all.
 - To exercise something against the DEV db (not the fixture), write a throwaway
   vitest file that news up its own `PrismaClient({ datasourceUrl: file:<dev.db> })`
   — `setup-env.ts` pins DATABASE_URL to the fixture for every worker, so an explicit
@@ -149,4 +158,43 @@ Phase 9 Track A: production hardening per AUDIT.md
   - Next up US-002 (login page + cookie). The cookie name/reader already exist here —
     /api/auth/login just has to validate via principalForKey and set `sos_key`
     httpOnly. Don't re-derive the cookie parsing; authenticate() already does it.
+---
+
+## 2026-07-16 11:52 - US-002 (login page + principal cookie)
+- The browser demo can now hold an identity, so US-003/US-004 can start enforcing without
+  locking the UI out. Still NO enforcement — every route remains open.
+- Files changed:
+  - lib/session.ts (new) — currentPrincipal() via cookies(), sessionCookieOptions(),
+    SESSION_MAX_AGE_SECONDS. The Next-only half of auth (see Codebase Patterns).
+  - app/api/auth/login/route.ts (new) — POST { api_key } -> principalForKey -> sets
+    httpOnly sos_key; generic 401 for missing/empty/non-string/unknown alike.
+  - app/api/auth/logout/route.ts (new) — POST, clears the cookie, always 200.
+  - app/login/page.tsx + app/login/login-form.tsx (new) — server page + "use client" form.
+  - app/principal-badge.tsx (new) — sidebar badge; label/role or a sign-in link.
+  - app/layout.tsx — now `async`, awaits currentPrincipal(), passes plain props down.
+  - AGENTS.md — lib/session.ts in the architecture map + a sign-in gotcha.
+  - tests/integration/auth-api.test.ts (new) — 5 tests. Suite 144 -> 149, tsc + lint green.
+- Browser-verified for real (backup/restore dance, dev server on :3000): anonymous shell
+  shows the sign-in link; bad key -> 401 + NO Set-Cookie; operator key -> 200 + HttpOnly
+  SameSite=lax cookie; cookie'd shell renders "Platform operator" / OPERATOR / Sign out;
+  ENTITY key -> its own tenant label; logout -> cookie expired to 1970. All 7 pages and
+  /api/networks + /api/payments still 200 under the now-async layout.
+- **Learnings for future iterations:**
+  - The root layout awaits currentPrincipal(), so EVERY page is dynamic now. That is
+    what makes the sidebar correct after sign-in, but it means a page can no longer be
+    statically rendered — don't fight it, and keep the shell working when principal is
+    null (/login renders inside it).
+  - Sign-out must be a BUTTON that POSTs + router.refresh(), not a <Link> — clearing a
+    cookie needs a route handler, and refresh() is what re-runs the server layout so the
+    badge flips. Same server-parent/client-child prop rule as app/liquidity/.
+  - The login route stores the RAW key in the cookie (that is what authenticate() expects
+    to read back and re-hash). So the cookie IS a bearer credential: httpOnly is what
+    keeps it away from JS, and `secure` is env-gated because the demo is plain http.
+  - `npm run setup` reseeds keys and silently invalidates any open browser session —
+    expect to sign in again after a reset; chain/dev-api-keys.json has the new ones.
+  - Next 16: cookies() is ASYNC (`await cookies()`), per node_modules/next/dist/docs.
+    Read the bundled docs — this repo is not the Next you remember.
+  - Next up US-003 (enforce authz + tenant scoping on reads). currentPrincipal() covers
+    server components; authenticate(req) covers routes. Both already fail closed, so
+    US-003 is mostly "null -> generic 401" + an ENTITY sender/recipient filter.
 ---
