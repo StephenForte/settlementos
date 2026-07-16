@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { randomBytes } from "node:crypto";
 import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
-import { isPlatformRole, requirePrincipal } from "../guard";
+import { actorOf, isPlatformRole, requirePrincipal, requireRole } from "../guard";
 
 export async function GET(req: NextRequest) {
   const principal = await requirePrincipal(req);
@@ -16,8 +16,9 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ entities });
 }
 
+/** Onboard a counterparty. Platform administration, so OPERATOR only. */
 export async function POST(req: NextRequest) {
-  const principal = await requirePrincipal(req);
+  const principal = await requireRole(req, "OPERATOR");
   if (principal instanceof NextResponse) return principal;
 
   const body = await req.json();
@@ -40,6 +41,6 @@ export async function POST(req: NextRequest) {
     },
     include: { wallets: true },
   });
-  await audit("entity.created", { externalId, name, country });
+  await audit("entity.created", { externalId, name, country }, undefined, actorOf(principal));
   return NextResponse.json({ entity }, { status: 201 });
 }

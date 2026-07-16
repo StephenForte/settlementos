@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { runComplianceChecks } from "@/lib/compliance";
 import { executePayment } from "@/lib/executor";
-import { requirePrincipal } from "../../../guard";
+import { actorOf, authorizePaymentWrite, notFound, requirePrincipal } from "../../../guard";
 
 /**
  * Execute a payment. From QUOTED: runs the compliance gate first; if all checks
@@ -12,14 +12,18 @@ import { requirePrincipal } from "../../../guard";
  * after reviewer sign-off): settles directly.
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  // Identity only — role/tenant rules for writes land in US-004.
   const principal = await requirePrincipal(req);
   if (principal instanceof NextResponse) return principal;
 
   const { id } = await params;
   const body = await req.json().catch(() => ({}));
   let payment = await prisma.payment.findUnique({ where: { id } });
-  if (!payment) return NextResponse.json({ error: "payment not found" }, { status: 404 });
+  if (!payment) return notFound();
+
+  const denied = authorizePaymentWrite(principal, payment);
+  if (denied) return denied;
+
+  const actor = actorOf(principal);
 
   if (body.route_id && payment.status === "QUOTED") {
     const routes = payment.quoteJson ? JSON.parse(payment.quoteJson) : [];
@@ -37,21 +41,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   if (payment.status === "QUOTED") {
     payment = await prisma.payment.update({ where: { id }, data: { status: "COMPLIANCE_PENDING" } });
-    await audit("payment.status.compliance_pending", {}, id);
+    await audit("payment.status.compliance_pending", {}, id, actor);
 
     const outcome = await runComplianceChecks(id);
     if (outcome.overall === "REJECTED") {
       payment = await prisma.payment.update({ where: { id }, data: { status: "REJECTED" } });
-      await audit("payment.status.rejected", { by: "compliance_gate" }, id);
+      await audit("payment.status.rejected", { by: "compliance_gate" }, id, actor);
       return NextResponse.json({ payment_id: id, status: payment.status, compliance: outcome }, { status: 200 });
     }
     if (outcome.overall === "MANUAL_REVIEW") {
       payment = await prisma.payment.update({ where: { id }, data: { status: "MANUAL_REVIEW" } });
-      await audit("payment.status.manual_review", { reason: "compliance_flags" }, id);
+      await audit("payment.status.manual_review", { reason: "compliance_flags" }, id, actor);
       return NextResponse.json({ payment_id: id, status: payment.status, compliance: outcome }, { status: 200 });
     }
     payment = await prisma.payment.update({ where: { id }, data: { status: "APPROVED" } });
-    await audit("payment.status.approved", { by: "compliance_gate" }, id);
+    await audit("payment.status.approved", { by: "compliance_gate" }, id, actor);
   }
 
   if (payment.status !== "APPROVED") {

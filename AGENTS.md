@@ -62,7 +62,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [scripts/setup.mjs](scripts/setup.mjs) | Local deploy (tokens, escrow, TokenizedMMF + its yield buffer and treasury approval) + DB seed (dev-mnemonic accounts, local only) |
 | [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy via argv): env deployer key, per-network gas-dust targets, generated dust wallets, DB registration |
 | `app/api/*` | REST route handlers (thin; logic lives in lib/) |
-| [app/api/guard.ts](app/api/guard.ts) | Authorization glue: `requirePrincipal(req)` / `requireRole(req, ...roles)` return a `Principal` **or** the `NextResponse` to return (`if (x instanceof NextResponse) return x`), plus `isPlatformRole()` for the OPERATOR/REVIEWER-see-everything check. HTTP concerns live here, not in lib/auth.ts |
+| [app/api/guard.ts](app/api/guard.ts) | Authorization glue: `requirePrincipal(req)` / `requireRole(req, ...roles)` return a `Principal` **or** the `NextResponse` to return (`if (x instanceof NextResponse) return x`), plus `isPlatformRole()` for the OPERATOR/REVIEWER-see-everything check, `authorizePaymentWrite(principal, payment)` for the quote/execute/cancel rule (OPERATOR or the sender; returns the response to send or null), and `actorOf(principal)` for the audit actor. HTTP concerns live here, not in lib/auth.ts |
 | `app/api/treasury/*` | MMF routes: `park`, `recall`, `positions` (GET, derived value per position), `accrue`. `errors.ts` holds the single `TreasuryErrorCode` → HTTP status table — add a code there when you add one to lib/treasury |
 | `app/liquidity/` | Treasury dashboard. `page.tsx` is a server component (all chain/DB reads, per-network sections); `mmf-card.tsx` is the `"use client"` MMF card — park form, per-position Recall, Accrue demo control — which POSTs to the treasury routes and then `router.refresh()`es |
 | `contracts/` | Solidity 0.8.24: `MockERC20` (permissionless mint, by design), `PaymentSettlement` escrow, `TokenizedMMF` (operator-gated share fund for parked treasury liquidity; monotonic index, no cross-calls with escrow) |
@@ -96,6 +96,15 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   `requirePrincipal`/`requireRole` guard. Errors stay generic and leak nothing —
   anonymous and invalid keys get the same 401, and a tenant asking for another
   tenant's row gets a **404, never a 403**, so no response confirms an id exists.
+- **The audit actor comes from the key, never the body**: a route audits with
+  `actorOf(principal)` (`"<label> (<ROLE>)"`) — a request field naming an actor would
+  be a forgeable signature, so no handler accepts one. Events raised by the executor
+  or lib/treasury on their own initiative stay `"system"`: that is the machine acting,
+  not a caller.
+- **Write authorization by role**: payments are driven by the OPERATOR or the *sender*
+  (`authorizePaymentWrite`); REVIEWER decides manual reviews (`/review`) and never
+  originates or executes; recipients may watch but not move a payment; treasury
+  park/recall/accrue and entity onboarding are OPERATOR-only platform actions.
 - **Tenant scoping is a query filter, not a post-filter**: an ENTITY principal's
   reads are narrowed in the `where` clause (`isPlatformRole(p) ? {} : { ... }`),
   so a row it may not see is never loaded and cannot leak through a count, an
@@ -128,6 +137,14 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 - `audit()` JSON-stringifies its detail, and `JSON.stringify` **throws on a bigint**.
   Convert base units to strings (`.toString()` / `fromBaseUnits`) before putting them
   in an audit detail.
+
+- **Deleting a Payment silently breaks the audit chain.** `AuditEvent.payment` is an
+  optional relation, so Prisma's default `SetNull` NULLs `paymentId` on the payment's
+  events — and `paymentId` is inside the event hash, so every later event fails
+  verification and the whole suite goes BROKEN. A test that cleans up payments it
+  created must skip any that got audited (see `tests/integration/authz-writes.test.ts`);
+  leaking a few rows is cheaper than a broken chain. Same reason the log is append-only
+  in production.
 
 - `recall_required` is a **quote-time snapshot** frozen into `Payment.quoteJson`. The
   world can move between quoting and execution, so nothing downstream may assume it is

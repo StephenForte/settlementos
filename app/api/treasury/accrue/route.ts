@@ -2,15 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { NETWORKS } from "@/lib/networks";
 import { accrueDaily } from "@/lib/treasury";
 import { treasuryErrorResponse } from "../errors";
-import { requirePrincipal } from "../../guard";
+import { requireRole } from "../../guard";
 
 /**
- * Demo control: advance the network's fund by one day of simulated yield. The
- * index is monotonic, so this is one-way — there is no un-accrue.
+ * Demo control: advance the network's fund by one day of simulated yield.
+ * OPERATOR only, and the index is monotonic, so this is one-way — there is no
+ * un-accrue.
  */
 export async function POST(req: NextRequest) {
-  // Identity only — OPERATOR-gating lands in US-004.
-  const principal = await requirePrincipal(req);
+  const principal = await requireRole(req, "OPERATOR");
   if (principal instanceof NextResponse) return principal;
 
   const body = await req.json().catch(() => ({}));

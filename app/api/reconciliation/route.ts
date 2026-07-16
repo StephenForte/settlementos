@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
-import { requireRole } from "../guard";
+import { actorOf, requireRole } from "../guard";
 
 /** Reconciliation export: one CSV row per payment with full settlement detail. */
 export async function GET(req: NextRequest) {
@@ -69,7 +69,7 @@ export async function GET(req: NextRequest) {
       .join(",");
   });
 
-  await audit("reconciliation.exported", { paymentCount: payments.length });
+  await audit("reconciliation.exported", { paymentCount: payments.length }, undefined, actorOf(principal));
 
   return new NextResponse([header.join(","), ...rows].join("\n"), {
     headers: {

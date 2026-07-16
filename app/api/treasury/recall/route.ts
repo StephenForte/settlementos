@@ -3,12 +3,14 @@ import { ASSETS, fromBaseUnits, type AssetSymbol } from "@/lib/assets";
 import { prisma } from "@/lib/db";
 import { recall } from "@/lib/treasury";
 import { treasuryErrorResponse } from "../errors";
-import { requirePrincipal } from "../../guard";
+import { requireRole } from "../../guard";
 
-/** Recall a parked position T+0 — principal plus accrued yield back to the treasury. */
+/**
+ * Recall a parked position T+0 — principal plus accrued yield back to the
+ * treasury. Platform treasury funds, so OPERATOR only.
+ */
 export async function POST(req: NextRequest) {
-  // Identity only — OPERATOR-gating lands in US-004.
-  const principal = await requirePrincipal(req);
+  const principal = await requireRole(req, "OPERATOR");
   if (principal instanceof NextResponse) return principal;
 
   const body = await req.json().catch(() => ({}));

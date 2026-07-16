@@ -6,7 +6,7 @@ import { CURRENCY_TO_ASSET } from "@/lib/assets";
 import { supportedCorridors, corridorCode } from "@/lib/fx";
 import { NETWORKS } from "@/lib/networks";
 import { isChainReady, loadDeployments } from "@/lib/chain";
-import { isPlatformRole, requirePrincipal } from "../guard";
+import { actorOf, forbidden, isPlatformRole, requirePrincipal } from "../guard";
 
 export async function GET(req: NextRequest) {
   const principal = await requirePrincipal(req);
@@ -40,6 +40,18 @@ export async function POST(req: NextRequest) {
     reference_id = "",
     memo = "",
   } = body;
+
+  // A tenant may only originate payments it is sending; a REVIEWER decides on
+  // manual reviews and never originates one. The comparison runs before the
+  // sender lookup below, so a mismatch cannot reveal whether the sender_id the
+  // caller named exists.
+  if (principal.role === "REVIEWER") return forbidden();
+  if (principal.role === "ENTITY") {
+    const own = principal.entityId
+      ? await prisma.entity.findUnique({ where: { id: principal.entityId } })
+      : null;
+    if (!own || own.externalId !== sender_id) return forbidden();
+  }
 
   if (!NETWORKS[source_network] || !NETWORKS[destination_network]) {
     return NextResponse.json(
@@ -118,7 +130,8 @@ export async function POST(req: NextRequest) {
       corridor: `${source_currency}-${destination_currency}`,
       route: `${source_network} → ${destination_network}`,
     },
-    id
+    id,
+    actorOf(principal)
   );
 
   return NextResponse.json({ payment_id: payment.id, status: payment.status }, { status: 201 });

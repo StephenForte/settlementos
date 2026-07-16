@@ -41,3 +41,31 @@ export async function requireRole(req: Request, ...roles: Role[]): Promise<Princ
 export function isPlatformRole(principal: Principal): boolean {
   return principal.role === "OPERATOR" || principal.role === "REVIEWER";
 }
+
+/**
+ * The audit-trail actor for a principal. The audit log records who the key says
+ * they are, never what a request body claims — a caller cannot forge an actor.
+ */
+export function actorOf(principal: Principal): string {
+  return `${principal.label} (${principal.role})`;
+}
+
+/**
+ * Authorize a write that drives one payment (quote/execute/cancel): the
+ * OPERATOR, or the payment's sender — the party whose funds move. Returns the
+ * response to send, or null when the caller may proceed.
+ *
+ * A REVIEWER decides on manual reviews but does not drive settlement, and the
+ * recipient may watch a payment but not move it: both get 403. A tenant that is
+ * not party to the payment gets the same 404 a nonexistent id gets, so no write
+ * route becomes the existence oracle the read routes refuse to be.
+ */
+export function authorizePaymentWrite(
+  principal: Principal,
+  payment: { senderId: string; recipientId: string }
+): NextResponse | null {
+  if (principal.role === "OPERATOR") return null;
+  if (principal.role !== "ENTITY") return forbidden();
+  if (principal.entityId === payment.senderId) return null;
+  return principal.entityId === payment.recipientId ? forbidden() : notFound();
+}

@@ -67,8 +67,8 @@
         "Tests pass"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Done 2026-07-16. Rules: payments POST = OPERATOR or the ENTITY named as sender_id (compare runs BEFORE the sender lookup so a mismatch cannot reveal whether that sender exists); quote/execute/cancel = OPERATOR or the payment's sender via guard.ts `authorizePaymentWrite()` (recipient -> 403, non-party tenant -> 404 identical to a nonexistent id, REVIEWER -> 403); review = REVIEWER/OPERATOR with `body.reviewer` REMOVED (forgeable audit signature); treasury park/recall/accrue = OPERATOR. Also closed POST /api/entities to OPERATOR (not in the ACs, but it was the last write route open to any authenticated caller — onboarding is platform admin). All 10 audit() call sites under app/api now pass `actorOf(principal)` = \"<label> (<ROLE>)\"; executor/treasury internals stay \"system\" (the machine acting, not a caller). Write routes now use guard's notFound() so their 404 body matches the read routes' byte for byte — they each had their own \"payment not found\" body, which re-opened the existence oracle US-003 closed. GOTCHA (cost 4 failures in 3 untouched files): deleting a Payment NULLs its audit events' paymentId (Prisma SetNull on an optional relation) and paymentId is inside the hash, so test cleanup must skip audited payments — now in AGENTS.md. Verified on a real dev server: operator AND entity-sender both drove create->quote->execute to SETTLED with correct audit actors; recipient-cancel/entity-review/reviewer-accrue/forged-sender all 403; chain INTACT. Suite 163 -> 176."
     },
     {
       "id": "US-005",

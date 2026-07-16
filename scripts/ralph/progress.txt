@@ -128,6 +128,20 @@ Phase 9 Track A: production hardening per AUDIT.md
 - Tenant scoping belongs in the prisma `where` clause
   (`isPlatformRole(p) ? {} : { OR: [...] }`), not a filter over already-fetched rows —
   a row that was never loaded cannot leak via a count, an aggregate, or a new field.
+- DELETING A PAYMENT BREAKS THE AUDIT CHAIN. `AuditEvent.payment` is an optional
+  relation → Prisma's default `SetNull` NULLs `paymentId` on its events, and paymentId
+  is INSIDE the event hash, so every later event fails verification and unrelated test
+  files go BROKEN (`verifyAuditChain` → `{valid:false, brokenAtId:N}`). A test that
+  cleans up payments must skip the ones that got audited. Symptom to recognize: a chain
+  break in a file you did not touch, at a low event id.
+- Identity/authz that a route derives from the caller must never be overridable by the
+  request body (the review route took `body.reviewer` — a forgeable audit signature).
+  Audit with `actorOf(principal)` from app/api/guard.ts; leave machine-initiated events
+  (executor, treasury internals) as "system".
+- When a write route adds an authz check, its not-found body must match the READ
+  route's byte for byte (both `notFound()` from guard.ts) — a write that says
+  "payment not found" while the guard says "not found" re-opens the existence oracle
+  the read routes closed.
 - Adding auth to a route BREAKS every existing test that calls the handler — they all
   construct requests without a key. Fix at the test's request-builder helper (add
   `[API_KEY_HEADER]: API_KEYS.operator` in one place), not call by call.
@@ -258,4 +272,52 @@ Phase 9 Track A: production hardening per AUDIT.md
     and pass `principal.label` into audit() instead of the body's `reviewer` field.
   - `verifyAuditChain()` returns `{ valid: boolean; brokenAtId?: number }` — NOT a
     `{status:"INTACT"}` shape (that string is the UI's rendering of it).
+---
+
+## 2026-07-16 - US-004
+- Enforced role/tenant authorization on every write route and made the audit actor
+  the authenticated principal instead of a request-body field.
+- Rules implemented:
+  - POST /api/payments: OPERATOR, or the ENTITY named as sender_id (403 otherwise).
+    The ownership compare runs BEFORE the sender lookup, so a mismatch cannot reveal
+    whether the named sender exists. REVIEWER 403s — reviewers decide, never originate.
+  - quote/execute/cancel: `authorizePaymentWrite()` — OPERATOR or the payment's sender.
+    Recipient (a party, may read it) → 403; a non-party tenant → 404 identical to a
+    nonexistent id; REVIEWER → 403.
+  - review: requireRole(REVIEWER, OPERATOR); `body.reviewer` REMOVED (it was a
+    forgeable audit signature); actor now `actorOf(principal)`.
+  - treasury park/recall/accrue → OPERATOR only; positions GET already OPERATOR/REVIEWER.
+  - POST /api/entities → OPERATOR only (not in the ACs; onboarding is platform admin,
+    and it was the last write route left open to any authenticated caller).
+  - All 10 audit() call sites under app/api now pass actorOf(principal) =
+    "<label> (<ROLE>)". Executor/treasury internals stay "system" (machine acting).
+- Files: app/api/guard.ts (+actorOf, +authorizePaymentWrite), app/api/payments/route.ts,
+  app/api/payments/[id]/{quote,execute,cancel,review}/route.ts, app/api/entities/route.ts,
+  app/api/reconciliation/route.ts, app/api/treasury/{park,recall,accrue}/route.ts,
+  tests/integration/authz-writes.test.ts (new), AGENTS.md.
+- Suite 163 -> 176, all green; tsc + lint clean.
+- Verified against a real dev server on freshly seeded local chains: operator
+  create→quote→execute settled (audit actors read "Platform operator (OPERATOR)"),
+  an ENTITY drove its OWN payment to SETTLED ("ACME US Inc API key (ENTITY)"),
+  recipient cancel 403, entity-forging-sender 403, entity review 403, reviewer accrue
+  403, audit chain INTACT. Dev chains/DB restored to their pre-verification state.
+- **Learnings for future iterations:**
+  - The 404-vs-403 discipline has to reach the write routes too: quote/execute/cancel
+    each had their own `{error:"payment not found"}` body, which differed from guard's
+    `notFound()` — so a non-party 404 was distinguishable from a nonexistent-id 404.
+    They now all use notFound(). Check this for any new route.
+  - BIG ONE: deleting a Payment NULLs its audit events' paymentId (Prisma SetNull on an
+    optional relation) and paymentId is inside the hash → verifyAuditChain reports
+    BROKEN in *other* test files. My first test run failed 4 tests in 3 files I never
+    touched. Test cleanup must delete only audit-free payments. Documented in AGENTS.md
+    gotchas.
+  - The UI never sent `reviewer` in the review body (app/payments/[id]/page.tsx posts
+    only `{decision}`), so removing it broke nothing — but grep the .tsx callers before
+    changing a route's request contract.
+  - US-005 (safe errors) inherits an inconsistency worth folding in: guard.ts returns
+    `{error:"..."}` while treasury/errors.ts returns `{error, code}`. The new
+    lib/api-errors.ts should reconcile both into `{error_code, message}`.
+  - Still open after this story (scope for later): server components read prisma
+    unscoped (page-level authz), and route ROLE rules exist while lib/ helpers remain
+    callable without a principal.
 ---
