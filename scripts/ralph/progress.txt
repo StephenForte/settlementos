@@ -124,6 +124,17 @@ Phase 9 Track A: production hardening per AUDIT.md
   those through `caughtErrorResponse(e, fallback, context)`, which logs the real error
   and answers canned. `(e as Error).message` in a handler is always a bug.
   Clients read `data.message`, never `data.error`.
+- A payment's status changes ONLY via `transitionStatus()` (lib/transitions.ts): it
+  asserts the move is legal, then compare-and-swaps on the status the caller observed
+  (`updateMany where {id, status: from}`), and audits only if a row actually changed.
+  A raw `prisma.payment.update({data:{status}})` is a bug — it clobbers whoever won a
+  concurrent race. Corollary: a handler must transition from the row it READ, and the
+  executor's `payment = {...payment, ...(await setStatus(...))}` assignments carry the
+  expected value, so they are load-bearing.
+- A lib error with an obvious client meaning should extend `ApiError` with its code
+  (StaleTransitionError -> "conflict") rather than invent a typed code + a per-route
+  status table (treasury's older shape). The routes' existing `caughtErrorResponse`
+  then renders it — a 409 with no mapping code at all.
 - Route handlers must never `await req.json()` bare: an unparseable body becomes an
   unhandled throw that Next renders as a 500 (with a stack, in dev). Always
   `.catch(() => null)` and return a chosen 400.
