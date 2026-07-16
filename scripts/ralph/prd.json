@@ -1,175 +1,299 @@
 {
   "project": "SettlementOS",
-  "branchName": "ralph/phase-8-tokenized-mmf",
-  "description": "Phase 8: Tokenized MMF / overnight liquidity parking (JLTXX-inspired, PRD.md §24). Institutions park idle settlement-treasury balances in a simulated tokenized money-market fund (mockJLT), accrue daily yield, and recall T+0 when a payment needs the liquidity. Guardrails: institutional-only eligibility, explicit per-entity opt-in, park/recall events on the hash-chained audit log, strict segregation from payment escrow. Testnet-only, fully simulated yield, no real securities.",
+  "branchName": "ralph/phase-9-hardening",
+  "description": "Phase 9 Track A: production hardening per AUDIT.md (repo root — read it first; work follows its 'Recommended remediation order'). Six areas: (1) authn/authz/tenant isolation/safe errors, (2) atomic idempotent lifecycle execution, (3) post-settlement compensation saga, (4) fixed-precision monetary model, (5) key custody and approval minimization, (6) audit anchoring + defensive web controls + scalability. Constraints: never break the local demo flow (npm run setup && npm run dev must keep working end to end), keep all AGENTS.md invariants (state machine, append-only hash-chained audit, money types, per-network accounts, compliance fail-safe), and extend the vitest suite with every story.",
   "userStories": [
     {
       "id": "US-001",
-      "title": "TokenizedMMF Solidity contract",
-      "description": "As a developer, I need a permissioned tokenized-MMF contract so idle stablecoin can be parked into share tokens and redeemed, with operator-controlled daily index accrual.",
+      "title": "API-key identity model: ApiKey table, lib/auth.ts, seeded dev keys",
+      "description": "As an operator, I want every API caller to have an authenticated identity so that no route is anonymous. Foundation only — enforcement comes in US-003/US-004.",
       "acceptanceCriteria": [
-        "New contracts/TokenizedMMF.sol (Solidity 0.8.24): holds one approved ERC-20 asset, operator-only subscribe(address onBehalfOf, uint256 assetAmount) pulls the asset and mints shares at the current index, operator-only redeem(address onBehalfOf, uint256 shares) burns shares and returns the asset at the current index",
-        "Operator-only accrue(uint256 newIndex) with require(newIndex >= currentIndex) — index is monotonic, starts at 1e18",
-        "Events emitted: Subscribed(account, assetAmount, shares), Redeemed(account, shares, assetAmount), Accrued(oldIndex, newIndex)",
-        "Non-operator calls to subscribe/redeem/accrue revert",
-        "Funds held by TokenizedMMF are never routed through or held by PaymentSettlement (separate contract, no cross-calls)",
-        "npm run compile succeeds",
-        "Contract behavior tests added under tests/integration/ (subscribe/redeem round-trip at index 1e18, redeem after accrual returns more asset, operator restriction reverts)",
-        "Tests pass",
-        "Typecheck passes"
+        "Prisma model ApiKey: id, keyHash (sha256 hex of the raw key), role enum string ('OPERATOR' | 'REVIEWER' | 'ENTITY'), entityId nullable FK (required when role=ENTITY), label, createdAt",
+        "lib/auth.ts: authenticate(request) reads x-api-key header, falls back to sos_key cookie; returns Principal { role, entityId?, label } or null; sha256 lookup, no plaintext keys stored",
+        "scripts/setup.mjs seeds keys: one OPERATOR, one REVIEWER, one ENTITY key per seeded entity; prints raw keys to console and writes them to gitignored chain/dev-api-keys.json (add to .gitignore if the existing patterns don't already cover it)",
+        "tests/helpers fixture seeds the same key set and exposes raw keys to tests",
+        "Typecheck passes",
+        "Tests pass"
       ],
       "priority": 1,
-      "passes": true,
-      "notes": "Done 2026-07-14. contracts/TokenizedMMF.sol + tests/integration/mmf.test.ts (7 tests). Suite 93 -> 100 green. Yield is paid from a buffer that must be funded (mint mock asset to the MMF address) and the parking account must approve the fund before subscribe — both need wiring into setup.mjs and the test fixture in US-003."
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-002",
-      "title": "TreasuryPosition table and entity MMF eligibility flags",
-      "description": "As a developer, I need to persist parked MMF positions and per-entity opt-in state so guardrails and the treasury view have a source of truth.",
+      "title": "Login page + principal cookie so the demo UI keeps working",
+      "description": "As a demo user, I want to sign in with an API key and have the UI act as that principal so that enforcement (next stories) doesn't break the browser flow.",
       "acceptanceCriteria": [
-        "prisma/schema.prisma gains a TreasuryPosition model: id, network (string network id), asset (string symbol), shares (string, base units), assetAmountIn (string, base units), indexAtEntry (string), status ('ACTIVE' | 'RECALLED', default 'ACTIVE'), txHashPark, txHashRecall (nullable), createdAt, recalledAt (nullable)",
-        "Entity model gains mmfEligible (Boolean, default false) and mmfOptIn (Boolean, default false)",
-        "Prisma client regenerates and the schema applies cleanly: npm run setup completes without error",
-        "Seed in scripts/setup.mjs marks exactly one seeded entity as mmfEligible=true and mmfOptIn=true so the demo has an eligible institution",
-        "Typecheck passes"
-      ],
-      "priority": 2,
-      "passes": true,
-      "notes": "Done 2026-07-14. schema.prisma (TreasuryPosition + Entity.mmfEligible/mmfOptIn), setup.mjs (wipes positions, marks ent_acme_us eligible+opted-in), tests/helpers/deploy.ts ENTITIES mirrored. No migrations dir in this repo — `npm run setup` now runs `prisma generate && prisma db push` before seeding, so it is what applies a schema change. Verified end to end against fresh local chains; suite still 100 green."
-    },
-    {
-      "id": "US-003",
-      "title": "Deploy TokenizedMMF locally and wire it into lib/chain.ts",
-      "description": "As a developer, I need the MMF contract deployed to both local chains and addressable from the app so treasury logic can call it per network.",
-      "acceptanceCriteria": [
-        "scripts/setup.mjs deploys TokenizedMMF (backed by the local mockUSDC) on both local chains and records the address in chain/deployments.json under each network entry",
-        "lib/chain.ts exposes the TokenizedMMF ABI and an address lookup per network id, following the existing pattern used for PaymentSettlement; networks without an MMF deployment resolve to undefined without throwing",
-        "Test fixture deploys TokenizedMMF too (tests/global-setup.ts or helpers), so integration tests can use it",
-        "npm run setup completes; app still boots (npm run dev serves /api/networks)",
-        "Tests pass",
-        "Typecheck passes"
-      ],
-      "priority": 3,
-      "passes": true,
-      "notes": "Done 2026-07-14. setup.mjs + tests/helpers/deploy.ts deploy TokenizedMMF(mockUSDC) on both local chains, mint its 50k mockUSDC yield buffer, and have the treasury approve the fund (subscribe pulls via transferFrom). deployments.json carries contracts.TokenizedMMF per network. lib/chain.ts exposes MMF_ABI, MMF_INDEX_SCALE, and mmfAddress(networkId) -> Address | undefined (never throws; real testnets have no fund). 3 wiring tests added to tests/integration/mmf.test.ts; suite 100 -> 103. Verified npm run setup end to end on fresh local chains and the app serving /api/networks + /liquidity."
-    },
-    {
-      "id": "US-004",
-      "title": "Park: sweep idle treasury balance into the MMF",
-      "description": "As a treasury manager, I want to park idle treasury stablecoin into the tokenized MMF so it earns simulated overnight yield.",
-      "acceptanceCriteria": [
-        "New lib/treasury.ts with park({ networkId, asset, amount }): converts the decimal-string amount via toBaseUnits (bigint end to end, no JS floats), approves and calls subscribe via operatorWrite, creates an ACTIVE TreasuryPosition with the park tx hash",
-        "Park refuses (throws a typed error) when the amount exceeds unreserved treasury balance — reserved liquidity for pending payments can never be parked",
-        "Park writes an audit event (audit(...) from lib/audit.ts) with type TREASURY_PARKED including network, asset, amount, and tx hash",
-        "DB test: parking reduces available treasury liquidity reported by the existing liquidity logic and creates the position row",
-        "Tests pass",
-        "Typecheck passes"
-      ],
-      "priority": 4,
-      "passes": true,
-      "notes": "Done 2026-07-14. lib/treasury.ts (park, freeTreasuryBalance, TreasuryError, TREASURY_* audit actions) + lib/chain.ts (mmfOperatorWrite, tokenAllowance, ensureTreasuryAllowance, ERC20 allowance in the ABI). Park guards on bigint free balance (treasury balance minus RESERVED rows) so reserved liquidity can never be parked, and takes an optional entityId that enforces the mmfEligible+mmfOptIn guardrail at the lib layer (US-007/US-010 reuse it). tests/db/treasury.test.ts adds 3 tests; suite 103 -> 106."
-    },
-    {
-      "id": "US-005",
-      "title": "Recall: T+0 redemption back to the settlement asset",
-      "description": "As a treasury manager, I want to recall a parked position instantly so liquidity is available when a payment needs it.",
-      "acceptanceCriteria": [
-        "lib/treasury.ts gains recall(positionId): redeems the position's shares at the current index via operatorWrite, marks the position RECALLED with recalledAt and the recall tx hash",
-        "Redeemed asset (principal plus any accrued yield) returns to the treasury wallet and is reflected in available liquidity",
-        "Recall writes an audit event TREASURY_RECALLED with position id, shares, asset amount returned, and tx hash",
-        "Recalling a non-ACTIVE position throws; the position row is never deleted (append-only history)",
-        "Integration test: park then recall round-trips the principal at unchanged index",
-        "Tests pass",
-        "Typecheck passes"
-      ],
-      "priority": 5,
-      "passes": true,
-      "notes": "Done 2026-07-14. lib/treasury.ts gains recall(positionId): redeems the position's shares at the live index via mmfOperatorWrite, returns principal + accrued yield to the treasury wallet, flips the row to RECALLED in place (recalledAt + txHashRecall; never deleted), and audits TREASURY_RECALLED (positionId, shares, amount, principal, yield, indexAtEntry/Exit, tx hash). Two new TreasuryErrorCodes: POSITION_NOT_FOUND / POSITION_NOT_ACTIVE. tests/db/treasury.test.ts adds 2 tests (on-chain park->recall round-trip at unchanged index restores treasury balance + availableLiquidity; unknown and already-recalled positions throw and keep the row). Suite 106 -> 108."
-    },
-    {
-      "id": "US-006",
-      "title": "Simulated daily yield accrual",
-      "description": "As a treasury manager, I want parked balances to accrue realistic daily yield so the demo shows the value of overnight parking.",
-      "acceptanceCriteria": [
-        "lib/treasury.ts gains accrueDaily(networkId): computes one day of yield at a configurable annual rate (constant, default 3.5% APY) using integer/bigint index math and calls accrue(newIndex) on the contract",
-        "Position current value is derived (shares x currentIndex), never stored mutably on the position row",
-        "Accrual writes an audit event TREASURY_ACCRUED with old index, new index, and rate",
-        "Unit test: known index and rate produce the expected new index (deterministic, no wall-clock dependence)",
-        "Integration test: park, accrue once, recall returns more than parked principal",
-        "Tests pass",
-        "Typecheck passes"
-      ],
-      "priority": 6,
-      "passes": true,
-      "notes": "Done 2026-07-14. lib/treasury.ts gains accrueDaily(networkId, annualRateBps = MMF_ANNUAL_RATE_BPS) — reads the live index, computes one day of yield with pure bigint math (dailyIndex: index + index*bps/(10_000*365), floor-rounded so the index can never decrease), calls accrue() via mmfOperatorWrite, and audits TREASURY_ACCRUED (old/new index, rate, days, fund, tx hash). Also exports valueOfShares(shares, index) and currentIndexOf(networkId): a position's value is always derived, never stored. New TreasuryErrorCode INVALID_RATE. tests/unit/treasury.test.ts (6 deterministic index-math tests) + 2 db tests (park -> accrue -> recall pays principal + yield out of the buffer, audit chain INTACT; accrue on a fund-less network throws NO_FUND). Suite 108 -> 116. NOTE: accrual is irreversible (monotonic index), so the shared fixture fund is above par once the db suite runs — tests/integration/mmf.test.ts wiring assertions were loosened from par-equality to invariants."
-    },
-    {
-      "id": "US-007",
-      "title": "Treasury API routes: park, recall, positions, accrue",
-      "description": "As a developer at a fintech partner, I want API endpoints for the MMF module so parking can be driven programmatically.",
-      "acceptanceCriteria": [
-        "POST /api/treasury/park body { network, asset, amount, entity_id } -> 200 with { position_id, status, tx_hash }; POST /api/treasury/recall body { position_id } -> 200 with { position_id, status, tx_hash }; GET /api/treasury/positions -> list with current value per position; POST /api/treasury/accrue body { network } -> 200 with { old_index, new_index }",
-        "All request/response JSON fields are snake_case; route handlers stay thin and delegate to lib/treasury.ts",
-        "Park returns 403-style error JSON when the entity is not mmfEligible or not mmfOptIn (guardrail enforced server-side)",
-        "Invalid bodies (missing fields, non-decimal amount, unknown network) return 400 with an error message, matching existing route validation patterns",
-        "API validation tests added following the existing tests/integration API route pattern",
-        "Tests pass",
-        "Typecheck passes"
-      ],
-      "priority": 7,
-      "passes": true,
-      "notes": "Done 2026-07-14. app/api/treasury/{park,recall,positions,accrue}/route.ts, all snake_case and thin (they validate the body, then delegate to lib/treasury). app/api/treasury/errors.ts holds the single TreasuryErrorCode -> HTTP table: NOT_ELIGIBLE 403, POSITION_NOT_FOUND 404, INSUFFICIENT_FREE_BALANCE/POSITION_NOT_ACTIVE 409, the rest 400. GET /positions derives value per position (one index read per network, RPC failure or a missing fund degrades to null rather than 500ing). tests/integration/treasury-api.test.ts adds 6 tests; suite 116 -> 124. Also hardened tests/db/treasury.test.ts: its par-exact assertions now derive from the live index, since the new accrue-route test means any file can leave the shared fixture fund above par."
-    },
-    {
-      "id": "US-008",
-      "title": "Route engine treats parked liquidity as available-with-recall-delay",
-      "description": "As a payment operator, I want quotes to count parked liquidity so a payment can proceed by auto-recalling from the MMF.",
-      "acceptanceCriteria": [
-        "lib/routing.ts liquidity check: when free treasury balance is insufficient but free-plus-parked covers the amount, the quote is still offered and flags recall_required: true (snake_case in API responses)",
-        "lib/executor.ts: when executing a payment whose route requires recall, it recalls the needed position(s) via lib/treasury.ts before reserving liquidity and escrowing; recall failure fails the payment through the existing legal state transitions with liquidity released",
-        "Auto-recall produces the same TREASURY_RECALLED audit event plus a payment-linked audit event referencing the payment id",
-        "Existing quotes with sufficient free liquidity are unchanged (recall_required false or absent)",
-        "Integration test: park most of the treasury, create a payment exceeding free balance, execute, and assert auto-recall then settlement succeeds end to end",
-        "Tests pass",
-        "Typecheck passes"
-      ],
-      "priority": 8,
-      "passes": true,
-      "notes": "Done 2026-07-14. lib/treasury gains parkedBalance(networkId, symbol) (derived value of ACTIVE positions; 0n where no fund) and recallForPayment({networkId, asset, amount, paymentId}) (FIFO oldest-first recall until the shortfall is covered; no-op when free already covers; audits a payment-linked TREASURY_AUTO_RECALLED on top of the per-position TREASURY_RECALLED events). lib/routing: liquidityOk -> liquidityCheck returns {ok, recallRequired}; RouteOption gains recall_required, set on all 4 route branches (false when free liquidity suffices, so existing quotes are unchanged). lib/executor: step 0 auto-recalls before reserving/escrowing when route.recall_required; a failed recall goes APPROVED -> FAILED with the reservation released and nothing on-chain. Route panel shows 'Available - MMF recall (T+0)'. tests/integration/auto-recall.test.ts adds 4 tests; suite 124 -> 128."
-    },
-    {
-      "id": "US-009",
-      "title": "Treasury parking UI on the Liquidity page",
-      "description": "As a treasury manager, I want to see and manage the MMF position from the dashboard so parking is demoable end to end.",
-      "acceptanceCriteria": [
-        "Liquidity page shows a Tokenized MMF card per network with an MMF deployment: parked value, shares, current index, accrued yield since entry, and position status",
-        "Park form (asset amount) and Recall button call the new API routes and refresh the view without a full page reload",
-        "Card visibly labels the product: 'Simulated yield — testnet only' and 'Institutional only'; park controls are disabled when the demo entity is not eligible/opted-in",
-        "Accrue button (demo control) triggers POST /api/treasury/accrue and the displayed value updates",
-        "Networks without an MMF deployment (e.g. real testnets before deploy) show no card or a 'not deployed' placeholder — the page never 500s (public-RPC resilience pattern)",
+        "/login page: paste an API key, POST to /api/auth/login which validates it and sets an httpOnly sos_key cookie; invalid key shows a generic error",
+        "/api/auth/logout clears the cookie",
+        "App shell (sidebar) shows the signed-in principal's label + role and a sign-out link; shows a sign-in link when anonymous",
+        "Server components can resolve the current principal from cookies() (document the pattern in scripts/ralph/CLAUDE.md if non-obvious)",
         "Typecheck passes",
         "Verify in browser using dev-browser skill"
       ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Enforce authz + tenant scoping on all read routes",
+      "description": "As a platform owner, I want reads scoped to the caller so that one tenant cannot see another tenant's data.",
+      "acceptanceCriteria": [
+        "Unauthenticated request to any API route returns 401 with a generic JSON error",
+        "GET /api/payments and /api/payments/[id]: OPERATOR and REVIEWER see all; ENTITY sees only payments where it is sender or recipient (404 on others' payment ids, not 403, to avoid existence leaks)",
+        "GET /api/entities: OPERATOR/REVIEWER see all; ENTITY sees only itself",
+        "GET /api/balances, /api/reconciliation, /api/audit: OPERATOR and REVIEWER only",
+        "GET /api/networks stays public (static registry data, no tenant data)",
+        "Integration tests cover: 401 anonymous, ENTITY cross-tenant 404, ENTITY own-payment 200, REVIEWER read-all 200",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Enforce authz on write routes; audit actor from authenticated principal",
+      "description": "As a platform owner, I want writes authorized by role and the audit trail to record who actually acted, not what the request body claims.",
+      "acceptanceCriteria": [
+        "POST /api/payments: OPERATOR, or ENTITY whose entityId matches sender_id; quote/execute/cancel: OPERATOR or the payment's sender entity",
+        "POST /api/payments/[id]/review: REVIEWER (or OPERATOR) only; the reviewer identity comes from the principal — remove any reviewer/actor field from the request body",
+        "Treasury routes (park/recall/accrue): OPERATOR only; positions GET: OPERATOR/REVIEWER",
+        "audit() actor is the authenticated principal's label/role everywhere a route triggers an audit event (grep for audit( call sites in app/api)",
+        "Integration tests: ENTITY cannot review, ENTITY cannot create a payment with another sender_id, REVIEWER decision audits the reviewer principal as actor",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Safe error handling: generic client errors, details server-side only",
+      "description": "As a platform owner, I want API errors to stop leaking internals (the execute route currently returns raw error messages, including RPC/contract detail).",
+      "acceptanceCriteria": [
+        "lib/api-errors.ts: one helper mapping thrown errors to { error_code, message } with stable codes (unauthorized, forbidden, not_found, invalid_request, conflict, execution_failed, internal); full error logged via console.error on the server only",
+        "All app/api route handlers use the helper for their catch paths; execute route no longer returns raw err.message or stack",
+        "Payment.failureReason in API responses is replaced by a safe summary for ENTITY callers; OPERATOR/REVIEWER still see the stored detail",
+        "Integration test: forced execute failure returns execution_failed with no contract address / RPC URL / stack in the body",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Compare-and-swap status transitions",
+      "description": "As a platform owner, I want every lifecycle transition to be conditional on the expected current status so that concurrent writers cannot corrupt state.",
+      "acceptanceCriteria": [
+        "Executor setStatus (and any raw prisma.payment.update that changes status) becomes updateMany({ where: { id, status: expectedFrom }, data }) — zero rows updated throws a typed StaleTransitionError; assertTransition still runs first",
+        "The review and cancel routes use the same CAS path",
+        "DB test: two simulated concurrent transitions from the same status — exactly one wins, the loser gets StaleTransitionError and the payment ends in a single consistent status",
+        "Audit event is only written when the CAS update succeeded",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Per-payment execution lease claimed atomically with liquidity reservation",
+      "description": "As a platform owner, I want double-execution to be impossible: one lease per payment, claimed in the same DB transaction that reserves liquidity.",
+      "acceptanceCriteria": [
+        "Payment gets executionLeaseId + leasedAt columns; execute claims the lease with a CAS update (WHERE id = ? AND executionLeaseId IS NULL AND status = 'APPROVED') inside the same prisma.$transaction that creates the LiquidityReservation",
+        "Second concurrent execute returns 409 conflict (error_code conflict) without touching chain state",
+        "Lease is cleared on terminal states (SETTLED/FAILED/REFUNDED/COMPENSATED) so operator retries stay possible where the state machine allows",
+        "Integration test: fire two executes concurrently at one APPROVED payment on the local fixture chains — exactly one settles, the other 409s, exactly one escrow tx exists on-chain",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Idempotency keys for write endpoints",
+      "description": "As an API consumer, I want to retry a write safely so that network retries cannot double-create or double-execute.",
+      "acceptanceCriteria": [
+        "IdempotencyRecord prisma model: key (unique per principal), route, requestHash, responseStatus, responseBody, createdAt",
+        "POST /api/payments and POST /api/payments/[id]/execute honor an Idempotency-Key header: same key + same request body replays the stored response; same key + different body returns 422",
+        "Records expire after 24h (checked at read time — no cron needed)",
+        "Integration tests: duplicate create with same key returns the same payment_id and creates one row; conflicting body 422s",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Compensation saga for destination-leg failure after source settlement",
+      "description": "As a sender, I want my funds compensated if the payout leg fails after escrow was already released to treasury, instead of the payment just being marked FAILED.",
+      "acceptanceCriteria": [
+        "New lifecycle statuses in lib/state.ts: COMPENSATION_PENDING (reachable from PAYOUT_PENDING) and COMPENSATED (terminal, from COMPENSATION_PENDING), enforced by assertTransition; state-machine unit tests updated",
+        "Executor: if the destination payout or ledger-credit step throws AFTER settlePayment succeeded, do NOT call failAndRefund (escrow is already released); instead transition to COMPENSATION_PENDING, send a treasury-funded transfer of the source asset amount back to the sender wallet on the source network, then transition to COMPENSATED",
+        "Every compensation step audited (tx hashes as strings, never bigint, in audit detail — AGENTS.md gotcha)",
+        "Liquidity reservation released; integration test forces a destination failure after settlement (injectable test-only failure hook in the executor) and asserts the sender's source-asset balance is restored",
+        "Reconcile on-chain facts before compensating: read the escrow contract's payment status to confirm SETTLED on-chain rather than trusting the DB alone",
+        "Typecheck passes",
+        "Tests pass"
+      ],
       "priority": 9,
-      "passes": true,
-      "notes": "Done 2026-07-14. app/liquidity/page.tsx (server) resolves each network's fund via mmfAddress(), reads the asset it is backed by + the live index + the unreserved treasury balance, and derives every position's value (shares x live index). app/liquidity/mmf-card.tsx ('use client') renders parked value / accrued yield / share index / free-to-park + the position table, and owns the Park form, per-position Recall T+0, and the Accrue-1-day demo control — each POSTs a treasury route then router.refresh()es (no full reload). Labelled 'Institutional only' + 'Simulated yield — testnet only'; park controls disable when no entity is mmfEligible+mmfOptIn. Networks with no fund (base-sepolia) render a 'not deployed' placeholder; an unreadable fund degrades to 'unreachable' rather than 500ing. Verified on a real dev server (no browser MCP in this env): park 200k -> accrue (+19.18 = 3.5%/365 exactly) -> recall returns 200,019.178082, row flips to RECALLED in place, audit chain INTACT. Suite still 128 green."
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-010",
-      "title": "End-to-end guardrail and segregation tests",
-      "description": "As a compliance reviewer, I need proof that parked funds stay segregated and every treasury action is on the audit chain.",
+      "title": "Operator repair view for partial settlements",
+      "description": "As an operator, I want to see payments stuck in partial states and retry/compensate them so that no payment is silently stranded.",
       "acceptanceCriteria": [
-        "DB test: full park -> accrue -> recall flow leaves the audit chain INTACT per the existing audit-chain verifier, with TREASURY_PARKED, TREASURY_ACCRUED, TREASURY_RECALLED events present in order",
-        "Test: park attempt for an entity with mmfOptIn=false is rejected at the lib layer and via the API, and produces no position row",
-        "Test: parked funds are held by the TokenizedMMF contract address, and the PaymentSettlement escrow balance is unchanged by park/recall (segregation assertion via on-chain balanceOf)",
-        "Test: reserved (in-flight payment) liquidity cannot be parked",
-        "Full suite green: npm test passes with no skipped treasury tests",
-        "npx tsc --noEmit and npm run lint pass",
-        "Typecheck passes"
+        "GET /api/payments?stuck=true (OPERATOR only) lists payments in COMPENSATION_PENDING or FAILED-with-escrow states, including the on-chain escrow status read live from the source network (degrade gracefully if RPC is down, per AGENTS.md)",
+        "POST /api/payments/[id]/repair (OPERATOR only) retries the compensation path for COMPENSATION_PENDING payments, idempotently",
+        "Dashboard shows a 'needs attention' count linking to a simple list of stuck payments",
+        "Integration test: a payment forced into COMPENSATION_PENDING is repaired to COMPENSATED via the endpoint",
+        "Typecheck passes",
+        "Tests pass",
+        "Verify in browser using dev-browser skill"
       ],
       "priority": 10,
-      "passes": true,
-      "notes": "Done 2026-07-14. tests/integration/treasury-guardrails.test.ts (new, 3 tests) consolidates the compliance-facing properties: (1) an entity with mmfOptIn=false is refused at the lib layer AND by POST /api/treasury/park (403), with no position row, no shares, no audit event — ACME's opt-in is revoked in a try/finally so the opt-in dimension itself is exercised, not just the never-cleared counterparty; (2) liquidity RESERVED against an in-flight payment cannot be parked (lib TreasuryError + API 409) and the asset never leaves the treasury wallet; (3) a park -> accrue -> recall flow asserts SEGREGATION on-chain (balanceOf(TokenizedMMF) rises by the principal, balanceOf(PaymentSettlement) is unchanged at every step, and recall pays principal + yield back to the treasury without the escrow ever being on the path) and that TREASURY_PARKED, TREASURY_ACCRUED, TREASURY_RECALLED land on the hash chain in that order with verifyAuditChain() INTACT and the position row flipped in place. Suite 128 -> 131 green, tsc + lint clean, nothing skipped."
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Strict canonical decimal validation at the API boundary",
+      "description": "As a platform owner, I want malformed or over-precise amounts rejected so that '1e6', 'Infinity', and 25000.001 JPY can never enter the system.",
+      "acceptanceCriteria": [
+        "lib/money.ts: parseAmount(amountStr, currency) accepting only ^[0-9]+(\\.[0-9]+)?$ with at most the currency's decimal places (JPY 0, USD/SGD 2), no leading '+', no exponent, max 15 integer digits; returns bigint minor units; throws typed MoneyError otherwise — excess precision is REJECTED, never truncated",
+        "POST /api/payments validates amount via parseAmount and stores the canonical string form; invalid input returns 400 invalid_request with a safe message",
+        "Unit tests: scientific notation, Infinity, NaN, negative, empty, '25000.001' JPY rejected; '25000.00' USD, '0.01' USD, '100' JPY accepted with correct minor units",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "FX and fee math on bigint minor units",
+      "description": "As a platform owner, I want quoting/fee arithmetic off JS floats so that every quoted figure is exact.",
+      "acceptanceCriteria": [
+        "lib/fx.ts computes spread, slippage, platform fee, and destination amount in bigint minor units (basis-point math with explicit floor rounding), converting to display strings only at the edge",
+        "Quote API responses are unchanged in shape (strings); update test fixtures where floor-rounding legitimately shifts the last minor unit and call it out in notes",
+        "No Number() arithmetic on monetary values remains in lib/fx.ts (Number allowed only for bps constants and display formatting)",
+        "Unit tests: known-rate fixtures assert exact bigint results incl. JPY 0-decimals and a value that would lose precision as a float (> 2^53 minor units)",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "Liquidity and routing math on bigint",
+      "description": "As a platform owner, I want liquidity checks exact so that reservation accounting can never drift from float rounding.",
+      "acceptanceCriteria": [
+        "lib/routing.ts availableLiquidity/liquidityOk and reservation sums use bigint end to end (reserved amounts parsed from DB strings via lib/money.ts)",
+        "Executor liquidity reservation + treasury.freeTreasuryBalance callers agree on bigint units (treasury.ts is already bigint — do not regress it)",
+        "Import direction preserved: routing → treasury only (AGENTS.md gotcha)",
+        "Unit test: liquidity boundary exact-equal passes, one minor unit over fails (both directions)",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-014",
+      "title": "Exact per-payment allowances instead of unlimited approvals",
+      "description": "As a security owner, I want entity wallets to grant only the allowance each escrow needs so that a compromised contract cannot drain wallets.",
+      "acceptanceCriteria": [
+        "scripts/setup.mjs and scripts/deploy-testnet.mjs stop granting MAX allowance from entity wallets",
+        "Executor ensures an exact allowance before initiatePayment: read current allowance; if insufficient, entity wallet approves exactly the escrow amount; the escrow call that depends on the approval tx uses retryOnReplicaLag (lib/chain.ts)",
+        "Existing deployed testnets keep working: allowance >= needed short-circuits (already-granted MAX allowances are fine)",
+        "Integration test: fresh entity wallet with zero prior allowance settles a payment; allowance after settlement is 0 (fully consumed)",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-015",
+      "title": "Signer abstraction + server-only chain modules",
+      "description": "As a security owner, I want signing behind one interface and chain/key code impossible to bundle client-side, so custody can later move to a KMS without touching callers.",
+      "acceptanceCriteria": [
+        "lib/signers.ts: Signer interface (address + viem account construction) with LocalKeySigner implementation; lib/chain.ts wallet construction goes through it; a KmsSigner stub documents the extension point (throws 'not configured')",
+        "import 'server-only' added to lib/chain.ts, lib/signers.ts, lib/treasury.ts, lib/executor.ts; app builds (npm run build) — lib/networks.ts must stay client-safe",
+        "Deployment credentials separated from runtime: deploy scripts read DEPLOYER_PRIVATE_KEY directly; runtime operator writes resolve via the signer layer; document the boundary in AGENTS.md",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-016",
+      "title": "Atomic domain-change + audit-event writes",
+      "description": "As an auditor, I want every audit event committed in the same transaction as the change it describes so the log can never disagree with state.",
+      "acceptanceCriteria": [
+        "audit() accepts an optional Prisma transaction client; all status-changing paths (executor setStatus CAS, review, cancel, treasury park/recall/accrue) write domain change + audit event in one prisma.$transaction",
+        "Hash-chain serialization is preserved (the findFirst-for-prevHash and create stay inside the same tx; document the serialization guarantee in a comment)",
+        "DB test: a transaction forced to fail after the domain write leaves NO audit event and NO domain change (both roll back together)",
+        "Audit chain verifier still reports INTACT over the full suite run",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-017",
+      "title": "Signed audit checkpoints + incremental verification",
+      "description": "As an auditor, I want periodically signed chain roots so tampering is detectable even by someone with DB write access, and verification stays fast as the log grows.",
+      "acceptanceCriteria": [
+        "AuditCheckpoint prisma model: id, lastEventId, chainHash, signature (HMAC-SHA256 over chainHash with AUDIT_ANCHOR_KEY from .env), createdAt; checkpoint written automatically every 100 events (configurable) and on demand via POST /api/audit/checkpoint (OPERATOR only)",
+        "GET /api/audit verifies incrementally: validate the latest checkpoint signature, then re-hash only events after it; response includes checkpoint coverage info",
+        "Tamper test: modifying an event before a signed checkpoint is detected via signature mismatch even if the attacker re-hashes the whole chain (they lack AUDIT_ANCHOR_KEY)",
+        "Missing AUDIT_ANCHOR_KEY degrades gracefully to full-chain verification with a warning flag in the response (demo stays functional)",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-018",
+      "title": "Security headers, rate limits, pagination, bounded exports",
+      "description": "As a platform owner, I want baseline web hardening so the app is safe to put behind a real URL.",
+      "acceptanceCriteria": [
+        "next.config.ts sets security headers on all routes: Content-Security-Policy (self + inline styles as Tailwind requires), X-Content-Type-Options nosniff, Referrer-Policy, X-Frame-Options DENY, Permissions-Policy",
+        "Simple in-memory rate limiter keyed by principal (fallback: IP) on write endpoints: 429 with Retry-After beyond 30 writes/min; JSON body size capped at 64KB with 413 beyond",
+        "GET /api/payments and GET /api/audit paginated (limit default 50 max 200, cursor param); UI list pages pass paging params; reconciliation CSV bounded to a date range (query params, default last 30 days) and writes one summary audit event per export instead of auditing every download row (AUDIT.md rationale)",
+        "Integration tests: 429 after burst, 413 oversize body, pagination cursor walks the full set exactly once",
+        "Typecheck passes",
+        "Tests pass",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 18,
+      "passes": false,
+      "notes": ""
     }
   ]
 }
