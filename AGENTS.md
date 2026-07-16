@@ -50,7 +50,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/chain.ts](lib/chain.ts) | viem chain adapter. Loads/merges `chain/deployments*.json`, per-network accounts via `accountsFor()`, contract ABIs (`SETTLEMENT_ABI`, `MMF_ABI`), `operatorWrite()` (escrow) / `mmfOperatorWrite()` (fund), `treasuryTokenTransfer()`, `ensureTreasuryAllowance()`, `mmfAddress()` (undefined where no fund is deployed) |
 | [lib/state.ts](lib/state.ts) | Payment lifecycle state machine; `assertTransition()` enforces legal moves. Pure — no DB, no framework |
 | [lib/transitions.ts](lib/transitions.ts) | The one way a payment's status changes: `transitionStatus(payment, to, {data, detail, action, actor})` asserts the move is legal, then compare-and-swaps on the observed status (`updateMany where {id, status: from}`). Zero rows → `StaleTransitionError` (an `ApiError` with code `conflict`, so `caughtErrorResponse` renders a 409 with no mapping). Audits only after a successful swap |
-| [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: execution-lease claim, auto-recall of parked MMF liquidity, liquidity reservation, escrow, FX, payout, and the failure exits — refund while the escrow is held, **compensation** once it is released (`compensateSender`). `ExecutionLeaseError` (an `ApiError` with code `conflict` → 409, like `StaleTransitionError`) is a second attempt losing the lease. `executorTestHooks` are the test-only throw points for the two failure exits |
+| [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: execution-lease claim, auto-recall of parked MMF liquidity, liquidity reservation, escrow, FX, payout, and the failure exits — refund while the escrow is held, **compensation** once it is released (`compensateSender`). `ExecutionLeaseError` (an `ApiError` with code `conflict` → 409, like `StaleTransitionError`) is a second attempt losing the lease. Also the operator-repair half: `stuckPayments()` (payments still holding funds, each with its escrow state read live) and `repairCompensation()` (re-run a compensation transfer that failed). `executorTestHooks` are the test-only throw points for every failure exit |
 | [lib/routing.ts](lib/routing.ts) | Route quotes (instant/batched/bridged), treasury liquidity checks. Parked MMF liquidity counts as available: free-short-but-parked-covers still quotes, flagged `recall_required` |
 | [lib/fx.ts](lib/fx.ts) | Simulated FX: static mid rates, spread + tiered slippage, platform fee |
 | [lib/compliance.ts](lib/compliance.ts) | Compliance gate (KYB, sanctions, wallet/tx/corridor risk) → PASS/FAIL/MANUAL_REVIEW. Sanctions + wallet screening dispatch to real providers when env config is set (`OPENSANCTIONS_API_KEY`, `CHAINALYSIS_ORACLE_RPC_URL`), mocks otherwise |
@@ -181,6 +181,17 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   from the DB status — they disagree exactly when a step threw mid-flight, which is the
   only time this path runs. The DB says what the attempt *tried*; the chain says what
   landed. The status list is only a fallback for when the read itself fails.
+- **A stranded payment must stay visible**: `stuckPayments()` answers "who is still
+  holding a sender's funds" from the DB *and* the chain — a FAILED payment is only
+  really finished if its escrow refunded. An escrow read that fails degrades to
+  `escrowState: null` and the payment is **kept** in the list: unknown is not the
+  same as fine, and a flaky RPC must never make a stranded payment vanish from the
+  one view that would surface it.
+- **Repairing is not retrying**: `repairCompensation()` re-sends real money, so it
+  claims the same execution lease (CAS on COMPENSATION_PENDING + `executionLeaseId`
+  null), re-reads the escrow (only a *released* escrow may be repaid from treasury),
+  and returns an already-COMPENSATED payment untouched rather than paying twice.
+  Nothing retries a compensation automatically — that decision is an operator's.
 - **Recall before reserve**: when a route carries `recall_required`, the executor
   redeems the parked positions *before* it reserves liquidity or escrows anything —
   otherwise it would reserve against a balance that is still sitting in the fund.
@@ -279,6 +290,10 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   contracts** but reuses the generated treasury/entity wallets (and their gas dust).
 - Polygon Amoy enforces a ~30 gwei minimum gas price (Base Sepolia is sub-gwei),
   so Amoy gas-dust targets in the deploy script are ~100× higher.
+- A **stale `.next/` cache** can make every API route 404 while pages still render
+  (seen live after a branch's worth of route changes: `/api/networks` 404'd too).
+  `rm -rf .next` and restart before believing a 404 you cannot explain — the routes
+  were fine.
 - Two Hardhat configs: `hardhat.config.cjs` (+ `.polygon.cjs` for chainId 31338).
   Artifacts land in `chain/artifacts/` (gitignored); `npm run compile` before
   anything that reads them.

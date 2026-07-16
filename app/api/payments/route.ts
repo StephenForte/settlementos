@@ -6,6 +6,7 @@ import { CURRENCY_TO_ASSET } from "@/lib/assets";
 import { supportedCorridors, corridorCode } from "@/lib/fx";
 import { NETWORKS } from "@/lib/networks";
 import { isChainReady, loadDeployments } from "@/lib/chain";
+import { stuckPayments } from "@/lib/executor";
 import {
   actorOf,
   forbidden,
@@ -13,12 +14,21 @@ import {
   isPlatformRole,
   notFound,
   requirePrincipal,
+  requireRole,
   scrubFailureReason,
 } from "../guard";
 import { beginIdempotency } from "../idempotency";
 import type { Principal } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
+  // The repair view is an operator tool: it reports which payments are holding a
+  // sender's funds, and every row carries the unscrubbed failureReason.
+  if (req.nextUrl.searchParams.get("stuck") === "true") {
+    const operator = await requireRole(req, "OPERATOR");
+    if (operator instanceof NextResponse) return operator;
+    return listStuckPayments();
+  }
+
   const principal = await requirePrincipal(req);
   if (principal instanceof NextResponse) return principal;
 
@@ -31,6 +41,19 @@ export async function GET(req: NextRequest) {
     include: { sender: true, recipient: true },
   });
   return NextResponse.json({ payments: payments.map((p) => scrubFailureReason(principal, p)) });
+}
+
+/**
+ * Payments that may still be holding funds, each with its escrow state read live
+ * from the source chain. `escrow_state` is null where that read failed — the row
+ * is listed anyway, since an unreadable escrow is exactly what an operator needs
+ * to know about (see stuckPayments).
+ */
+async function listStuckPayments(): Promise<NextResponse> {
+  const stuck = await stuckPayments();
+  return NextResponse.json({
+    payments: stuck.map(({ payment, escrowState }) => ({ ...payment, escrow_state: escrowState })),
+  });
 }
 
 export async function POST(req: NextRequest) {

@@ -626,3 +626,52 @@ Phase 9 Track A: production hardening per AUDIT.md
     cannot be reached without the test hook. The demo flow is untouched (the happy path
     and the pre-escrow failure path both still run in the suite).
 ---
+
+## 2026-07-16 - US-010
+- Operator repair view for partial settlements: the stuck list, the repair endpoint,
+  and the dashboard "needs attention" entry point.
+- Files changed:
+  - lib/executor.ts — split compensateSender into the transition + runCompensationTransfer,
+    so a repair can re-enter the transfer half; new compensationContextFor() derives
+    amount/network/wallet from the row alone (the executor's own catch now uses it too, so
+    the two paths cannot disagree about what to pay); new exports stuckPayments() and
+    repairCompensation(); walletOn() hoisted to module scope; two new test hooks
+    (beforeCompensationTransfer, beforeRefund).
+  - app/api/payments/route.ts — GET ?stuck=true (OPERATOR only), rows carry escrow_state.
+  - app/api/payments/[id]/repair/route.ts — new, OPERATOR only, wrapped in the idempotency scope.
+  - app/payments/stuck/{page.tsx,repair-list.tsx} — server page + "use client" Repair button.
+  - app/page.tsx — Needs Attention card, counted from the same stuckPayments() the list uses.
+  - tests/integration/repair.test.ts — 9 tests. Suite 214 -> 223.
+  - AGENTS.md — stuck-visibility + repair-is-not-retry invariants, .next-cache gotcha.
+- **Learnings for future iterations:**
+  - DECISION (AC1 says "FAILED-with-escrow states"): which FAILED payments qualify cannot be
+    answered from the DB — FAILED is only really finished if the escrow refunded. So the list
+    reads each candidate's escrow live and filters on the CHAIN's answer, keeping COMPENSATION_PENDING
+    unconditionally and dropping only FAILED-with-escrow-REFUNDED. Candidates are narrowed by
+    `onchainPaymentId != null` first: a payment that failed before escrow (bad quote, no liquidity)
+    holds nothing.
+  - DECISION (graceful degrade, per the AGENTS public-RPC invariant): an unreadable escrow does NOT
+    drop the row — it lists with escrow_state null. Dropping it would let a flaky RPC hide exactly
+    the payment an operator needs to see. Same reason repairCompensation REFUSES on an unreadable
+    escrow: it will not send treasury funds against an escrow it cannot confirm was released, and
+    the transfer would run on that same dead network anyway.
+  - "Idempotently" for something that moves money is three separate guards, not one: the status
+    check (COMPENSATED returns untouched, never pays twice), the lease CAS (two concurrent repairs
+    -> one 200 + one 409), and the Idempotency-Key scope (a retried HTTP request replays the first
+    answer). The test asserts all three ON CHAIN (sender balance) rather than by counting rows.
+  - Test hooks earn their keep: forcing a state by raw prisma status updates fights the state
+    machine and proves less. beforeCompensationTransfer produces a REAL stuck payment (escrow truly
+    SETTLED on-chain, sender truly short); beforeRefund produces the FAILED-with-escrow-INITIATED
+    case, whose cleanup (operatorWrite failAndRefund) then doubles as the assertion that the row
+    leaves the list when the chain facts change — same status, different chain.
+  - A page that shows unscrubbed failureReason and drives a treasury transfer checks
+    currentPrincipal() itself (app/payments/stuck) instead of following the other pages' render-for-
+    anyone habit. The API route enforces the same rule independently — the page gate is UI, not
+    security.
+  - Browser verification without browser tooling: temporarily default the executorTestHooks to
+    throw, drive create->quote->execute over curl (the stuck payment PERSISTS in the dev DB), revert
+    the hook, then fetch the rendered pages and grep the HTML. Server-rendered text is split by JSX
+    into `foo<!-- -->bar` nodes, so grep short fragments, not whole sentences.
+  - GOTCHA (cost ~15 min): a stale .next/ cache 404'd EVERY api route — including untouched ones
+    like /api/networks — while pages rendered fine. rm -rf .next and restart. Now in AGENTS.md.
+---

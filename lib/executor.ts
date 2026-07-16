@@ -23,6 +23,7 @@ import {
   onchainPaymentState,
   operatorWrite,
   treasuryTokenTransfer,
+  type OnchainPaymentState,
 } from "./chain";
 import { availableLiquidity, type RouteOption } from "./routing";
 import { recallForPayment } from "./treasury";
@@ -56,6 +57,14 @@ export const executorTestHooks: {
   beforeSettlement?: () => void | Promise<void>;
   /** Throws in the payout leg, with the source chain already settled — the compensation path. */
   beforeDestinationPayout?: () => void | Promise<void>;
+  /** Throws in the on-chain refund, stranding a held escrow at FAILED. */
+  beforeRefund?: () => void | Promise<void>;
+  /**
+   * Throws inside the compensation transfer itself, stranding the payment in
+   * COMPENSATION_PENDING — the state an operator repair exists to fix. Runs on the
+   * repair's transfer too, so a test must clear it before repairing.
+   */
+  beforeCompensationTransfer?: () => void | Promise<void>;
 } = {};
 
 // Every status change the executor makes is a compare-and-swap against the
@@ -70,6 +79,11 @@ async function setStatus(
   auditDetail: Record<string, unknown> = {}
 ) {
   return transitionStatus(payment, to, { data: dbData, detail: auditDetail });
+}
+
+/** An entity's wallet on `networkId` — addresses differ per network. */
+function walletOn(wallets: { network: string; address: string }[], networkId: string) {
+  return wallets.find((w) => w.network === networkId) ?? wallets[0];
 }
 
 function selectedRoute(payment: Payment): RouteOption {
@@ -140,8 +154,6 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
   const sourceToken = dep.networks[sourceNet].contracts.tokens[sourceAsset.symbol];
   const destAmount = route.estimated_destination_amount;
 
-  const walletOn = (wallets: { network: string; address: string }[], networkId: string) =>
-    wallets.find((w) => w.network === networkId) ?? wallets[0];
   const senderWallet = walletOn(payment.sender.wallets, sourceNet);
   const recipientWallet = walletOn(payment.recipient.wallets, destNet);
   if (!senderWallet || !recipientWallet) throw new Error("Sender and recipient must have registered wallets");
@@ -348,14 +360,7 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
     // Escrow already released to the treasury: nothing to refund, so make the
     // sender whole out of treasury instead.
     if (escrow === "SETTLED") {
-      return await compensateSender(payment, {
-        reason,
-        network: sourceNet,
-        tokenSymbol: sourceAsset.symbol,
-        amount: payment.amount,
-        amountUnits,
-        sender: senderWallet.address as Address,
-      });
+      return await compensateSender(payment, { ...compensationContextFor(payment), reason });
     }
 
     // Funds still escrowed on the source network: refund on-chain.
@@ -364,6 +369,7 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
       (escrow === null && ["SUBMITTED_ONCHAIN", "CONFIRMED_ONCHAIN"].includes(payment.status));
     if (escrowHeld) {
       try {
+        await executorTestHooks.beforeRefund?.();
         await operatorWrite(sourceNet, "failAndRefund", [pid, reason.slice(0, 200)]);
         await audit("payment.onchain_refund", { network: sourceNet, reason }, payment.id);
         payment = { ...payment, ...(await setStatus(payment, "FAILED", { failureReason: reason })) };
@@ -396,14 +402,33 @@ interface CompensationContext {
 }
 
 /**
+ * What compensating this payment would cost and where it would go, derived from
+ * the row alone — so the executor's own catch and a later operator repair can
+ * never disagree about the amount. The network is the payment's source network,
+ * which is also what every quoted route carries as `source_network` (lib/routing
+ * reads it off this same column).
+ */
+function compensationContextFor(payment: PaymentWithParties): CompensationContext {
+  const network = payment.sourceNetwork;
+  const asset = assetForCurrency(payment.sourceCurrency);
+  const token = loadDeployments().networks[network].contracts.tokens[asset.symbol];
+  const senderWallet = walletOn(payment.sender.wallets, network);
+  if (!senderWallet) throw new Error("Sender has no registered wallet");
+  return {
+    reason: payment.failureReason ?? "destination leg failed after settlement",
+    network,
+    tokenSymbol: asset.symbol,
+    amount: payment.amount,
+    amountUnits: toBaseUnits(payment.amount, token.decimals),
+    sender: senderWallet.address as Address,
+  };
+}
+
+/**
  * Compensating action for a destination leg that failed *after* the source escrow
  * was released. `failAndRefund` is not available here — the escrow row is SETTLED
  * and its balance has already moved to the treasury — so the treasury sends the
  * source amount straight back to the sender's wallet on the source network.
- *
- * A failed transfer leaves the payment in COMPENSATION_PENDING rather than FAILED:
- * the sender's funds are genuinely still missing, and that is the state an operator
- * repairs. Compensation is one-way, so nothing here retries automatically.
  */
 async function compensateSender(payment: Payment, ctx: CompensationContext): Promise<Payment> {
   const compensating = await transitionStatus(payment, "COMPENSATION_PENDING", {
@@ -415,8 +440,22 @@ async function compensateSender(payment: Payment, ctx: CompensationContext): Pro
       escrowState: "SETTLED",
     },
   });
+  return runCompensationTransfer(compensating, ctx);
+}
 
+/**
+ * The transfer half of the saga, entered with the payment already in
+ * COMPENSATION_PENDING — by the executor's catch, or by an operator repair of an
+ * attempt whose transfer failed.
+ *
+ * A failed transfer leaves the payment in COMPENSATION_PENDING rather than FAILED:
+ * the sender's funds are genuinely still missing, and that is the state a repair
+ * re-enters. Nothing retries automatically — compensation moves real money, so the
+ * decision to send it again is an operator's.
+ */
+async function runCompensationTransfer(compensating: Payment, ctx: CompensationContext): Promise<Payment> {
   try {
+    await executorTestHooks.beforeCompensationTransfer?.();
     const tx = await treasuryTokenTransfer(ctx.network, ctx.tokenSymbol, ctx.sender, ctx.amountUnits);
     await audit(
       "payment.compensation_transfer",
@@ -428,7 +467,7 @@ async function compensateSender(payment: Payment, ctx: CompensationContext): Pro
         to: ctx.sender,
         txHash: tx.hash,
       },
-      payment.id
+      compensating.id
     );
     return await transitionStatus(compensating, "COMPENSATED", {
       data: { compensationTxHash: tx.hash },
@@ -443,8 +482,113 @@ async function compensateSender(payment: Payment, ctx: CompensationContext): Pro
         amount: ctx.amount,
         reason: err instanceof Error ? err.message : String(err),
       },
-      payment.id
+      compensating.id
     );
     return compensating;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Operator repair. Both entry points below exist because an execution attempt can
+// end with the sender's money neither delivered nor returned — a compensation
+// transfer that itself failed, or a refund leg that never landed. Nothing polls
+// for these, so an operator has to be able to see and finish them by hand.
+// ---------------------------------------------------------------------------
+
+export interface StuckPayment {
+  payment: PaymentWithParties;
+  /** Live escrow state on the source network. Null when the RPC read failed. */
+  escrowState: OnchainPaymentState | null;
+}
+
+/**
+ * Payments an operator may still owe an action: the compensation transfers that
+ * failed, plus the FAILED attempts whose escrow was never resolved on-chain.
+ *
+ * The DB cannot answer this alone — a FAILED payment is only really finished if
+ * its escrow came back — so each candidate is checked against its source chain.
+ * A read that fails degrades to `escrowState: null` and the payment is *kept* in
+ * the list: unknown is not the same as fine, and a flaky RPC must not make a
+ * stranded payment disappear from the one view that would surface it.
+ */
+export async function stuckPayments(): Promise<StuckPayment[]> {
+  const candidates = await prisma.payment.findMany({
+    where: {
+      OR: [
+        { status: "COMPENSATION_PENDING" },
+        // Nothing was escrowed without an onchainPaymentId, so those FAILED
+        // payments (rejected quote, insufficient liquidity) hold no funds.
+        { status: "FAILED", onchainPaymentId: { not: null } },
+      ],
+    },
+    include: { sender: { include: { wallets: true } }, recipient: { include: { wallets: true } } },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const rows = await Promise.all(
+    candidates.map(async (payment) => ({
+      payment,
+      escrowState: await onchainPaymentState(payment.sourceNetwork, onchainPaymentId(payment.id)).catch(
+        () => null
+      ),
+    }))
+  );
+
+  // A FAILED payment whose escrow really did refund is done: the sender has their
+  // funds back and only the REFUNDED transition is missing. Everything else here
+  // has money sitting somewhere it does not belong.
+  return rows.filter((r) => r.payment.status === "COMPENSATION_PENDING" || r.escrowState !== "REFUNDED");
+}
+
+/**
+ * Re-run the compensation transfer for a payment stuck in COMPENSATION_PENDING.
+ *
+ * Idempotent in the sense that matters for something that moves money: a payment
+ * already COMPENSATED is returned untouched rather than paid twice, and the lease
+ * makes two concurrent repairs impossible. The escrow is re-read first for the
+ * same reason the executor reads it — only a *released* escrow may be repaid from
+ * treasury, and the DB status alone is not evidence of that.
+ */
+export async function repairCompensation(paymentId: string): Promise<Payment> {
+  const payment = await prisma.payment.findUniqueOrThrow({
+    where: { id: paymentId },
+    include: { sender: { include: { wallets: true } }, recipient: { include: { wallets: true } } },
+  });
+
+  if (payment.status === "COMPENSATED") return payment;
+  if (payment.status !== "COMPENSATION_PENDING") {
+    throw new ApiError("conflict", `payment cannot be repaired from status ${payment.status}`);
+  }
+
+  // Same shape as the executor's claim: the CAS, not the check above, is what
+  // decides the race between two operators clicking Repair at once.
+  const leaseId = randomUUID();
+  const { count } = await prisma.payment.updateMany({
+    where: { id: paymentId, status: "COMPENSATION_PENDING", executionLeaseId: null },
+    data: { executionLeaseId: leaseId, leasedAt: new Date() },
+  });
+  if (count === 0) throw new ExecutionLeaseError(paymentId);
+
+  try {
+    const ctx = compensationContextFor(payment);
+    const escrow = await onchainPaymentState(ctx.network, onchainPaymentId(payment.id)).catch(() => null);
+    // Stopping on an unreadable escrow costs nothing: the transfer would run on
+    // that same unreachable network anyway.
+    if (escrow === null) {
+      throw new ApiError("conflict", "source network unreachable — escrow state could not be confirmed");
+    }
+    if (escrow !== "SETTLED") {
+      throw new ApiError("conflict", "source escrow was not released — this payment is not owed compensation");
+    }
+    return await runCompensationTransfer({ ...payment, executionLeaseId: leaseId }, ctx);
+  } finally {
+    // transitionStatus frees the lease at COMPENSATED; this catches the exits that
+    // never reach a transition (an unreadable escrow, a transfer that threw).
+    await prisma.payment
+      .updateMany({
+        where: { id: paymentId, executionLeaseId: leaseId },
+        data: { executionLeaseId: null, leasedAt: null },
+      })
+      .catch(() => {});
   }
 }

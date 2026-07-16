@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { formatAmount } from "@/lib/assets";
 import { explorerTxUrl } from "@/lib/networks";
 import { usdEquivalent } from "@/lib/fx";
+import { stuckPayments } from "@/lib/executor";
 import { Card, Stat, StatusBadge, Hash } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -12,6 +13,9 @@ export default async function DashboardHome() {
     include: { sender: true, recipient: true },
     orderBy: { createdAt: "desc" },
   });
+  // The same read the repair view does, so the count and the list can never
+  // disagree. Chain reads, so it degrades to zero rather than breaking the page.
+  const stuck = await stuckPayments().catch(() => []);
 
   const settled = payments.filter((p) => p.status === "SETTLED");
   const volumeUsd = settled.reduce((sum, p) => {
@@ -53,6 +57,20 @@ export default async function DashboardHome() {
         <Stat label="In Flight" value={String(pending.length)} sub={`${inReview.length} awaiting review`} />
         <Stat label="Failed / Rejected" value={String(failed.length)} />
       </div>
+
+      {stuck.length > 0 && (
+        <Card title="Needs Attention">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-rose-300">
+              {stuck.length} payment{stuck.length === 1 ? "" : "s"} holding funds that were neither
+              delivered nor returned
+            </span>
+            <Link href="/payments/stuck" className="text-emerald-400 hover:underline">
+              Repair →
+            </Link>
+          </div>
+        </Card>
+      )}
 
       {inReview.length > 0 && (
         <Card title="Compliance Alerts">
