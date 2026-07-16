@@ -7,7 +7,7 @@ AGENTS.md above. README.md has full docs, DEMO.md the demo script, PRD.md the
 product requirements + phase roadmap (canonical; updated 2026-07-08 with
 implementation status and the JLTXX-inspired tokenized-MMF phase).
 
-## State (2026-07-14)
+## State (2026-07-15)
 - Phases 1–4 complete: single-chain settlement; FX/routing/compliance/liquidity;
   multi-chain demo (base-local 31337 + polygon-local 31338, simulated bridge);
   real Base Sepolia (84532) with public Basescan links.
@@ -47,11 +47,19 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
   park→accrue→recall) with TREASURY_* events on the intact audit chain.
   Suite now 131 tests; full park→accrue→recall cycle also verified visually
   in the browser (+4.79 on 50k/day = 3.5%/365 exactly).
-- NEXT: fund deployer 0x5128889F20Ec13e0Be38b2BeBC568594159B652d with ≥0.4 POL
-  on Polygon Amoy (faucet.polygon.technology / Alchemy), then
-  `npm run deploy:polygon-amoy` and verify with a bridged
-  base-sepolia → polygon-amoy payment (public explorer links on both chains).
-  Then Phase 9 (production hardening + regulatory package) per PRD.
+- Phase 7 deploy complete (2026-07-15): contracts live on Polygon Amoy —
+  PaymentSettlement at the SAME address as Base Sepolia
+  (0x9d8b8b7c476ab02306046f3da719d380fa0456aa, same deployer nonce sequence).
+  First real bridged payment SETTLED: $25k USD→JPY, escrow+settle on Base
+  Sepolia, mockJPY payout on Amoy (~7s). First attempt FAILED live on public
+  RPC replica lag (settle + auto-refund both reverted "not initiated");
+  fixed with `retryOnReplicaLag` in `operatorWrite` (lib/chain.ts, see AGENTS
+  gotcha), stuck escrow recovered via manual failAndRefund + hash-correct
+  audit events (chain INTACT). Suite now 135 tests. Deployer has ~0.33 POL
+  left on Amoy (deploy cost ~0.23; faucet drips ~0.185/day if more needed —
+  see auto-memory polygon-amoy-faucet-lessons).
+- NEXT: Phase 9 (production hardening per AUDIT.md + regulatory package) per
+  PRD.
 
 ## Base Sepolia (live)
 - Deployed 2026-07-07, verified with a real settled payment.

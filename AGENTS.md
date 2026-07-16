@@ -169,6 +169,13 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   (`/api/networks`).
 - Local chains mine instantly; Base Sepolia and Polygon Amoy have ~2s blocks.
   Execution is synchronous by design (a settled payment ≈ 8–10s on a real testnet).
+- **Public RPCs are load-balanced replicas**: a write that depends on state from a
+  just-confirmed tx can be gas-estimated against a node that hasn't seen that block
+  yet and revert (seen live: `settlePayment` → "not initiated" seconds after the
+  escrow confirmed, and the auto-refund failed the same way). `operatorWrite` wraps
+  state-dependent calls in `retryOnReplicaLag` (lib/chain.ts); use it for any new
+  call that reads state written by a previous tx. Local single-node chains can
+  never reproduce this — it only shows up live.
 - Re-running `deploy:base-sepolia` / `deploy:polygon-amoy` deploys **fresh
   contracts** but reuses the generated treasury/entity wallets (and their gas dust).
 - Polygon Amoy enforces a ~30 gwei minimum gas price (Base Sepolia is sub-gwei),
