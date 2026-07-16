@@ -67,6 +67,11 @@ Phase 9 Track A: production hardening per AUDIT.md
   silently bills the user a cent. When converting minor units across currencies the
   10^dec factors are load-bearing (USD counts cents, JPY counts yen); a bare multiply
   by the rate is off by 100x.
+- Money strings are read back with lib/money's parseScaledUnits (strict, any scale),
+  NOT toBaseUnits (truncates). Truncation is only ever correct on an amount the
+  boundary already accepted; on a stored reservation it under-counts what is promised.
+- "Balance minus RESERVED rows" has exactly ONE implementation: treasury.freeTreasuryBalance.
+  routing.availableLiquidity wraps it for display. Never sum those rows a second time.
 - Rows that model financial history (TreasuryPosition, AuditEvent) are append-only:
   update status in place (ACTIVE -> RECALLED), never delete. Derive current value
   (shares x live index) instead of storing a mutable balance.
@@ -764,4 +769,39 @@ Phase 9 Track A: production hardening per AUDIT.md
     npm run setup, rm -rf .next, npm run dev, then curl create -> quote -> execute with
     an x-api-key header, and `curl localhost:3000/ -H "Cookie: sos_key=$KEY"` to read a
     server-rendered stat out of the HTML without a browser.
+---
+
+## 2026-07-16 - US-013 (Liquidity and routing math on bigint)
+- Killed the last float money math in the payment path: reservation sums and the
+  "can the treasury fund this?" comparison.
+- lib/routing.ts: availableLiquidity now WRAPS treasury.freeTreasuryBalance and adds
+  display strings (returns LiquiditySnapshot: bigint units + decimals + the old three
+  strings); liquidityCheck + the new destinationUnits() compare in token base units;
+  parkedLiquidity deleted (it only formatted parkedBalance's bigint back to a string).
+- lib/money.ts: new parseScaledUnits(value, decimals, {what, excessPrecision}) — the
+  strict any-scale parse half of formatScaledUnits. parseAmount delegates to it.
+- lib/treasury.ts: freeTreasuryBalance's reserved sum and the private park parseAmount
+  now use it (both were toBaseUnits, which truncates), re-typed as TreasuryError.
+- lib/executor.ts: the reservation guard compares availableUnits vs destinationUnits().
+- app/liquidity/page.tsx: per-token reserved/available in bigint, unclamped.
+- Tests: tests/db/liquidity.test.ts (4) + 5 parseScaledUnits unit tests. 247 -> 256.
+- **Learnings for future iterations:**
+  - TWO SCALES COEXIST for the same decimal string and mixing them is a 100x bug:
+    a currency's MINOR units (lib/money CURRENCY_DECIMALS: USD 2, JPY 0) and a token's
+    BASE units (lib/assets ASSETS[].decimals: mockUSDC 6, mockJPY 0). Reservation rows
+    and quoted destination amounts are canonical strings in the destination CURRENCY;
+    treasury balances are TOKEN base units. Cross the two through the string
+    (parseScaledUnits at the target scale), never by comparing the raw integers.
+  - Before writing bigint arithmetic, check whether lib/treasury already does it —
+    it has been the bigint module since Phase 8, and duplicating its subtraction is
+    how a park and a payment end up disagreeing about the same liquidity.
+  - freeTreasuryBalance CLAMPS free at 0 (it is a guard). Display surfaces that want
+    the anomaly (over-reserved treasury reading negative) must do their own signed
+    subtraction — and fromBaseUnits mangles a negative bigint, so sign it by hand.
+  - A fail-open catch (liquidityCheck's "chain unreachable -> quote anyway") will
+    happily swallow a parse/programming error too. Rethrow the typed error you did
+    not mean to catch.
+  - Verifying a page whose numbers depend on DB rows: create a payment through the
+    API, then upsert a LiquidityReservation with a throwaway prisma .mjs script AT THE
+    REPO ROOT (node cannot resolve @prisma/client from /tmp), reload, delete.
 ---
