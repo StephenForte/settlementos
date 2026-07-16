@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { audit } from "@/lib/audit";
-import { actorOf, conflict, invalidRequest, notFound, requireRole } from "../../../guard";
+import { transitionStatus } from "@/lib/transitions";
+import {
+  actorOf,
+  caughtErrorResponse,
+  conflict,
+  invalidRequest,
+  notFound,
+  requireRole,
+} from "../../../guard";
 
 /**
  * Compliance reviewer decision on a MANUAL_REVIEW payment. The four-eyes check
@@ -27,9 +34,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return conflict(`payment is not in MANUAL_REVIEW (current: ${payment.status})`);
   }
 
+  // The status check above is advisory — two reviewers can read MANUAL_REVIEW at
+  // the same moment. The CAS is what actually decides; the loser gets a 409.
   const status = decision === "approve" ? "APPROVED" : "REJECTED";
-  const updated = await prisma.payment.update({ where: { id }, data: { status } });
-  await audit(`payment.review.${decision}d`, { note }, id, actorOf(principal));
-
-  return NextResponse.json({ payment_id: id, status: updated.status });
+  try {
+    const updated = await transitionStatus(payment, status, {
+      detail: { note },
+      action: `payment.review.${decision}d`,
+      actor: actorOf(principal),
+    });
+    return NextResponse.json({ payment_id: id, status: updated.status });
+  } catch (e) {
+    return caughtErrorResponse(e, "internal", "payments.review");
+  }
 }

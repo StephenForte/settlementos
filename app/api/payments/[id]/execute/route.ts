@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { audit } from "@/lib/audit";
 import { runComplianceChecks } from "@/lib/compliance";
 import { executePayment } from "@/lib/executor";
+import { transitionStatus } from "@/lib/transitions";
 import { fromThrown } from "@/lib/api-errors";
 import {
   actorOf,
   authorizePaymentWrite,
+  caughtErrorResponse,
   conflict,
   invalidRequest,
   notFound,
@@ -48,22 +49,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   if (payment.status === "QUOTED") {
-    payment = await prisma.payment.update({ where: { id }, data: { status: "COMPLIANCE_PENDING" } });
-    await audit("payment.status.compliance_pending", {}, id, actor);
+    // Each move is a compare-and-swap, so of two concurrent executes only one
+    // enters the compliance gate; the loser 409s here rather than screening (and
+    // billing a provider for) the same payment twice.
+    try {
+      payment = await transitionStatus(payment, "COMPLIANCE_PENDING", { actor });
 
-    const outcome = await runComplianceChecks(id);
-    if (outcome.overall === "REJECTED") {
-      payment = await prisma.payment.update({ where: { id }, data: { status: "REJECTED" } });
-      await audit("payment.status.rejected", { by: "compliance_gate" }, id, actor);
-      return NextResponse.json({ payment_id: id, status: payment.status, compliance: outcome }, { status: 200 });
+      const outcome = await runComplianceChecks(id);
+      if (outcome.overall === "REJECTED") {
+        payment = await transitionStatus(payment, "REJECTED", { detail: { by: "compliance_gate" }, actor });
+        return NextResponse.json({ payment_id: id, status: payment.status, compliance: outcome }, { status: 200 });
+      }
+      if (outcome.overall === "MANUAL_REVIEW") {
+        payment = await transitionStatus(payment, "MANUAL_REVIEW", {
+          detail: { reason: "compliance_flags" },
+          actor,
+        });
+        return NextResponse.json({ payment_id: id, status: payment.status, compliance: outcome }, { status: 200 });
+      }
+      payment = await transitionStatus(payment, "APPROVED", { detail: { by: "compliance_gate" }, actor });
+    } catch (e) {
+      return caughtErrorResponse(e, "internal", "payments.execute");
     }
-    if (outcome.overall === "MANUAL_REVIEW") {
-      payment = await prisma.payment.update({ where: { id }, data: { status: "MANUAL_REVIEW" } });
-      await audit("payment.status.manual_review", { reason: "compliance_flags" }, id, actor);
-      return NextResponse.json({ payment_id: id, status: payment.status, compliance: outcome }, { status: 200 });
-    }
-    payment = await prisma.payment.update({ where: { id }, data: { status: "APPROVED" } });
-    await audit("payment.status.approved", { by: "compliance_gate" }, id, actor);
   }
 
   if (payment.status !== "APPROVED") {

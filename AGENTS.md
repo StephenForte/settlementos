@@ -48,7 +48,8 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 |---|---|
 | [lib/networks.ts](lib/networks.ts) | Network registry (local sims + real base-sepolia and polygon-amoy), explorer URL helpers. **Client-safe — no node imports, no secrets.** |
 | [lib/chain.ts](lib/chain.ts) | viem chain adapter. Loads/merges `chain/deployments*.json`, per-network accounts via `accountsFor()`, contract ABIs (`SETTLEMENT_ABI`, `MMF_ABI`), `operatorWrite()` (escrow) / `mmfOperatorWrite()` (fund), `treasuryTokenTransfer()`, `ensureTreasuryAllowance()`, `mmfAddress()` (undefined where no fund is deployed) |
-| [lib/state.ts](lib/state.ts) | Payment lifecycle state machine; `assertTransition()` enforces legal moves |
+| [lib/state.ts](lib/state.ts) | Payment lifecycle state machine; `assertTransition()` enforces legal moves. Pure — no DB, no framework |
+| [lib/transitions.ts](lib/transitions.ts) | The one way a payment's status changes: `transitionStatus(payment, to, {data, detail, action, actor})` asserts the move is legal, then compare-and-swaps on the observed status (`updateMany where {id, status: from}`). Zero rows → `StaleTransitionError` (an `ApiError` with code `conflict`, so `caughtErrorResponse` renders a 409 with no mapping). Audits only after a successful swap |
 | [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: auto-recall of parked MMF liquidity, liquidity reservation, escrow, FX, payout, refund-on-failure |
 | [lib/routing.ts](lib/routing.ts) | Route quotes (instant/batched/bridged), treasury liquidity checks. Parked MMF liquidity counts as available: free-short-but-parked-covers still quotes, flagged `recall_required` |
 | [lib/fx.ts](lib/fx.ts) | Simulated FX: static mid rates, spread + tiered slippage, platform fee |
@@ -72,8 +73,16 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 ## Invariants — do not break these
 
 - **State machine**: every payment status change must be a legal transition per
-  `lib/state.ts`. Go through the executor's `setStatus()` (which calls
-  `assertTransition` + audits) rather than raw `prisma.payment.update`.
+  `lib/state.ts`, and must go through `transitionStatus()` (lib/transitions.ts) —
+  never a raw `prisma.payment.update({ data: { status } })`, which would clobber a
+  concurrent writer. The status the caller passes in *is* the CAS's expected value,
+  so a handler must transition from the row it actually read, and the executor's
+  `payment = { ...payment, ...(await setStatus(...)) }` assignments are load-bearing:
+  drop one and the next transition compares against a stale status and 409s itself.
+  A lost race is normal (`StaleTransitionError` → 409), not a bug to retry blindly.
+- **Audit only what happened**: a status change is audited *after* its CAS reports a
+  row was updated. A writer that lost the race must leave no event — an append-only
+  log recording a change that never landed is worse than no log at all.
 - **Audit everything**: any state change or fund movement gets an `audit(...)`
   event. The log is append-only — never update or delete `AuditEvent` rows; that
   breaks the hash chain (`GET /api/audit` verifies it, the UI shows INTACT/BROKEN).

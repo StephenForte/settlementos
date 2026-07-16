@@ -1,8 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { audit } from "@/lib/audit";
+import { transitionStatus } from "@/lib/transitions";
 import { CANCELLABLE_STATES, type PaymentStatus } from "@/lib/state";
-import { actorOf, authorizePaymentWrite, conflict, notFound, requirePrincipal } from "../../../guard";
+import {
+  actorOf,
+  authorizePaymentWrite,
+  caughtErrorResponse,
+  conflict,
+  notFound,
+  requirePrincipal,
+} from "../../../guard";
 
 /** Cancel a payment before execution. */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -19,7 +26,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!CANCELLABLE_STATES.includes(payment.status as PaymentStatus)) {
     return conflict(`payment cannot be cancelled from status ${payment.status}`);
   }
-  const updated = await prisma.payment.update({ where: { id }, data: { status: "CANCELLED" } });
-  await audit("payment.status.cancelled", { from: payment.status }, id, actorOf(principal));
-  return NextResponse.json({ payment_id: id, status: updated.status });
+  // A payment can start executing between the read above and this write, so the
+  // CAS — not the CANCELLABLE_STATES check — is what makes the cancel safe.
+  try {
+    const updated = await transitionStatus(payment, "CANCELLED", { actor: actorOf(principal) });
+    return NextResponse.json({ payment_id: id, status: updated.status });
+  } catch (e) {
+    return caughtErrorResponse(e, "internal", "payments.cancel");
+  }
 }

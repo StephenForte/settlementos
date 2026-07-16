@@ -11,7 +11,8 @@
 import type { Payment } from "@prisma/client";
 import { prisma } from "./db";
 import { audit } from "./audit";
-import { assertTransition, type PaymentStatus } from "./state";
+import { type PaymentStatus } from "./state";
+import { transitionStatus } from "./transitions";
 import { assetForCurrency, toBaseUnits } from "./assets";
 import {
   accountsFor,
@@ -24,23 +25,18 @@ import { availableLiquidity, type RouteOption } from "./routing";
 import { recallForPayment } from "./treasury";
 import { keccak256, toHex, type Address } from "viem";
 
+// Every status change the executor makes is a compare-and-swap against the
+// status it last observed, so a concurrent writer can never be overwritten:
+// a lost race throws StaleTransitionError out of executePayment rather than
+// corrupting the lifecycle. Keep the `payment = { ...payment, ...(await
+// setStatus(...)) }` assignments — the local row *is* the CAS's expected value.
 async function setStatus(
   payment: Payment,
   to: PaymentStatus,
   dbData: Partial<Payment> = {},
   auditDetail: Record<string, unknown> = {}
 ) {
-  assertTransition(payment.status, to);
-  const updated = await prisma.payment.update({
-    where: { id: payment.id },
-    data: { status: to, ...dbData },
-  });
-  await audit(
-    `payment.status.${to.toLowerCase()}`,
-    { from: payment.status, to, ...dbData, ...auditDetail },
-    payment.id
-  );
-  return updated;
+  return transitionStatus(payment, to, { data: dbData, detail: auditDetail });
 }
 
 function selectedRoute(payment: Payment): RouteOption {
@@ -264,17 +260,8 @@ export async function executePayment(paymentId: string): Promise<Payment> {
       try {
         await operatorWrite(sourceNet, "failAndRefund", [pid, reason.slice(0, 200)]);
         await audit("payment.onchain_refund", { network: sourceNet, reason }, payment.id);
-        await prisma.payment.update({
-          where: { id: payment.id },
-          data: { status: "FAILED", failureReason: reason },
-        });
-        await audit("payment.status.failed", { reason }, payment.id);
-        const refunded = await prisma.payment.update({
-          where: { id: payment.id },
-          data: { status: "REFUNDED" },
-        });
-        await audit("payment.status.refunded", {}, payment.id);
-        return refunded;
+        payment = { ...payment, ...(await setStatus(payment, "FAILED", { failureReason: reason })) };
+        return await setStatus(payment, "REFUNDED");
       } catch (refundErr) {
         await audit(
           "payment.refund_failed",
@@ -283,11 +270,9 @@ export async function executePayment(paymentId: string): Promise<Payment> {
         );
       }
     }
-    const failed = await prisma.payment.update({
-      where: { id: payment.id },
-      data: { status: "FAILED", failureReason: reason },
-    });
-    await audit("payment.status.failed", { reason }, payment.id);
-    return failed;
+    // The refund leg may have landed FAILED before it threw; FAILED → FAILED is
+    // not a legal move, and the payment is already where this path wants it.
+    if (payment.status === "FAILED") return payment;
+    return await setStatus(payment, "FAILED", { failureReason: reason });
   }
 }
