@@ -152,7 +152,7 @@ describe("executePayment — auto-recall from the MMF", () => {
     const reservation = await prisma.liquidityReservation.findUnique({ where: { paymentId: payment.id } });
     expect(reservation?.status).toBe("CONSUMED");
 
-    await expect(verifyAuditChain()).resolves.toEqual({ valid: true });
+    await expect(verifyAuditChain()).resolves.toMatchObject({ valid: true });
     await unwind();
   });
 
@@ -175,7 +175,7 @@ describe("executePayment — auto-recall from the MMF", () => {
 
     const reservation = await prisma.liquidityReservation.findUnique({ where: { paymentId: payment.id } });
     expect(reservation?.status ?? "NONE").not.toBe("RESERVED");
-    await expect(verifyAuditChain()).resolves.toEqual({ valid: true });
+    await expect(verifyAuditChain()).resolves.toMatchObject({ valid: true });
 
     await unwind(); // redeem the shares the deleted row left behind
   });

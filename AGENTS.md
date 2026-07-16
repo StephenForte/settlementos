@@ -56,7 +56,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/fx.ts](lib/fx.ts) | Simulated FX, **all bigint**: static mid rates, spread + tiered slippage, platform fee. Amounts are currency **minor units**; rates are integers scaled by `10^RATE_DECIMALS` (18) — `midRate()` returns a scaled bigint, `formatRate()` renders it. `convert()` (minor units across currencies at a rate), `applyBps()` (worsen a rate), `usdEquivalent()` (→ USD minor units, for tiering/risk thresholds) |
 | [lib/compliance.ts](lib/compliance.ts) | Compliance gate (KYB, sanctions, wallet/tx/corridor risk) → PASS/FAIL/MANUAL_REVIEW. Sanctions + wallet screening dispatch to real providers when env config is set (`OPENSANCTIONS_API_KEY`, `CHAINALYSIS_ORACLE_RPC_URL`), mocks otherwise |
 | `lib/providers/` | Real vendor adapters: OpenSanctions (sanctions match API), Chainalysis sanctions oracle (keyless on-chain `isSanctioned()` read for wallet screening). **Fail-safe: any provider error/timeout → MANUAL_REVIEW, never fail-open.** Verbatim provider evidence persisted on `ComplianceCheck.rawResponse` |
-| [lib/audit.ts](lib/audit.ts) | Append-only hash-chained audit log + chain verifier. `audit(action, detail, paymentId, actor, tx?)` — pass the caller's `Prisma.TransactionClient` to enlist the event in the transaction that writes the change it describes |
+| [lib/audit.ts](lib/audit.ts) | Append-only hash-chained audit log + chain verifier. `audit(action, detail, paymentId, actor, tx?)` — pass the caller's `Prisma.TransactionClient` to enlist the event in the transaction that writes the change it describes. Also the anchoring half: `createCheckpoint()` (on demand; automatic every `AUDIT_CHECKPOINT_INTERVAL` events, default 100, signed with `AUDIT_ANCHOR_KEY`), `verifyAuditChain()` → `AuditIntegrity` (verdict + `mode`/`anchored`/`checkpoint`/`eventsVerified` coverage), `AuditAnchorError` |
 | [lib/auth.ts](lib/auth.ts) | API-key identity: `authenticate(request)` (`x-api-key` header → `sos_key` cookie) → `Principal { keyId, role, entityId?, label }` or null. Roles OPERATOR/REVIEWER/ENTITY; only sha256 hashes are stored. `keyId` is the `ApiKey.id` — the stable per-caller identity anything keyed by principal uses. **Identity only — routes enforce authorization** |
 | [lib/idempotency.ts](lib/idempotency.ts) | Idempotent-write records: `beginIdempotent()` (reserve the key or report replay/mismatch/in-flight), `completeIdempotent()` / `abandonIdempotent()`, `hashRequest()` (canonical, key-order-independent body fingerprint), `IDEMPOTENCY_TTL_MS` (24h, checked at read time — no cron). Framework-free; the response half is app/api/idempotency.ts |
 | [lib/session.ts](lib/session.ts) | Next-only half of auth: `currentPrincipal()` resolves the `sos_key` cookie via `cookies()` for **server components** (which have no `Request`); `sessionCookieOptions()` is the one place the cookie's flags are defined. Keep `next/headers` out of lib/auth.ts so route tests can pass a plain `Request` |
@@ -106,6 +106,18 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 - **Audit everything**: any state change or fund movement gets an `audit(...)`
   event. The log is append-only — never update or delete `AuditEvent` rows; that
   breaks the hash chain (`GET /api/audit` verifies it, the UI shows INTACT/BROKEN).
+- **The anchor is what the chain cannot do for itself**: hashes only catch an
+  *edit* — anyone with DB write access can re-hash the log from the tampered event
+  forward and it verifies clean. `AuditCheckpoint` signs the tip hash with
+  `AUDIT_ANCHOR_KEY` (HMAC, key in the env and never in the DB), so a re-hashed
+  history moves the tip to a value the attacker cannot sign. Verification is
+  therefore anchor-first (signature → the anchored event is still that hash and
+  still hashes to it → re-hash only what came after), which is also why it stays
+  fast as the log grows. No key = no checkpoints and a `mode: "full"`,
+  `anchored: false` verdict: the demo still runs, and says out loud that its
+  INTACT is the weaker claim. Residual limit, deliberate: deleting the checkpoints
+  outright drops verification back to full — closing that needs the anchor
+  published where we do not control it.
 - **Money types**: fiat amounts are decimal **strings** in the DB and API
   (`"100000.00"`); on-chain amounts are **bigint** base units via
   `toBaseUnits`/`fromBaseUnits`. mockJPY has **0 decimals**. Never put a JS float
@@ -286,6 +298,17 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   created must skip any that got audited (see `tests/integration/authz-writes.test.ts`);
   leaking a few rows is cheaper than a broken chain. Same reason the log is append-only
   in production.
+
+- **Wiping `AuditEvent` without `AuditCheckpoint` leaves a dangling anchor**, and the
+  chain then reads BROKEN (`checkpoint_anchor_missing`) forever after — an anchor
+  pointing at an id that no longer exists is indistinguishable from deleted history,
+  which is the whole point. Anything that clears the log clears both, in that order:
+  `scripts/setup.mjs`'s reset (this bit the demo — the reset button handed the app a
+  BROKEN chain), and the two test files that own the table (`tests/db/audit.test.ts`,
+  `tests/db/audit-checkpoint.test.ts`). Note SQLite keeps the autoincrement sequence
+  across a wipe, so event ids do **not** restart at 1 after a reset — never infer a
+  count from an id (that is why the checkpoint interval counts rows rather than
+  subtracting ids).
 
 - `recall_required` is a **quote-time snapshot** frozen into `Payment.quoteJson`. The
   world can move between quoting and execution, so nothing downstream may assume it is

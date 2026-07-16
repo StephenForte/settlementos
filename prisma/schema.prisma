@@ -125,6 +125,19 @@ model AuditEvent {
   payment Payment? @relation(fields: [paymentId], references: [id])
 }
 
+// A signed anchor over the audit chain: chainHash is the tip event's hash (which
+// covers every event before it), signed with a key the database does not hold.
+// Someone with DB write access can re-hash the whole log, but cannot re-sign it.
+// No FK to AuditEvent on purpose — the log is append-only, so a dangling anchor
+// means events were deleted, and reporting that is the point.
+model AuditCheckpoint {
+  id          Int      @id @default(autoincrement())
+  lastEventId Int
+  chainHash   String
+  signature   String // HMAC-SHA256("<lastEventId>|<chainHash>", AUDIT_ANCHOR_KEY)
+  createdAt   DateTime @default(now())
+}
+
 // Simulated fiat payout leg: recipient's local-currency ledger balance.
 model LedgerCredit {
   id        String   @id @default(cuid())

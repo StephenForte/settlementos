@@ -123,6 +123,6 @@ describe("atomic domain change + audit event", () => {
     // still chains onto the tip that was there before it.
     const updated = await transitionStatus(payment, "QUOTED");
     expect(updated.status).toBe("QUOTED");
-    await expect(verifyAuditChain()).resolves.toEqual({ valid: true });
+    await expect(verifyAuditChain()).resolves.toMatchObject({ valid: true });
   });
 });

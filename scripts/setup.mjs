@@ -210,6 +210,10 @@ async function main() {
   await prisma.ledgerCredit.deleteMany();
   await prisma.liquidityReservation.deleteMany();
   await prisma.complianceCheck.deleteMany();
+  // Checkpoints anchor event ids, so they go with the events they anchor —
+  // an anchor left pointing at a wiped id reads as tampering, and the reset
+  // button would hand the demo a BROKEN chain.
+  await prisma.auditCheckpoint.deleteMany();
   await prisma.auditEvent.deleteMany();
   await prisma.payment.deleteMany();
   await prisma.wallet.deleteMany();

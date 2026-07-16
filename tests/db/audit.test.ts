@@ -4,12 +4,15 @@ import { audit, verifyAuditChain } from "@/lib/audit";
 
 // This file rewrites audit history to test tamper detection, so it owns the
 // table for its duration and leaves it empty (next audit() restarts at GENESIS).
-beforeAll(async () => {
+// Checkpoints go with the events: an anchor pointing at an id that no longer
+// exists reads as tampering to every later test in the run.
+async function clearChain() {
+  await prisma.auditCheckpoint.deleteMany();
   await prisma.auditEvent.deleteMany();
-});
-afterAll(async () => {
-  await prisma.auditEvent.deleteMany();
-});
+}
+
+beforeAll(clearChain);
+afterAll(clearChain);
 
 describe("hash-chained audit log", () => {
   it("chains each event to the previous one's hash", async () => {
@@ -24,7 +27,7 @@ describe("hash-chained audit log", () => {
   });
 
   it("verifies an untampered chain as valid", async () => {
-    await expect(verifyAuditChain()).resolves.toEqual({ valid: true });
+    await expect(verifyAuditChain()).resolves.toMatchObject({ valid: true });
   });
 
   it("detects tampering with an event's payload", async () => {

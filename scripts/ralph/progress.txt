@@ -88,6 +88,14 @@ Phase 9 Track A: production hardening per AUDIT.md
   boundary already accepted; on a stored reservation it under-counts what is promised.
 - "Balance minus RESERVED rows" has exactly ONE implementation: treasury.freeTreasuryBalance.
   routing.availableLiquidity wraps it for display. Never sum those rows a second time.
+- Anything that CLEARS the audit log must clear AuditCheckpoint first: an anchor
+  pointing at a deleted event id reads as tampering forever after (setup.mjs's reset,
+  and the test files that own the table). And SQLite keeps the autoincrement sequence
+  across a wipe, so audit ids do NOT restart at 1 — never infer "how many events" from
+  an id; count the rows.
+- Widening a verdict/result object breaks `.resolves.toEqual({...})` assertions across
+  files that never changed (7 of them for verifyAuditChain). Prefer toMatchObject for
+  a shape that is expected to grow — the exact-equality ones cost a mechanical sweep.
 - Rows that model financial history (TreasuryPosition, AuditEvent) are append-only:
   update status in place (ACTIVE -> RECALLED), never delete. Derive current value
   (shares x live index) instead of storing a mutable balance.
@@ -981,4 +989,57 @@ Phase 9 Track A: production hardening per AUDIT.md
     browser pass; the executor E2E tests drive the new transactional transitionStatus
     on the fixture chains.
   - Suite 271 -> 273. tsc + lint green.
+---
+
+## 2026-07-16 14:30 - US-017
+- Signed audit checkpoints + incremental verification. The hash chain alone only
+  catches an EDIT: anyone with DB write access can re-hash the log from the tampered
+  event forward and it verifies clean. AuditCheckpoint signs the tip hash with
+  AUDIT_ANCHOR_KEY (HMAC-SHA256, key in env, never in the DB), so a re-hashed history
+  moves the tip to a value the attacker cannot sign. Automatic every
+  AUDIT_CHECKPOINT_INTERVAL events (default 100), on demand via
+  POST /api/audit/checkpoint (OPERATOR only).
+- Files: prisma/schema.prisma (AuditCheckpoint), lib/audit.ts (createCheckpoint,
+  maybeCheckpoint, AuditIntegrity, AuditAnchorError, anchor-first verifyAuditChain),
+  app/api/audit/checkpoint/route.ts (new), app/api/audit/route.ts (coverage in the
+  response, snake_case), app/compliance/page.tsx (badge), scripts/setup.mjs (reset),
+  tests/fixture.ts (+AUDIT_ANCHOR_KEY), tests/db/audit-checkpoint.test.ts (new, 12),
+  tests/integration/audit-checkpoint-api.test.ts (new, 3), + 5 files' assertions.
+- **Learnings for future iterations:**
+  - DECISION (deviates from AC1's letter): the signature covers `${lastEventId}|${chainHash}`,
+    not chainHash alone. With only the hash signed, the one signature an attacker HAS can
+    be replayed at another position: truncate the log, paste the signed hash into an
+    earlier event's `hash` column, re-chain forward. Binding the position kills that, and
+    costs nothing. Verification also re-derives the anchor event's own hash from its
+    stored content, so the signed value cannot simply be pasted in.
+  - Verification is anchor-first: signature -> anchor event exists -> its hash IS the
+    signed chainHash -> its content still hashes to that -> re-hash only events after it.
+    Four distinct `reason` codes, so a break says WHICH thing failed.
+  - No key = no checkpoints written at all (an unsigned anchor anchors nothing while
+    making verification look anchored) + a `mode:"full", anchored:false` verdict. The UI
+    badge says "INTACT (unanchored)" — that INTACT is a weaker claim and should say so.
+  - RESIDUAL LIMIT, documented not papered over: an attacker who DELETES the checkpoint
+    rows drops verification back to full over a chain they re-hashed. Closing that needs
+    the anchor published where we do not control it (counterparty, public chain). AC3 is
+    about the signature-mismatch path, which is closed.
+  - The interval counts ROWS (`count where id > lastEventId`), not an id delta. Found out
+    why the hard way on the dev DB: SQLite keeps the autoincrement sequence across
+    `npm run setup`, so a freshly-seeded DB started at event id 190 — an id-delta check
+    would have fired a checkpoint on the FIRST event of an empty log.
+  - REAL BUG the browser pass caught (tests could not): `npm run setup` wiped AuditEvent
+    but not AuditCheckpoint, so the demo's reset button left a dangling anchor and every
+    page read BROKEN (checkpoint_anchor_missing). Same hazard in the two test files that
+    own the table. Now in AGENTS.md gotchas.
+  - Auto-checkpointing runs INSIDE the appender's tx (US-016's), so a rolled-back event
+    cannot leave an anchor pointing at an id that never committed.
+  - The on-demand checkpoint deliberately writes NO audit event of its own: it would
+    extend the chain past the tip just signed, leaving the anchor stale the instant it
+    was made. The row is the record.
+  - Widening verifyAuditChain's return broke 7 pre-existing `toEqual({valid:true})`
+    assertions in 4 untouched files -> toMatchObject.
+  - Verified live: forged a real payment's history on the dev DB and re-hashed the whole
+    chain — chain-only verification says valid, the anchor says
+    checkpoint_chain_hash_mismatch and the compliance badge goes BROKEN at #201. Reset,
+    re-ran 25k USD->JPY to SETTLED, checkpoint signed tip #225, INTACT/incremental.
+  - Suite 271 -> 289. tsc + lint + build green.
 ---

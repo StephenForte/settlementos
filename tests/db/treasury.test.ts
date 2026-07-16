@@ -107,7 +107,7 @@ describe("treasury parking", () => {
       shares: result.shares.toString(),
       txHash: result.txHash,
     });
-    await expect(verifyAuditChain()).resolves.toEqual({ valid: true });
+    await expect(verifyAuditChain()).resolves.toMatchObject({ valid: true });
 
     await unwind();
   });
@@ -224,7 +224,7 @@ describe("treasury recall", () => {
       indexAtExit: parked.indexAtEntry.toString(),
       txHash: result.txHash,
     });
-    await expect(verifyAuditChain()).resolves.toEqual({ valid: true });
+    await expect(verifyAuditChain()).resolves.toMatchObject({ valid: true });
 
     await unwind();
   });
@@ -308,7 +308,7 @@ describe("treasury accrual", () => {
       yield: fromBaseUnits(yielded, USDC_DECIMALS),
       indexAtExit: accrual.newIndex.toString(),
     });
-    await expect(verifyAuditChain()).resolves.toEqual({ valid: true });
+    await expect(verifyAuditChain()).resolves.toMatchObject({ valid: true });
 
     await unwind();
   });

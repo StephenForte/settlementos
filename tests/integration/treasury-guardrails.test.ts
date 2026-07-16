@@ -205,7 +205,7 @@ describe("segregation and the audit chain across park -> accrue -> recall", () =
       yield: fromBaseUnits(recalled.assetAmount - principal, USDC_DECIMALS),
       indexAtExit: accrual.newIndex.toString(),
     });
-    await expect(verifyAuditChain()).resolves.toEqual({ valid: true });
+    await expect(verifyAuditChain()).resolves.toMatchObject({ valid: true });
 
     // History survives: the row is flipped in place, never deleted.
     const after = await prisma.treasuryPosition.findUniqueOrThrow({ where: { id: parked.positionId } });

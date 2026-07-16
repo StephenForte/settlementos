@@ -25,6 +25,9 @@ export const FIXTURE_ENV = {
   CHAINALYSIS_ORACLE_RPC_URL: "",
   CHAINALYSIS_ORACLE_ADDRESS: "",
   COMPLIANCE_PROVIDER_TIMEOUT_MS: "",
+  // Audit anchoring is on for the suite (so the whole run verifies through the
+  // checkpoint path), pinned to a fixed key rather than the dev .env's.
+  AUDIT_ANCHOR_KEY: "test_anchor_key_not_for_any_real_deployment",
 };
 
 // Raw API keys seeded into the fixture DB by global-setup. Fixed rather than
