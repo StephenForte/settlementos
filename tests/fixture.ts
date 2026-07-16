@@ -27,6 +27,21 @@ export const FIXTURE_ENV = {
   COMPLIANCE_PROVIDER_TIMEOUT_MS: "",
 };
 
+// Raw API keys seeded into the fixture DB by global-setup. Fixed rather than
+// generated so tests can import them as constants (the dev-mnemonic pattern
+// below) — the app only ever stores their sha256 hashes. Test-only, never on a
+// public network. `entities` is keyed by Entity.externalId.
+export const API_KEYS = {
+  operator: "sos_test_00000000000000000000000000000000operator",
+  reviewer: "sos_test_00000000000000000000000000000000reviewer",
+  entities: {
+    ent_acme_us: "sos_test_000000000000000000000000000000000000acme",
+    ent_tokyo_supplier: "sos_test_00000000000000000000000000000000tokyo",
+    ent_sg_supplier: "sos_test_0000000000000000000000000000000000sgp",
+    ent_osaka_parts: "sos_test_0000000000000000000000000000000000osk",
+  },
+} as const;
+
 // Standard Hardhat dev-mnemonic accounts — same roles as scripts/setup.mjs.
 export const ACCOUNTS = {
   operator: {

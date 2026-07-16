@@ -11,6 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash, randomBytes } from "node:crypto";
 import { createPublicClient, createWalletClient, http, defineChain } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { PrismaClient } from "@prisma/client";
@@ -71,6 +72,11 @@ const ACCOUNTS = {
     privateKey: "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba",
   },
 };
+
+// API-key seeding. Mirrors lib/auth.ts — a .mjs script cannot import that TS
+// module, so the key format and hash MUST stay in sync with it by hand.
+const generateKey = () => `sos_${randomBytes(24).toString("hex")}`;
+const hashKey = (raw) => createHash("sha256").update(raw).digest("hex");
 
 function artifact(name) {
   const p = path.join(root, "chain", "artifacts", "contracts", `${name}.sol`, `${name}.json`);
@@ -209,6 +215,7 @@ async function main() {
   await prisma.auditEvent.deleteMany();
   await prisma.payment.deleteMany();
   await prisma.wallet.deleteMany();
+  await prisma.apiKey.deleteMany();
   await prisma.entity.deleteMany();
 
   // If real testnets have been deployed, re-register their entity wallets too
@@ -270,6 +277,10 @@ async function main() {
     },
   ];
 
+  // Raw keys, collected for the console + chain/dev-api-keys.json. The DB only
+  // ever sees their hashes, so this is the one chance to capture them.
+  const apiKeys = { operator: generateKey(), reviewer: generateKey(), entities: {} };
+
   for (const e of entities) {
     const { wallet: w, ...data } = e;
     // Same address is registered on every local network (dev accounts are shared);
@@ -282,10 +293,33 @@ async function main() {
       wallets.push({ ...w, address: lw.address, network });
       liveNets.push(network);
     }
-    await prisma.entity.create({
+    const entity = await prisma.entity.create({
       data: { ...data, wallets: { create: wallets } },
     });
+    // One ENTITY key per entity, scoped to that tenant.
+    const raw = generateKey();
+    apiKeys.entities[e.externalId] = raw;
+    await prisma.apiKey.create({
+      data: { keyHash: hashKey(raw), role: "ENTITY", entityId: entity.id, label: `${e.name} API key` },
+    });
     console.log(`  ${e.name} (${e.externalId})${liveNets.length ? ` + ${liveNets.join(", ")} wallet` : ""}`);
+  }
+
+  await prisma.apiKey.create({
+    data: { keyHash: hashKey(apiKeys.operator), role: "OPERATOR", label: "Platform operator" },
+  });
+  await prisma.apiKey.create({
+    data: { keyHash: hashKey(apiKeys.reviewer), role: "REVIEWER", label: "Compliance reviewer" },
+  });
+
+  const keysPath = path.join(root, "chain", "dev-api-keys.json");
+  fs.writeFileSync(keysPath, JSON.stringify(apiKeys, null, 2));
+
+  console.log("\nSeeded API keys (also written to chain/dev-api-keys.json, gitignored):");
+  console.log(`  OPERATOR  ${apiKeys.operator}`);
+  console.log(`  REVIEWER  ${apiKeys.reviewer}`);
+  for (const [externalId, raw] of Object.entries(apiKeys.entities)) {
+    console.log(`  ENTITY    ${raw}  (${externalId})`);
   }
 
   await prisma.$disconnect();

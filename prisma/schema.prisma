@@ -25,6 +25,20 @@ model Entity {
   paymentsSent     Payment[]      @relation("sender")
   paymentsReceived Payment[]      @relation("recipient")
   ledgerCredits    LedgerCredit[]
+  apiKeys          ApiKey[]
+}
+
+// API-key identity for API callers. Only the sha256 hash of a key is stored —
+// the raw key exists at seed time and in the caller's hands, never in the DB.
+model ApiKey {
+  id        String   @id @default(cuid())
+  keyHash   String   @unique // sha256 hex of the raw key
+  role      String // OPERATOR | REVIEWER | ENTITY
+  entityId  String? // required when role = ENTITY; null otherwise
+  label     String   @default("")
+  createdAt DateTime @default(now())
+
+  entity Entity? @relation(fields: [entityId], references: [id])
 }
 
 model Wallet {
