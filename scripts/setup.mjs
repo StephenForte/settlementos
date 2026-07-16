@@ -157,14 +157,12 @@ async function setupChain(networkId, cfg) {
     }
   }
 
-  const MAX = 2n ** 256n - 1n;
-  for (const who of ["acme", "tokyo", "singapore", "osaka"]) {
-    const w = wallet(ACCOUNTS[who].privateKey);
-    for (const t of Object.values(tokens)) {
-      await write(w, t.address, t.abi, "approve", [settlement.address, MAX]);
-    }
-  }
+  // Entity wallets grant NO standing allowance to the escrow: the executor
+  // approves exactly the amount each payment needs, right before it escrows
+  // (lib/chain.ts ensureSenderAllowance).
+  //
   // The treasury is the parking account: subscribe() pulls via transferFrom.
+  const MAX = 2n ** 256n - 1n;
   const treasuryWallet = wallet(ACCOUNTS.treasury.privateKey);
   await write(treasuryWallet, tokens.mockUSDC.address, tokens.mockUSDC.abi, "approve", [mmf.address, MAX]);
 

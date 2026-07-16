@@ -19,7 +19,21 @@ function pid(label: string) {
   return keccak256(toHex(`contract-test-${label}-${Date.now()}`));
 }
 
+/** Exactly what the executor does before escrowing: the sender approves this
+ *  payment's amount and no more. No wallet holds a standing allowance. */
+async function approveAmount(amount: bigint = AMOUNT) {
+  const acme = clients.walletFor(ACCOUNTS.acme.privateKey);
+  const hash = await acme.writeContract({
+    address: usdc,
+    abi: erc20Abi,
+    functionName: "approve",
+    args: [settlement, amount],
+  });
+  await clients.publicClient.waitForTransactionReceipt({ hash });
+}
+
 async function initiate(paymentId: `0x${string}`, from: `0x${string}` = ACCOUNTS.operator.privateKey) {
+  await approveAmount();
   const wallet = clients.walletFor(from);
   const hash = await wallet.writeContract({
     address: settlement,
@@ -71,6 +85,21 @@ describe("PaymentSettlement escrow", () => {
         args: [pid("rogue"), ACCOUNTS.acme.address, ACCOUNTS.tokyo.address, rogueToken, AMOUNT, "USD", "JPY"],
       })
     ).rejects.toThrow(/asset not approved/);
+  });
+
+  // The point of the exact allowance: the escrow's reach into a sender's wallet
+  // is capped at what that one payment approved, whatever the wallet holds.
+  it("cannot escrow more than the sender approved", async () => {
+    await approveAmount(AMOUNT - 1n);
+    const operator = clients.walletFor(ACCOUNTS.operator.privateKey);
+    await expect(
+      operator.writeContract({
+        address: settlement,
+        abi: settlementAbi,
+        functionName: "initiatePayment",
+        args: [pid("overpull"), ACCOUNTS.acme.address, ACCOUNTS.tokyo.address, usdc, AMOUNT, "USD", "JPY"],
+      })
+    ).rejects.toThrow(/insufficient allowance/);
   });
 
   it("payment IDs are idempotent — double initiation reverts", async () => {

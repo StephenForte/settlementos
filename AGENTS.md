@@ -47,7 +47,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | Module | Responsibility |
 |---|---|
 | [lib/networks.ts](lib/networks.ts) | Network registry (local sims + real base-sepolia and polygon-amoy), explorer URL helpers. **Client-safe — no node imports, no secrets.** |
-| [lib/chain.ts](lib/chain.ts) | viem chain adapter. Loads/merges `chain/deployments*.json`, per-network accounts via `accountsFor()`, contract ABIs (`SETTLEMENT_ABI`, `MMF_ABI`), `operatorWrite()` (escrow) / `mmfOperatorWrite()` (fund), `treasuryTokenTransfer()`, `ensureTreasuryAllowance()`, `mmfAddress()` (undefined where no fund is deployed) |
+| [lib/chain.ts](lib/chain.ts) | viem chain adapter. Loads/merges `chain/deployments*.json`, per-network accounts via `accountsFor()`, contract ABIs (`SETTLEMENT_ABI`, `MMF_ABI`), `operatorWrite()` (escrow) / `mmfOperatorWrite()` (fund), `treasuryTokenTransfer()`, `ensureSenderAllowance()` (exact per-payment escrow approval) / `ensureTreasuryAllowance()`, `mmfAddress()` (undefined where no fund is deployed) |
 | [lib/state.ts](lib/state.ts) | Payment lifecycle state machine; `assertTransition()` enforces legal moves. Pure — no DB, no framework |
 | [lib/transitions.ts](lib/transitions.ts) | The one way a payment's status changes: `transitionStatus(payment, to, {data, detail, action, actor})` asserts the move is legal, then compare-and-swaps on the observed status (`updateMany where {id, status: from}`). Zero rows → `StaleTransitionError` (an `ApiError` with code `conflict`, so `caughtErrorResponse` renders a 409 with no mapping). Audits only after a successful swap |
 | [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: execution-lease claim, auto-recall of parked MMF liquidity, liquidity reservation, escrow, FX, payout, and the failure exits — refund while the escrow is held, **compensation** once it is released (`compensateSender`). `ExecutionLeaseError` (an `ApiError` with code `conflict` → 409, like `StaleTransitionError`) is a second attempt losing the lease. Also the operator-repair half: `stuckPayments()` (payments still holding funds, each with its escrow state read live) and `repairCompensation()` (re-run a compensation transfer that failed). `executorTestHooks` are the test-only throw points for every failure exit |
@@ -223,6 +223,18 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   null), re-reads the escrow (only a *released* escrow may be repaid from treasury),
   and returns an already-COMPENSATED payment untouched rather than paying twice.
   Nothing retries a compensation automatically — that decision is an operator's.
+- **No standing allowances**: an entity wallet grants the escrow *exactly* the amount
+  of the payment in flight, immediately before `initiatePayment` (`ensureSenderAllowance`,
+  lib/chain.ts), which then consumes it back to zero. Nothing pre-approves — not
+  `scripts/setup.mjs`, not `scripts/deploy-testnet.mjs`, not the test fixture — because a
+  MAX approval leaves a wallet's whole balance drainable by whatever the escrow address
+  turns out to be, forever, while an exact one caps the loss at one payment. An allowance
+  that already covers the amount short-circuits with no tx, so networks deployed before
+  this (their wallets still hold the old MAX grants) keep settling untouched. The treasury's
+  MMF approval is a different thing and stays MAX: the treasury is the platform's own account,
+  not a customer's. Consequence: an entity wallet now signs a tx per payment, so it needs
+  runtime gas (dust budget on a real testnet) and its **signing key must resolve** —
+  `accountsFor(networkId).entityWallets[externalId]`, keyed by `Entity.externalId`.
 - **Recall before reserve**: when a route carries `recall_required`, the executor
   redeems the parked positions *before* it reserves liquidity or escrows anything —
   otherwise it would reserve against a balance that is still sitting in the fund.
@@ -319,6 +331,9 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   never reproduce this — it only shows up live.
 - Re-running `deploy:base-sepolia` / `deploy:polygon-amoy` deploys **fresh
   contracts** but reuses the generated treasury/entity wallets (and their gas dust).
+- A test that drives `initiatePayment` **directly** (rather than through the executor)
+  must approve the sender's tokens itself — no fixture wallet carries a standing
+  allowance any more. See `approveAmount()` in tests/integration/contract.test.ts.
 - Polygon Amoy enforces a ~30 gwei minimum gas price (Base Sepolia is sub-gwei),
   so Amoy gas-dust targets in the deploy script are ~100× higher.
 - A **stale `.next/` cache** can make every API route 404 while pages still render

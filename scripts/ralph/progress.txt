@@ -107,6 +107,15 @@ Phase 9 Track A: production hardening per AUDIT.md
   duplicated inline and kept in sync BY HAND (see setup.mjs's `hashKey`/`generateKey`
   copy of lib/auth.ts). Note the duplication in AGENTS.md when you add one, and
   cross-check it for real — a silent drift here breaks every seeded key.
+- On-chain approvals are EXACT and just-in-time, never standing: the executor calls
+  `ensureSenderAllowance` right before it escrows, and the deploy scripts + test fixture
+  grant nothing. The read-first short-circuit (allowance >= amount → no tx) is what keeps
+  already-deployed networks working, and it is the shape to copy for any "ensure X on
+  chain" helper: read, return early if satisfied, otherwise write the minimum.
+- Removing a fixture-wide grant (an approval, a mint, a role) breaks whichever tests
+  drove the contract DIRECTLY rather than through lib/ — those relied on it implicitly.
+  Expect the blast radius in `tests/integration/contract.test.ts` and give the test its
+  own setup step mirroring what production now does.
 - Auth identity lives in `lib/auth.ts`: `authenticate(request)` → `Principal | null`
   (`x-api-key` header, then `sos_key` cookie). It types its param as `Request`, not
   `NextRequest`, so route tests can pass a plain `new Request(...)` — NextRequest
@@ -804,4 +813,55 @@ Phase 9 Track A: production hardening per AUDIT.md
   - Verifying a page whose numbers depend on DB rows: create a payment through the
     API, then upsert a LiquidityReservation with a throwaway prisma .mjs script AT THE
     REPO ROOT (node cannot resolve @prisma/client from /tmp), reload, delete.
+---
+
+## 2026-07-16 - US-014
+- Exact per-payment allowances replace unlimited approvals. `lib/chain.ts` gains
+  `ensureSenderAllowance(networkId, entityExternalId, tokenSymbol, amount)`: resolves the
+  sender's AccountRef from `accountsFor(networkId).entityWallets[externalId]`, reads the
+  current allowance, short-circuits (returns null, no tx) when it already covers the
+  amount, otherwise signs an `approve(settlement, amount)` from the entity wallet and
+  returns the TxResult. The executor calls it inside its try, immediately before
+  `initiatePayment`, and audits `payment.allowance_granted` only when a tx actually ran.
+  MAX approvals removed from scripts/setup.mjs, scripts/deploy-testnet.mjs, AND
+  tests/helpers/deploy.ts.
+- Files: lib/chain.ts, lib/executor.ts, scripts/setup.mjs, scripts/deploy-testnet.mjs,
+  tests/helpers/deploy.ts, tests/integration/contract.test.ts,
+  tests/integration/allowance.test.ts (new), AGENTS.md.
+- **Learnings for future iterations:**
+  - DECISION — the test fixture stops pre-approving too, though AC1 only names the two
+    deploy scripts. Had the fixture kept its MAX grants, every existing E2E test would have
+    taken the short-circuit branch and the new approve path would only ever have run in the
+    one new test. Removing it means the whole suite settles through exact allowances, which
+    is what production now does. Cost: 4 pre-existing failures in contract.test.ts, which
+    drives `initiatePayment` directly with viem and silently depended on the fixture grant.
+    Fixed by giving its `initiate()` helper an `approveAmount()` step mirroring the executor.
+  - `operatorWrite`'s replica-lag guard needed extending, not just reusing: it retried only
+    on "not initiated" and gated that on `functionName !== "initiatePayment"`. initiatePayment
+    NOW depends on a prior tx (the approve), so it got its own transient predicate —
+    "insufficient allowance", which on a load-balanced public RPC means a replica that hasn't
+    seen the approval block yet. Renamed the flag `dependsOnEscrowRow` since "depends on a
+    prior tx" is no longer what distinguishes the two cases. This is unreproducible on the
+    local single-node chains (AGENTS gotcha) — it only shows up live.
+  - The executor now needs an entity's SIGNING KEY at runtime, which it never did before
+    (it only read `payment.sender.wallets` for addresses). Keys live in deployments under
+    `entityWallets`, keyed by `Entity.externalId` — so the DB wallet row gives the address
+    and the deployments file gives the key, and an entity with no deployments entry now
+    fails execution where it used to work off a pre-granted allowance. On real testnets the
+    entity dust wallets also now spend gas per payment; deploy-testnet's dust targets were
+    left as-is (they no longer spend 3 approvals up front, so the budget is comparable).
+  - MockERC20 leaves a MAX allowance undecremented on transferFrom (`if (allowed != max)`),
+    which is why the short-circuit test can assert MAX survives a settlement — that is
+    exactly the already-deployed base-sepolia/polygon-amoy case, still working untouched.
+  - Verified on a real dev server (backup/restore dance): allowance 0 after `npm run setup`,
+    25k USD→JPY SETTLED from a zero allowance with allowance back to 0 afterwards, audit
+    trail `liquidity_reserved → allowance_granted → submitted_onchain → ... → settled` and
+    chain valid:true, plus a bridged base-local→polygon-local payment SETTLED.
+  - Suite 256 → 264 (5 new in allowance.test.ts incl. an on-chain assertion that no other
+    spender — treasury, MMF — is ever granted anything; 1 new in contract.test.ts proving the
+    escrow cannot pull more than approved). tsc + lint green.
+  - Not in scope, deliberately: `ensureTreasuryAllowance` still approves the MMF for MAX.
+    The treasury is the platform's own account, not a customer wallet, and AC1 names entity
+    wallets only. If a later story tightens it, note that `subscribe` pulls per park, so it
+    would need the same just-in-time exact approval.
 ---

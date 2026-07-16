@@ -3,9 +3,10 @@
 //
 //   1. Deploys MockERC20 tokens + PaymentSettlement using DEPLOYER_PRIVATE_KEY
 //      (the deployer doubles as the settlement operator).
-//   2. Generates local entity wallets + a treasury wallet (reused across re-runs),
-//      funds them with dust gas from the deployer, and pre-approves the
-//      settlement contract for each token.
+//   2. Generates local entity wallets + a treasury wallet (reused across re-runs)
+//      and funds them with dust gas from the deployer. Entity wallets are NOT
+//      pre-approved: the executor approves each payment's exact amount before
+//      escrowing it, so their gas dust must cover an approve per payment.
 //   3. Mints demo token balances (same distribution as the local chains).
 //   4. Writes chain/deployments.<network>.json (gitignored — contains the
 //      generated dust-wallet keys; the funded deployer key stays in .env only).
@@ -239,23 +240,10 @@ async function main() {
     );
   }
 
-  console.log("\nEntity wallets approving PaymentSettlement (max allowance):");
-  const MAX = 2n ** 256n - 1n;
-  for (const [externalId, w] of Object.entries(entityWallets)) {
-    const entityWallet = walletFor(w.privateKey);
-    for (const [symbol, t] of Object.entries(tokens)) {
-      await send(
-        () =>
-          entityWallet.writeContract({
-            address: t.address,
-            abi: t.abi,
-            functionName: "approve",
-            args: [settlement.address, MAX],
-          }),
-        `approve ${symbol} for ${externalId}`
-      );
-    }
-  }
+  // No entity approvals here by design: an unlimited standing allowance lets a
+  // compromised escrow drain a wallet's whole balance. The executor approves the
+  // exact amount per payment instead (lib/chain.ts ensureSenderAllowance), which
+  // costs one extra tx of the wallet's dust per settlement.
 
   const deployments = {
     networks: {

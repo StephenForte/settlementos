@@ -431,9 +431,12 @@ export async function operatorWrite(
   const dep = loadDeployments();
   const operator = accountsFor(networkId).operator;
   const wallet = walletFor(networkId, resolveKey(operator, `${networkId} operator`));
-  // Every function except initiatePayment requires the escrow row written by a
-  // prior tx, so "not initiated" right after that tx confirmed is replica lag.
-  const dependsOnPriorTx = functionName !== "initiatePayment";
+  // Every call here depends on state a previous tx wrote, so the matching revert
+  // right after that tx confirmed is replica lag rather than a real failure:
+  // every function except initiatePayment needs the escrow row, and
+  // initiatePayment needs the sender's allowance (approved one tx earlier — a
+  // replica that hasn't seen that block yet estimates against a zero allowance).
+  const dependsOnEscrowRow = functionName !== "initiatePayment";
   const hash = await retryOnReplicaLag(
     () =>
       wallet.writeContract({
@@ -443,7 +446,8 @@ export async function operatorWrite(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         args: args as any,
       }),
-    (message) => dependsOnPriorTx && message.includes("not initiated")
+    (message) =>
+      dependsOnEscrowRow ? message.includes("not initiated") : message.includes("insufficient allowance")
   );
   return confirm(networkId, hash);
 }
@@ -511,6 +515,43 @@ export async function ensureTreasuryAllowance(
     args: [spender, 2n ** 256n - 1n],
   });
   await confirm(networkId, hash);
+}
+
+/**
+ * Approve the escrow contract for exactly `amount` of the sender's token, right
+ * before the escrow pulls it. Never an unlimited approval: a standing MAX
+ * allowance leaves an entity wallet drainable for its whole balance by whatever
+ * the escrow address turns out to be, whereas an exact one caps the loss at the
+ * payment in flight and `initiatePayment` consumes it back to zero.
+ *
+ * An allowance that already covers the amount short-circuits with no tx, so
+ * networks deployed before this — whose entity wallets hold MAX approvals from
+ * the old deploy scripts — keep settling untouched.
+ *
+ * Returns the approval tx, or null when none was needed.
+ */
+export async function ensureSenderAllowance(
+  networkId: string,
+  entityExternalId: string,
+  tokenSymbol: string,
+  amount: bigint
+): Promise<TxResult | null> {
+  const contracts = networkContracts(networkId);
+  const token = contracts.tokens[tokenSymbol];
+  if (!token) throw new Error(`Token ${tokenSymbol} not deployed on ${networkId}`);
+  const spender = contracts.PaymentSettlement;
+  const sender = accountsFor(networkId).entityWallets[entityExternalId];
+  if (!sender) throw new Error(`No wallet configured for ${entityExternalId} on ${networkId}`);
+  if ((await tokenAllowance(networkId, token.address, sender.address, spender)) >= amount) return null;
+
+  const wallet = walletFor(networkId, resolveKey(sender, `${networkId} wallet for ${entityExternalId}`));
+  const hash = await wallet.writeContract({
+    address: token.address,
+    abi: ERC20_ABI,
+    functionName: "approve",
+    args: [spender, amount],
+  });
+  return confirm(networkId, hash);
 }
 
 /**

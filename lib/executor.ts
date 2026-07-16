@@ -18,6 +18,7 @@ import { transitionStatus } from "./transitions";
 import { assetForCurrency, toBaseUnits } from "./assets";
 import {
   accountsFor,
+  ensureSenderAllowance,
   loadDeployments,
   onchainPaymentId,
   onchainPaymentState,
@@ -242,7 +243,31 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
   const amountUnits = toBaseUnits(payment.amount, sourceToken.decimals);
 
   try {
-    // 2. Escrow source funds on the source network.
+    // 2. Allowance, then escrow. The sender approves this payment's amount and
+    //    nothing more, so the escrow consumes the allowance back to zero — it
+    //    holds no standing claim on the wallet between payments. Nothing is
+    //    escrowed yet, so a failure here just fails the payment.
+    const approvalTx = await ensureSenderAllowance(
+      sourceNet,
+      payment.sender.externalId,
+      sourceAsset.symbol,
+      amountUnits
+    );
+    if (approvalTx) {
+      await audit(
+        "payment.allowance_granted",
+        {
+          network: sourceNet,
+          asset: sourceAsset.symbol,
+          amount: payment.amount,
+          amountUnits: amountUnits.toString(), // never a bigint — audit() JSON-stringifies
+          spender: dep.networks[sourceNet].contracts.PaymentSettlement,
+          txHash: approvalTx.hash,
+        },
+        payment.id
+      );
+    }
+
     const initTx = await operatorWrite(sourceNet, "initiatePayment", [
       pid,
       senderWallet.address,
