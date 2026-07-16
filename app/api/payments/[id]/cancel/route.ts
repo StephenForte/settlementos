@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { CANCELLABLE_STATES, type PaymentStatus } from "@/lib/state";
-import { actorOf, authorizePaymentWrite, notFound, requirePrincipal } from "../../../guard";
+import { actorOf, authorizePaymentWrite, conflict, notFound, requirePrincipal } from "../../../guard";
 
 /** Cancel a payment before execution. */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -17,10 +17,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (denied) return denied;
 
   if (!CANCELLABLE_STATES.includes(payment.status as PaymentStatus)) {
-    return NextResponse.json(
-      { error: `payment cannot be cancelled from status ${payment.status}` },
-      { status: 409 }
-    );
+    return conflict(`payment cannot be cancelled from status ${payment.status}`);
   }
   const updated = await prisma.payment.update({ where: { id }, data: { status: "CANCELLED" } });
   await audit("payment.status.cancelled", { from: payment.status }, id, actorOf(principal));

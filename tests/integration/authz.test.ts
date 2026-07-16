@@ -78,14 +78,14 @@ describe("authentication", () => {
     ]);
     for (const res of responses) {
       expect(res.status).toBe(401);
-      expect(await res.json()).toEqual({ error: "unauthorized" });
+      expect(await res.json()).toEqual({ error_code: "unauthorized", message: "unauthorized" });
     }
   });
 
   it("treats an invalid key exactly like anonymous — no oracle for which keys exist", async () => {
     const res = await paymentsGET(get("/api/payments", "sos_not_a_real_key"));
     expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: "unauthorized" });
+    expect(await res.json()).toEqual({ error_code: "unauthorized", message: "unauthorized" });
   });
 
   it("accepts the session cookie as well as the header (the browser demo's path)", async () => {
@@ -187,7 +187,7 @@ describe("platform-only read routes", () => {
     ]);
     for (const res of responses) {
       expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: "forbidden" });
+      expect(await res.json()).toEqual({ error_code: "forbidden", message: "forbidden" });
     }
   });
 

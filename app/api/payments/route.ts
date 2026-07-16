@@ -6,7 +6,15 @@ import { CURRENCY_TO_ASSET } from "@/lib/assets";
 import { supportedCorridors, corridorCode } from "@/lib/fx";
 import { NETWORKS } from "@/lib/networks";
 import { isChainReady, loadDeployments } from "@/lib/chain";
-import { actorOf, forbidden, isPlatformRole, requirePrincipal } from "../guard";
+import {
+  actorOf,
+  forbidden,
+  invalidRequest,
+  isPlatformRole,
+  notFound,
+  requirePrincipal,
+  scrubFailureReason,
+} from "../guard";
 
 export async function GET(req: NextRequest) {
   const principal = await requirePrincipal(req);
@@ -20,14 +28,17 @@ export async function GET(req: NextRequest) {
     orderBy: { createdAt: "desc" },
     include: { sender: true, recipient: true },
   });
-  return NextResponse.json({ payments });
+  return NextResponse.json({ payments: payments.map((p) => scrubFailureReason(principal, p)) });
 }
 
 export async function POST(req: NextRequest) {
   const principal = await requirePrincipal(req);
   if (principal instanceof NextResponse) return principal;
 
-  const body = await req.json();
+  // An unparseable body must be a 400 we chose, not an unhandled throw that
+  // Next renders as a 500 (with a stack, in dev).
+  const body = await req.json().catch(() => null);
+  if (!body || typeof body !== "object") return invalidRequest("body must be a JSON object");
   const {
     sender_id,
     recipient_id,
@@ -54,45 +65,38 @@ export async function POST(req: NextRequest) {
   }
 
   if (!NETWORKS[source_network] || !NETWORKS[destination_network]) {
-    return NextResponse.json(
-      { error: `unknown network — supported: ${Object.keys(NETWORKS).join(", ")}` },
-      { status: 400 }
-    );
+    return invalidRequest(`unknown network — supported: ${Object.keys(NETWORKS).join(", ")}`);
   }
   if (isChainReady()) {
     const deployed = loadDeployments().networks;
     const missing = [source_network, destination_network].find((n) => !deployed[n]);
     if (missing) {
-      return NextResponse.json(
-        {
-          error: `network ${missing} has no deployed contracts — ${
-            NETWORKS[missing]?.live ? `run: npm run deploy:${missing}` : "run: npm run setup"
-          }`,
-        },
-        { status: 400 }
+      return invalidRequest(
+        `network ${missing} has no deployed contracts — ${
+          NETWORKS[missing]?.live ? `run: npm run deploy:${missing}` : "run: npm run setup"
+        }`
       );
     }
   }
 
   if (!sender_id || !recipient_id || !amount || !source_currency || !destination_currency) {
-    return NextResponse.json(
-      { error: "sender_id, recipient_id, amount, source_currency, destination_currency are required" },
-      { status: 400 }
+    return invalidRequest(
+      "sender_id, recipient_id, amount, source_currency, destination_currency are required"
     );
   }
   if (Number(amount) <= 0 || Number.isNaN(Number(amount))) {
-    return NextResponse.json({ error: "amount must be a positive number" }, { status: 400 });
+    return invalidRequest("amount must be a positive number");
   }
   const sourceAsset = CURRENCY_TO_ASSET[source_currency];
   const destAsset = CURRENCY_TO_ASSET[destination_currency];
   if (!sourceAsset || !destAsset) {
-    return NextResponse.json({ error: "unsupported currency" }, { status: 400 });
+    return invalidRequest("unsupported currency");
   }
   if (
     source_currency !== destination_currency &&
     !supportedCorridors().includes(corridorCode(source_currency, destination_currency))
   ) {
-    return NextResponse.json({ error: "unsupported corridor" }, { status: 400 });
+    return invalidRequest("unsupported corridor");
   }
 
   const [sender, recipient] = await Promise.all([
@@ -100,7 +104,8 @@ export async function POST(req: NextRequest) {
     prisma.entity.findUnique({ where: { externalId: recipient_id } }),
   ]);
   if (!sender || !recipient) {
-    return NextResponse.json({ error: "unknown sender_id or recipient_id" }, { status: 404 });
+    // Deliberately does not say *which* of the two is unknown.
+    return notFound();
   }
 
   const id = `pay_${randomBytes(6).toString("hex")}`;

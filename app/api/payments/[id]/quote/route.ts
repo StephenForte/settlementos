@@ -3,7 +3,13 @@ import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { assertTransition } from "@/lib/state";
 import { quoteRoutes } from "@/lib/routing";
-import { actorOf, authorizePaymentWrite, notFound, requirePrincipal } from "../../../guard";
+import {
+  actorOf,
+  authorizePaymentWrite,
+  caughtErrorResponse,
+  notFound,
+  requirePrincipal,
+} from "../../../guard";
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const principal = await requirePrincipal(req);
@@ -19,7 +25,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   try {
     assertTransition(payment.status, "QUOTED");
   } catch (e) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 409 });
+    return caughtErrorResponse(e, "conflict", "payments.quote");
   }
 
   const routes = await quoteRoutes(id);

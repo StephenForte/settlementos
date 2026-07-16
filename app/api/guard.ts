@@ -8,17 +8,42 @@
 
 import { NextResponse } from "next/server";
 import { authenticate, type Principal, type Role } from "@/lib/auth";
+import { apiError, fromThrown, SAFE_FAILURE_SUMMARY, type ApiErrorCode } from "@/lib/api-errors";
+
+/** Turn a client-safe error into the response to return. */
+export function errorResponse(code: ApiErrorCode, message?: string): NextResponse {
+  const { status, body } = apiError(code, message);
+  return NextResponse.json(body, { status });
+}
+
+/**
+ * The catch-path helper every handler uses: logs the real error server-side and
+ * answers with a canned body. `fallback` applies when the thrown error is not an
+ * ApiError; `context` labels the server log line.
+ */
+export function caughtErrorResponse(e: unknown, fallback: ApiErrorCode, context: string): NextResponse {
+  const { status, body } = fromThrown(e, fallback, context);
+  return NextResponse.json(body, { status });
+}
 
 export function unauthorized(): NextResponse {
-  return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  return errorResponse("unauthorized");
 }
 
 export function forbidden(): NextResponse {
-  return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  return errorResponse("forbidden");
 }
 
 export function notFound(): NextResponse {
-  return NextResponse.json({ error: "not found" }, { status: 404 });
+  return errorResponse("not_found");
+}
+
+export function invalidRequest(message: string): NextResponse {
+  return errorResponse("invalid_request", message);
+}
+
+export function conflict(message: string): NextResponse {
+  return errorResponse("conflict", message);
 }
 
 /**
@@ -48,6 +73,22 @@ export function isPlatformRole(principal: Principal): boolean {
  */
 export function actorOf(principal: Principal): string {
   return `${principal.label} (${principal.role})`;
+}
+
+/**
+ * Redact a payment's stored failure detail for tenant callers. The reason the
+ * executor writes names assets, networks, free balances, and RPC failures —
+ * operator diagnostics, not something to hand a counterparty. Platform roles
+ * still see it verbatim.
+ *
+ * Returns a copy: never mutate the prisma row, which callers may still use.
+ */
+export function scrubFailureReason<T extends { failureReason: string | null }>(
+  principal: Principal,
+  payment: T
+): T {
+  if (isPlatformRole(principal) || payment.failureReason === null) return payment;
+  return { ...payment, failureReason: SAFE_FAILURE_SUMMARY };
 }
 
 /**

@@ -13,7 +13,10 @@ export async function POST(req: NextRequest) {
 
   const principal = raw ? await principalForKey(raw) : null;
   if (!principal) {
-    return NextResponse.json({ error: "invalid api key" }, { status: 401 });
+    return NextResponse.json(
+      { error_code: "unauthorized", message: "invalid api key" },
+      { status: 401 }
+    );
   }
 
   const res = NextResponse.json({ role: principal.role, label: principal.label });

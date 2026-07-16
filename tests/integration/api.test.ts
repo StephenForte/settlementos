@@ -70,18 +70,18 @@ describe("POST /api/payments", () => {
   it("rejects unknown networks", async () => {
     const res = await paymentsPOST(postJson({ ...VALID, source_network: "arbitrum-one" }));
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/unknown network/);
+    expect((await res.json()).message).toMatch(/unknown network/);
   });
 
   it("rejects registered-but-undeployed networks with a actionable hint", async () => {
     // The real testnets are in the registry but not in the test fixture's deployments.
     const res = await paymentsPOST(postJson({ ...VALID, destination_network: "base-sepolia" }));
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/no deployed contracts.*deploy:base-sepolia/);
+    expect((await res.json()).message).toMatch(/no deployed contracts.*deploy:base-sepolia/);
 
     const amoy = await paymentsPOST(postJson({ ...VALID, destination_network: "polygon-amoy" }));
     expect(amoy.status).toBe(400);
-    expect((await amoy.json()).error).toMatch(/no deployed contracts.*deploy:polygon-amoy/);
+    expect((await amoy.json()).message).toMatch(/no deployed contracts.*deploy:polygon-amoy/);
   });
 
   it("rejects missing required fields", async () => {
@@ -99,7 +99,7 @@ describe("POST /api/payments", () => {
   it("rejects unsupported currencies but allows same-currency transfers", async () => {
     const badCurrency = await paymentsPOST(postJson({ ...VALID, source_currency: "EUR" }));
     expect(badCurrency.status).toBe(400);
-    expect((await badCurrency.json()).error).toMatch(/unsupported currency/);
+    expect((await badCurrency.json()).message).toMatch(/unsupported currency/);
 
     const sameCurrency = await paymentsPOST(
       postJson({ ...VALID, source_currency: "JPY", destination_currency: "JPY" })

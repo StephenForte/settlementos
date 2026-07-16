@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
-import { actorOf, notFound, requireRole } from "../../../guard";
+import { actorOf, conflict, invalidRequest, notFound, requireRole } from "../../../guard";
 
 /**
  * Compliance reviewer decision on a MANUAL_REVIEW payment. The four-eyes check
@@ -18,13 +18,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const note = (body.note as string) || "";
 
   if (!["approve", "reject"].includes(decision)) {
-    return NextResponse.json({ error: "decision must be 'approve' or 'reject'" }, { status: 400 });
+    return invalidRequest("decision must be 'approve' or 'reject'");
   }
 
   const payment = await prisma.payment.findUnique({ where: { id } });
   if (!payment) return notFound();
   if (payment.status !== "MANUAL_REVIEW") {
-    return NextResponse.json({ error: `payment is not in MANUAL_REVIEW (current: ${payment.status})` }, { status: 409 });
+    return conflict(`payment is not in MANUAL_REVIEW (current: ${payment.status})`);
   }
 
   const status = decision === "approve" ? "APPROVED" : "REJECTED";

@@ -106,7 +106,7 @@ describe("write routes reject anonymous callers", () => {
     ]);
     for (const res of responses) {
       expect(res.status).toBe(401);
-      expect(await res.json()).toEqual({ error: "unauthorized" });
+      expect(await res.json()).toEqual({ error_code: "unauthorized", message: "unauthorized" });
     }
   });
 });
@@ -128,7 +128,7 @@ describe("POST /api/payments sender authorization", () => {
       post("/api/payments", draft("ent_sg_supplier"), API_KEYS.entities.ent_acme_us)
     );
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: "forbidden" });
+    expect(await res.json()).toEqual({ error_code: "forbidden", message: "forbidden" });
   });
 
   it("403s an ENTITY naming a sender that does not exist at all — same answer, no oracle", async () => {
@@ -252,7 +252,7 @@ describe("treasury write routes are OPERATOR only", () => {
     ]);
     for (const res of responses) {
       expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: "forbidden" });
+      expect(await res.json()).toEqual({ error_code: "forbidden", message: "forbidden" });
     }
   });
 });

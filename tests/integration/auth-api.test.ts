@@ -40,7 +40,7 @@ describe("POST /api/auth/login", () => {
   it("rejects an unknown key with a generic 401 and no cookie", async () => {
     const res = await loginPOST(login({ api_key: "sos_not_a_real_key" }));
     expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: "invalid api key" });
+    expect(await res.json()).toEqual({ error_code: "unauthorized", message: "invalid api key" });
     expect(res.cookies.get(API_KEY_COOKIE)).toBeUndefined();
   });
 
@@ -49,7 +49,7 @@ describe("POST /api/auth/login", () => {
     for (const body of [{}, { api_key: "" }, { api_key: "   " }, { api_key: 42 }]) {
       const res = await loginPOST(login(body));
       expect(res.status).toBe(401);
-      expect(await res.json()).toEqual({ error: "invalid api key" });
+      expect(await res.json()).toEqual({ error_code: "unauthorized", message: "invalid api key" });
     }
   });
 });

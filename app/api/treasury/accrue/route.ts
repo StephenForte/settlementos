@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { NETWORKS } from "@/lib/networks";
 import { accrueDaily } from "@/lib/treasury";
 import { treasuryErrorResponse } from "../errors";
-import { requireRole } from "../../guard";
+import { invalidRequest, requireRole } from "../../guard";
 
 /**
  * Demo control: advance the network's fund by one day of simulated yield.
@@ -17,13 +17,10 @@ export async function POST(req: NextRequest) {
   const { network } = body;
 
   if (!network) {
-    return NextResponse.json({ error: "network is required" }, { status: 400 });
+    return invalidRequest("network is required");
   }
   if (!NETWORKS[network]) {
-    return NextResponse.json(
-      { error: `unknown network — supported: ${Object.keys(NETWORKS).join(", ")}` },
-      { status: 400 }
-    );
+    return invalidRequest(`unknown network — supported: ${Object.keys(NETWORKS).join(", ")}`);
   }
 
   try {

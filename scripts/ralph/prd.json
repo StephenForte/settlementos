@@ -83,8 +83,8 @@
         "Tests pass"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Done 2026-07-16. lib/api-errors.ts is framework-free (codes, status + canned-message tables, ApiError, apiError(), fromThrown(), SAFE_FAILURE_SUMMARY); the NextResponse wrappers live in app/api/guard.ts (errorResponse/invalidRequest/conflict/caughtErrorResponse), keeping the established 'HTTP concerns under app/api, lib/ stays vitest-callable' split. DECISION: unified EVERY error body to { error_code, message } rather than only the catch paths — the ACs list unauthorized/forbidden/not_found among the stable codes, and those come from guard, not a catch. That renamed the field the UI reads, so 3 client components moved from data.error to data.message (the login form hardcodes its own message and was unaffected), and ~19 test assertions changed. Deliberate message pass-through survives for errors a route CHOSE (validation strings, TreasuryError domain text); TreasuryError also keeps its specific `code` alongside `error_code` so the UI can still branch on a guardrail. Two extras beyond the ACs: POST /api/payments + /api/entities parsed JSON with no .catch, so a malformed body escaped as an unhandled 500 (now 400 invalid_request); and 'unknown sender_id or recipient_id' became a plain notFound() since it named which id was unknown. balances' 503 keeps its own shape (chain_unavailable) — the 'run npm run setup' hint IS the point of that response. Verified on a real dev server end to end: forced execute failure -> {payment_id, status:FAILED, error_code:execution_failed, message:'execution failed'} with the real 'Insufficient mockJPY liquidity... available 100000000' only in the server log; sender read failureReason as the safe summary, operator read the full detail; happy-path 25k USD->JPY still SETTLED; chain INTACT. Suite 176 -> 184."
     },
     {
       "id": "US-006",

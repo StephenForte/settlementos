@@ -86,7 +86,7 @@ describe("POST /api/treasury/park", () => {
     expect(res.status).toBe(403);
     const data = await res.json();
     expect(data.code).toBe("NOT_ELIGIBLE");
-    expect(data.error).toMatch(/not cleared for MMF parking/);
+    expect(data.message).toMatch(/not cleared for MMF parking/);
 
     const unknown = await parkPOST(postJson("park", parkBody({ entity_id: "ent_ghost" })));
     expect(unknown.status).toBe(403);
@@ -98,11 +98,11 @@ describe("POST /api/treasury/park", () => {
   it("rejects missing fields, unknown networks, bad amounts, and unbacked assets", async () => {
     const missing = await parkPOST(postJson("park", { network: NETWORK, asset: "mockUSDC" }));
     expect(missing.status).toBe(400);
-    expect((await missing.json()).error).toMatch(/required/);
+    expect((await missing.json()).message).toMatch(/required/);
 
     const badNetwork = await parkPOST(postJson("park", parkBody({ network: "arbitrum-one" })));
     expect(badNetwork.status).toBe(400);
-    expect((await badNetwork.json()).error).toMatch(/unknown network/);
+    expect((await badNetwork.json()).message).toMatch(/unknown network/);
 
     for (const amount of ["0", "-5", "ten"]) {
       const res = await parkPOST(postJson("park", parkBody({ amount })));
@@ -180,7 +180,7 @@ describe("GET /api/treasury/positions and POST /api/treasury/recall", () => {
   it("rejects a missing, unknown, or already-recalled position", async () => {
     const missing = await recallPOST(postJson("recall", {}));
     expect(missing.status).toBe(400);
-    expect((await missing.json()).error).toMatch(/position_id is required/);
+    expect((await missing.json()).message).toMatch(/position_id is required/);
 
     const unknown = await recallPOST(postJson("recall", { position_id: "pos_does_not_exist" }));
     expect(unknown.status).toBe(404);
@@ -204,11 +204,11 @@ describe("POST /api/treasury/accrue", () => {
   it("rejects a missing network, an unknown network, and one with no fund", async () => {
     const missing = await accruePOST(postJson("accrue", {}));
     expect(missing.status).toBe(400);
-    expect((await missing.json()).error).toMatch(/network is required/);
+    expect((await missing.json()).message).toMatch(/network is required/);
 
     const badNetwork = await accruePOST(postJson("accrue", { network: "arbitrum-one" }));
     expect(badNetwork.status).toBe(400);
-    expect((await badNetwork.json()).error).toMatch(/unknown network/);
+    expect((await badNetwork.json()).message).toMatch(/unknown network/);
 
     const noFund = await accruePOST(postJson("accrue", { network: "base-sepolia" }));
     expect(noFund.status).toBe(400);

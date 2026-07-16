@@ -117,6 +117,19 @@ Phase 9 Track A: production hardening per AUDIT.md
   handler and read `res.cookies.get(NAME)` off the returned `NextResponse` — it exposes
   `value`/`httpOnly`/`sameSite`/`path`, and a `.delete()` shows up as value `""`.
   A no-arg handler (`POST()`) needs no Request at all.
+- EVERY API error body is `{ error_code, message }` (codes in `lib/api-errors.ts`).
+  Split by provenance: a message a route CHOSE is safe to ship (`invalidRequest(...)`,
+  `conflict(...)`, TreasuryError domain text); a message a THROW carried is not
+  (executor/prisma/viem errors name contract addresses, RPC URLs, revert data) — send
+  those through `caughtErrorResponse(e, fallback, context)`, which logs the real error
+  and answers canned. `(e as Error).message` in a handler is always a bug.
+  Clients read `data.message`, never `data.error`.
+- Route handlers must never `await req.json()` bare: an unparseable body becomes an
+  unhandled throw that Next renders as a 500 (with a stack, in dev). Always
+  `.catch(() => null)` and return a chosen 400.
+- Operator-only detail on a row (e.g. `Payment.failureReason`) is scrubbed at the READ
+  routes per principal (`scrubFailureReason`), not by mutating the row — and it has to
+  be applied in the list view as well as the detail view, or the redaction has a hole.
 - Route authorization goes through `app/api/guard.ts`: `requirePrincipal(req)` /
   `requireRole(req, ...roles)` return `Principal | NextResponse`, so every handler opens
   with `const p = await requireX(...); if (p instanceof NextResponse) return p;`. HTTP
@@ -320,4 +333,51 @@ Phase 9 Track A: production hardening per AUDIT.md
   - Still open after this story (scope for later): server components read prisma
     unscoped (page-level authz), and route ROLE rules exist while lib/ helpers remain
     callable without a principal.
+---
+
+## 2026-07-16 12:25 - US-005
+- Safe error handling. New `lib/api-errors.ts` (framework-free): the ApiErrorCode
+  union, code -> status + code -> canned-message tables, `ApiError` (for a lib that
+  wants to choose the client's message), `apiError()`, `fromThrown()` (console.errors
+  the real error, returns a safe one), `SAFE_FAILURE_SUMMARY`. NextResponse wrappers
+  added to `app/api/guard.ts`: errorResponse / invalidRequest / conflict /
+  caughtErrorResponse, plus `scrubFailureReason(principal, payment)`.
+- Every app/api handler now returns `{ error_code, message }`. The execute route no
+  longer echoes the executor's thrown message; the quote route no longer echoes
+  assertTransition's; treasury/errors.ts's 500 fallback no longer echoes an unknown
+  throw. `Payment.failureReason` is scrubbed to a fixed summary for ENTITY callers in
+  BOTH the list and detail reads (the row itself is untouched — operators still see it).
+- Files: lib/api-errors.ts (new), app/api/guard.ts, app/api/treasury/errors.ts, all 10
+  route handlers, app/payments/new/page.tsx, app/payments/[id]/page.tsx,
+  app/liquidity/mmf-card.tsx, tests/integration/api-errors.test.ts (new, 8 tests) +
+  5 existing test files re-pointed at the new body shape. AGENTS.md: two new invariants
+  + api-errors/guard rows in the architecture map. Suite 176 -> 184; tsc + lint green.
+- **Learnings for future iterations:**
+  - The ACs said "catch paths", but the stable-code list includes unauthorized/
+    forbidden/not_found, which guard emits — so the honest reading is ONE body shape
+    for the whole API. Unifying renamed the field clients read (`error` -> `message`):
+    3 client components and ~19 test assertions. Worth doing in one pass; a half-
+    migrated error shape would be worse than either end state.
+  - Distinguish a message a route CHOSE (validation text, TreasuryError domain text —
+    safe, keep it) from a message a THROW carried (executor/prisma/viem — leaks
+    addresses, RPC URLs, revert data — never ship it). That distinction is the whole
+    module: `apiError()` for the former, `fromThrown()` for the latter.
+  - `fromThrown` returns `{status, body}` rather than a NextResponse specifically so
+    the execute route can spread `...body` next to its own `payment_id`/`status`
+    fields. A route that needs to merge fields imports lib/api-errors directly;
+    everything else uses guard's wrappers.
+  - Routes that did `await req.json()` with no `.catch` (payments POST, entities POST)
+    turned a malformed body into an unhandled throw — i.e. a Next 500 with a stack in
+    dev. `.catch(() => null)` + a chosen 400 is the fix; grep for bare `req.json()`
+    when auditing a route.
+  - $800k USD->JPY (the amount that overshoots mockJPY liquidity) also trips the
+    compliance MANUAL_REVIEW threshold, so driving an execute FAILURE through the HTTP
+    API needs a reviewer approve first. The test helper `createApprovedPayment()`
+    bypasses compliance, so route tests hit the failure directly.
+  - The dev.db was mid-restore-dance stale again (no ApiKey table -> every
+    authenticated call 500s while anonymous 401s correctly — that asymmetry is the
+    tell). Ran the chains + `npm run setup` and LEFT the freshly seeded DB in place
+    rather than restoring the broken backup.
+  - Tests that force a failure should `vi.spyOn(console, "error").mockImplementation()`
+    — fromThrown logs by design and otherwise floods the suite output.
 ---

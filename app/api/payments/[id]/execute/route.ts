@@ -3,7 +3,15 @@ import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { runComplianceChecks } from "@/lib/compliance";
 import { executePayment } from "@/lib/executor";
-import { actorOf, authorizePaymentWrite, notFound, requirePrincipal } from "../../../guard";
+import { fromThrown } from "@/lib/api-errors";
+import {
+  actorOf,
+  authorizePaymentWrite,
+  conflict,
+  invalidRequest,
+  notFound,
+  requirePrincipal,
+} from "../../../guard";
 
 /**
  * Execute a payment. From QUOTED: runs the compliance gate first; if all checks
@@ -28,7 +36,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (body.route_id && payment.status === "QUOTED") {
     const routes = payment.quoteJson ? JSON.parse(payment.quoteJson) : [];
     const route = routes.find((r: { route_id: string }) => r.route_id === body.route_id);
-    if (!route) return NextResponse.json({ error: "unknown route_id" }, { status: 400 });
+    if (!route) return invalidRequest("unknown route_id");
     payment = await prisma.payment.update({
       where: { id },
       data: {
@@ -59,10 +67,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   if (payment.status !== "APPROVED") {
-    return NextResponse.json(
-      { error: `payment cannot be executed from status ${payment.status}` },
-      { status: 409 }
-    );
+    return conflict(`payment cannot be executed from status ${payment.status}`);
   }
 
   try {
@@ -74,10 +79,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       settlement_transaction_hash: settled.settleTxHash,
     });
   } catch (e) {
+    // Never the thrown message: an executor failure carries contract addresses,
+    // RPC URLs, and revert data. The caller gets the resulting status (which the
+    // executor has already moved to FAILED/REFUNDED) and a stable code; the real
+    // error goes to the server log. Operators read the detail off the payment's
+    // failureReason, which stays unredacted for platform roles.
     const current = await prisma.payment.findUnique({ where: { id } });
-    return NextResponse.json(
-      { payment_id: id, status: current?.status, error: (e as Error).message },
-      { status: 500 }
-    );
+    const { status, body } = fromThrown(e, "execution_failed", "payments.execute");
+    return NextResponse.json({ payment_id: id, status: current?.status, ...body }, { status });
   }
 }

@@ -58,7 +58,7 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
         body: JSON.stringify(body ?? {}),
       });
       const data = await res.json();
-      if (!res.ok && data.error) setError(data.error);
+      if (!res.ok && data.message) setError(data.message);
     } catch (e) {
       setError(String(e));
     } finally {

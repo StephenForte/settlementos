@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { isPlatformRole, notFound, requirePrincipal } from "../../guard";
+import { isPlatformRole, notFound, requirePrincipal, scrubFailureReason } from "../../guard";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const principal = await requirePrincipal(req);
@@ -24,5 +24,5 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!isPlatformRole(principal) && ![payment.senderId, payment.recipientId].includes(principal.entityId!)) {
     return notFound();
   }
-  return NextResponse.json({ payment });
+  return NextResponse.json({ payment: scrubFailureReason(principal, payment) });
 }

@@ -11,8 +11,13 @@ export async function GET(req: NextRequest) {
   if (principal instanceof NextResponse) return principal;
 
   if (!isChainReady()) {
+    // 503, not one of the ApiError codes: this is the demo's "you have not run
+    // setup yet" hint for an operator, and the instructions are the whole point.
     return NextResponse.json(
-      { error: "Chains not set up. Run: npm run chain, npm run chain:polygon, then npm run setup" },
+      {
+        error_code: "chain_unavailable",
+        message: "Chains not set up. Run: npm run chain, npm run chain:polygon, then npm run setup",
+      },
       { status: 503 }
     );
   }

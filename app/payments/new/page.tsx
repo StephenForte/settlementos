@@ -90,7 +90,7 @@ export default function NewPaymentPage() {
     });
     const data = await res.json();
     if (!res.ok) {
-      setError(data.error ?? "Failed to create payment");
+      setError(data.message ?? "Failed to create payment");
       setSubmitting(false);
       return;
     }

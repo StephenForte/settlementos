@@ -62,7 +62,8 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [scripts/setup.mjs](scripts/setup.mjs) | Local deploy (tokens, escrow, TokenizedMMF + its yield buffer and treasury approval) + DB seed (dev-mnemonic accounts, local only) |
 | [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy via argv): env deployer key, per-network gas-dust targets, generated dust wallets, DB registration |
 | `app/api/*` | REST route handlers (thin; logic lives in lib/) |
-| [app/api/guard.ts](app/api/guard.ts) | Authorization glue: `requirePrincipal(req)` / `requireRole(req, ...roles)` return a `Principal` **or** the `NextResponse` to return (`if (x instanceof NextResponse) return x`), plus `isPlatformRole()` for the OPERATOR/REVIEWER-see-everything check, `authorizePaymentWrite(principal, payment)` for the quote/execute/cancel rule (OPERATOR or the sender; returns the response to send or null), and `actorOf(principal)` for the audit actor. HTTP concerns live here, not in lib/auth.ts |
+| [app/api/guard.ts](app/api/guard.ts) | Authorization glue: `requirePrincipal(req)` / `requireRole(req, ...roles)` return a `Principal` **or** the `NextResponse` to return (`if (x instanceof NextResponse) return x`), plus `isPlatformRole()` for the OPERATOR/REVIEWER-see-everything check, `authorizePaymentWrite(principal, payment)` for the quote/execute/cancel rule (OPERATOR or the sender; returns the response to send or null), and `actorOf(principal)` for the audit actor. Also the error responses every handler returns: `errorResponse(code, msg?)` / `invalidRequest()` / `conflict()` / `unauthorized()` / `forbidden()` / `notFound()`, and `caughtErrorResponse(e, fallback, context)` for catch paths; `scrubFailureReason(principal, payment)` redacts operator detail for tenants. HTTP concerns live here, not in lib/auth.ts |
+| [lib/api-errors.ts](lib/api-errors.ts) | Framework-free error vocabulary: the `ApiErrorCode` union (unauthorized/forbidden/not_found/invalid_request/conflict/execution_failed/internal), the code→status and code→canned-message tables, `ApiError` (throw when a lib wants to pick the client's message), `apiError()`, `fromThrown()` (logs the real error, returns a safe one), `SAFE_FAILURE_SUMMARY`. The NextResponse wrappers live in app/api/guard.ts |
 | `app/api/treasury/*` | MMF routes: `park`, `recall`, `positions` (GET, derived value per position), `accrue`. `errors.ts` holds the single `TreasuryErrorCode` → HTTP status table — add a code there when you add one to lib/treasury |
 | `app/liquidity/` | Treasury dashboard. `page.tsx` is a server component (all chain/DB reads, per-network sections); `mmf-card.tsx` is the `"use client"` MMF card — park form, per-position Recall, Accrue demo control — which POSTs to the treasury routes and then `router.refresh()`es |
 | `contracts/` | Solidity 0.8.24: `MockERC20` (permissionless mint, by design), `PaymentSettlement` escrow, `TokenizedMMF` (operator-gated share fund for parked treasury liquidity; monotonic index, no cross-calls with escrow) |
@@ -96,6 +97,18 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   `requirePrincipal`/`requireRole` guard. Errors stay generic and leak nothing —
   anonymous and invalid keys get the same 401, and a tenant asking for another
   tenant's row gets a **404, never a 403**, so no response confirms an id exists.
+- **A thrown error never reaches a client**: every API error body is
+  `{ error_code, message }` where `error_code` is one of the stable codes in
+  `lib/api-errors.ts`. A message is only shown if a route *chose* it
+  (`invalidRequest("unsupported currency")`, `conflict(...)`, a `TreasuryError`);
+  a **caught** error goes through `caughtErrorResponse(e, fallback, context)`,
+  which `console.error`s the real thing server-side and answers with a canned
+  message. Never `(e as Error).message` in a handler — executor/prisma/viem errors
+  carry contract addresses, RPC URLs, and revert data.
+- **`Payment.failureReason` is operator detail**: the row keeps the full reason, but
+  reads scrub it to a fixed summary for ENTITY callers (`scrubFailureReason` in
+  guard.ts, applied in both the list and detail routes). It names treasury balances
+  and networks a tenant has no business seeing.
 - **The audit actor comes from the key, never the body**: a route audits with
   `actorOf(principal)` (`"<label> (<ROLE>)"`) — a request field naming an actor would
   be a forgeable signature, so no handler accepts one. Events raised by the executor

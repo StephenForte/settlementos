@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { randomBytes } from "node:crypto";
 import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
-import { actorOf, isPlatformRole, requirePrincipal, requireRole } from "../guard";
+import { actorOf, invalidRequest, isPlatformRole, requirePrincipal, requireRole } from "../guard";
 
 export async function GET(req: NextRequest) {
   const principal = await requirePrincipal(req);
@@ -21,10 +21,11 @@ export async function POST(req: NextRequest) {
   const principal = await requireRole(req, "OPERATOR");
   if (principal instanceof NextResponse) return principal;
 
-  const body = await req.json();
+  const body = await req.json().catch(() => null);
+  if (!body || typeof body !== "object") return invalidRequest("body must be a JSON object");
   const { name, country, role = "RECIPIENT", wallet_address, approved_corridors = [] } = body;
   if (!name || !country) {
-    return NextResponse.json({ error: "name and country are required" }, { status: 400 });
+    return invalidRequest("name and country are required");
   }
   const externalId = `ent_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 24)}_${randomBytes(2).toString("hex")}`;
   const entity = await prisma.entity.create({

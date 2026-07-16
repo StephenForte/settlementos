@@ -3,7 +3,7 @@ import { ASSETS, fromBaseUnits, type AssetSymbol } from "@/lib/assets";
 import { prisma } from "@/lib/db";
 import { recall } from "@/lib/treasury";
 import { treasuryErrorResponse } from "../errors";
-import { requireRole } from "../../guard";
+import { invalidRequest, requireRole } from "../../guard";
 
 /**
  * Recall a parked position T+0 — principal plus accrued yield back to the
@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
   const { position_id } = body;
 
   if (!position_id) {
-    return NextResponse.json({ error: "position_id is required" }, { status: 400 });
+    return invalidRequest("position_id is required");
   }
 
   try {
