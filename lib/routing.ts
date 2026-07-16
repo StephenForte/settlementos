@@ -3,7 +3,8 @@
 // payments get a simulated-bridge route with destination-chain payout plus a
 // single-chain fallback that settles on the source network with a ledger credit.
 
-import { quoteFx, roundCurrency } from "./fx";
+import { applyBps, convert, formatRate, quoteFx, FX_SPREAD_BPS } from "./fx";
+import { formatMinorUnits, parseAmount } from "./money";
 import { assetForCurrency, fromBaseUnits, toBaseUnits, type AssetSymbol } from "./assets";
 import { accountsFor, isChainReady, loadDeployments, tokenBalance } from "./chain";
 import { networkInfo } from "./networks";
@@ -99,32 +100,34 @@ async function liquidityCheck(
 
 export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
   const payment = await prisma.payment.findUniqueOrThrow({ where: { id: paymentId } });
-  const amount = Number(payment.amount);
   const src = payment.sourceCurrency;
   const dst = payment.destinationCurrency;
+  // Payment.amount is canonical (lib/money.ts gates the create route), so this
+  // re-parse is exact — quoting works in the same minor units the row stores.
+  const amountMinor = parseAmount(payment.amount, src);
   const sourceNet = payment.sourceNetwork;
   const destNet = payment.destinationNetwork;
   const sourceAsset = assetForCurrency(src);
   const destAsset = assetForCurrency(dst);
-  const fx = quoteFx(amount, src, dst);
+  const fx = quoteFx(amountMinor, src, dst);
 
   const common = {
     source_asset: sourceAsset.symbol,
     destination_asset: destAsset.symbol,
-    mid_market_rate: fx.midRate.toFixed(6),
+    mid_market_rate: formatRate(fx.midRate),
     fx_spread_bps: fx.spreadBps,
     slippage_bps: fx.slippageBps,
     platform_fee_bps: fx.platformFeeBps,
-    platform_fee: roundCurrency(fx.platformFee, src),
+    platform_fee: formatMinorUnits(fx.platformFee, src),
     liquidity_available: true,
     recall_required: false,
     compliance_required: true,
   };
 
   if (sourceNet === destNet) {
-    const effective = fx.effectiveRate;
-    const destAmount = roundCurrency(fx.destinationAmount, dst);
-    const liq = await liquidityCheck(destAsset.symbol, destNet, fx.destinationAmount);
+    const effective = formatRate(fx.effectiveRate);
+    const destAmount = formatMinorUnits(fx.destinationAmount, dst);
+    const liq = await liquidityCheck(destAsset.symbol, destNet, Number(destAmount));
     const net = networkInfo(sourceNet).label;
     return [
       {
@@ -137,7 +140,7 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
         destination_network: destNet,
         estimated_gas_usd: "0.11",
         estimated_time_seconds: 15,
-        estimated_fx_rate: effective.toFixed(6),
+        estimated_fx_rate: effective,
         bridge_fee_bps: 0,
         estimated_destination_amount: destAmount,
         liquidity_available: liq.ok,
@@ -154,7 +157,7 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
         destination_network: destNet,
         estimated_gas_usd: "0.03",
         estimated_time_seconds: 14_400,
-        estimated_fx_rate: effective.toFixed(6),
+        estimated_fx_rate: effective,
         bridge_fee_bps: 0,
         estimated_destination_amount: destAmount,
         liquidity_available: liq.ok,
@@ -168,12 +171,17 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
   const srcLabel = networkInfo(sourceNet).label;
   const dstLabel = networkInfo(destNet).label;
 
-  const bridgedEffective = fx.midRate * (1 - (fx.spreadBps + fx.slippageBps + BRIDGE_FEE_BPS) / 10_000);
-  const bridgedDestAmount = (amount - fx.platformFee) * bridgedEffective;
-  const bridgedLiq = await liquidityCheck(destAsset.symbol, destNet, bridgedDestAmount);
+  // The bridge leg costs the corridor an extra fee, so it re-quotes off mid
+  // rather than compounding the instant route's already-worsened rate.
+  const bridgedEffective = applyBps(fx.midRate, FX_SPREAD_BPS + fx.slippageBps + BRIDGE_FEE_BPS);
+  const bridgedDestAmount = formatMinorUnits(
+    convert(amountMinor - fx.platformFee, bridgedEffective, src, dst),
+    dst
+  );
+  const bridgedLiq = await liquidityCheck(destAsset.symbol, destNet, Number(bridgedDestAmount));
 
-  const fallbackDestAmount = roundCurrency(fx.destinationAmount, dst);
-  const fallbackLiq = await liquidityCheck(destAsset.symbol, sourceNet, fx.destinationAmount);
+  const fallbackDestAmount = formatMinorUnits(fx.destinationAmount, dst);
+  const fallbackLiq = await liquidityCheck(destAsset.symbol, sourceNet, Number(fallbackDestAmount));
 
   return [
     {
@@ -191,9 +199,9 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
       destination_network: destNet,
       estimated_gas_usd: "0.26",
       estimated_time_seconds: 90,
-      estimated_fx_rate: bridgedEffective.toFixed(6),
+      estimated_fx_rate: formatRate(bridgedEffective),
       bridge_fee_bps: BRIDGE_FEE_BPS,
-      estimated_destination_amount: roundCurrency(bridgedDestAmount, dst),
+      estimated_destination_amount: bridgedDestAmount,
       liquidity_available: bridgedLiq.ok,
       recall_required: bridgedLiq.recallRequired,
       recommended: true,
@@ -208,7 +216,7 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
       destination_network: sourceNet,
       estimated_gas_usd: "0.11",
       estimated_time_seconds: 15,
-      estimated_fx_rate: fx.effectiveRate.toFixed(6),
+      estimated_fx_rate: formatRate(fx.effectiveRate),
       bridge_fee_bps: 0,
       estimated_destination_amount: fallbackDestAmount,
       liquidity_available: fallbackLiq.ok,

@@ -95,16 +95,24 @@ export function parseAmount(amount: unknown, currency: string): bigint {
 }
 
 /**
+ * A non-negative integer scaled by 10^decimals, back to its decimal string —
+ * keeping trailing zeros. The generic half of `formatMinorUnits`; lib/fx.ts
+ * uses it for FX rates, which are scaled integers but not money.
+ */
+export function formatScaledUnits(units: bigint, decimals: number): string {
+  if (decimals === 0) return units.toString();
+  const digits = units.toString().padStart(decimals + 1, "0");
+  return `${digits.slice(0, -decimals)}.${digits.slice(-decimals)}`;
+}
+
+/**
  * Minor units back to the canonical string form stored on the row: always
  * exactly the currency's decimals ("25000.00", "100" JPY). Unlike
  * `fromBaseUnits` it keeps trailing zeros — this is the fixed-precision
  * representation, not a display shortening.
  */
 export function formatMinorUnits(units: bigint, currency: string): string {
-  const decimals = currencyDecimals(currency);
-  if (decimals === 0) return units.toString();
-  const digits = units.toString().padStart(decimals + 1, "0");
-  return `${digits.slice(0, -decimals)}.${digits.slice(-decimals)}`;
+  return formatScaledUnits(units, currencyDecimals(currency));
 }
 
 /** Parse-and-normalize: the canonical string a validated amount is stored as. */

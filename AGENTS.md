@@ -52,7 +52,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/transitions.ts](lib/transitions.ts) | The one way a payment's status changes: `transitionStatus(payment, to, {data, detail, action, actor})` asserts the move is legal, then compare-and-swaps on the observed status (`updateMany where {id, status: from}`). Zero rows → `StaleTransitionError` (an `ApiError` with code `conflict`, so `caughtErrorResponse` renders a 409 with no mapping). Audits only after a successful swap |
 | [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: execution-lease claim, auto-recall of parked MMF liquidity, liquidity reservation, escrow, FX, payout, and the failure exits — refund while the escrow is held, **compensation** once it is released (`compensateSender`). `ExecutionLeaseError` (an `ApiError` with code `conflict` → 409, like `StaleTransitionError`) is a second attempt losing the lease. Also the operator-repair half: `stuckPayments()` (payments still holding funds, each with its escrow state read live) and `repairCompensation()` (re-run a compensation transfer that failed). `executorTestHooks` are the test-only throw points for every failure exit |
 | [lib/routing.ts](lib/routing.ts) | Route quotes (instant/batched/bridged), treasury liquidity checks. Parked MMF liquidity counts as available: free-short-but-parked-covers still quotes, flagged `recall_required` |
-| [lib/fx.ts](lib/fx.ts) | Simulated FX: static mid rates, spread + tiered slippage, platform fee |
+| [lib/fx.ts](lib/fx.ts) | Simulated FX, **all bigint**: static mid rates, spread + tiered slippage, platform fee. Amounts are currency **minor units**; rates are integers scaled by `10^RATE_DECIMALS` (18) — `midRate()` returns a scaled bigint, `formatRate()` renders it. `convert()` (minor units across currencies at a rate), `applyBps()` (worsen a rate), `usdEquivalent()` (→ USD minor units, for tiering/risk thresholds) |
 | [lib/compliance.ts](lib/compliance.ts) | Compliance gate (KYB, sanctions, wallet/tx/corridor risk) → PASS/FAIL/MANUAL_REVIEW. Sanctions + wallet screening dispatch to real providers when env config is set (`OPENSANCTIONS_API_KEY`, `CHAINALYSIS_ORACLE_RPC_URL`), mocks otherwise |
 | `lib/providers/` | Real vendor adapters: OpenSanctions (sanctions match API), Chainalysis sanctions oracle (keyless on-chain `isSanctioned()` read for wallet screening). **Fail-safe: any provider error/timeout → MANUAL_REVIEW, never fail-open.** Verbatim provider evidence persisted on `ComplianceCheck.rawResponse` |
 | [lib/audit.ts](lib/audit.ts) | Append-only hash-chained audit log + chain verifier |
@@ -61,7 +61,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/session.ts](lib/session.ts) | Next-only half of auth: `currentPrincipal()` resolves the `sos_key` cookie via `cookies()` for **server components** (which have no `Request`); `sessionCookieOptions()` is the one place the cookie's flags are defined. Keep `next/headers` out of lib/auth.ts so route tests can pass a plain `Request` |
 | [lib/treasury.ts](lib/treasury.ts) | Tokenized-MMF treasury ops: `park()` (subscribe unreserved liquidity into the fund), `recall()` (T+0 redeem of a position, principal + accrued yield back to the treasury), `accrueDaily()` (advance the fund index by one day at `MMF_ANNUAL_RATE_BPS`, default 3.5% APY; `dailyIndex()`/`valueOfShares()` are the pure bigint math), `freeTreasuryBalance()` (bigint balance − RESERVED rows), `parkedBalance()` (derived value of ACTIVE positions; `0n`, never a throw, where no fund exists), `recallForPayment()` (FIFO auto-recall for the executor), `TreasuryError` (typed codes for route handlers), `TREASURY_*` audit actions |
 | [lib/assets.ts](lib/assets.ts) | Asset metadata, currency↔token mapping, base-unit conversion |
-| [lib/money.ts](lib/money.ts) | The amount gate at the API boundary: `parseAmount(amount, currency)` → bigint **minor units** (canonical grammar only — no exponent/sign/whitespace, at most the currency's decimals, ≤15 integer digits, > 0), `formatMinorUnits()` / `canonicalAmount()` for the stored string, `CURRENCY_DECIMALS` (USD/SGD 2, JPY 0), typed `MoneyError`. Framework-free; routes map it to a 400 |
+| [lib/money.ts](lib/money.ts) | The amount gate at the API boundary: `parseAmount(amount, currency)` → bigint **minor units** (canonical grammar only — no exponent/sign/whitespace, at most the currency's decimals, ≤15 integer digits, > 0), `formatMinorUnits()` / `canonicalAmount()` for the stored string, `formatScaledUnits()` (its generic half — any integer scaled by `10^n`, used for FX rates), `CURRENCY_DECIMALS` (USD/SGD 2, JPY 0), typed `MoneyError`. Framework-free; routes map it to a 400 |
 | [scripts/setup.mjs](scripts/setup.mjs) | Local deploy (tokens, escrow, TokenizedMMF + its yield buffer and treasury approval) + DB seed (dev-mnemonic accounts, local only) |
 | [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy via argv): env deployer key, per-network gas-dust targets, generated dust wallets, DB registration |
 | `app/api/*` | REST route handlers (thin; logic lives in lib/) |
@@ -112,6 +112,16 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   canonical form (`canonicalAmount()`: exactly the currency's decimals), so
   everything downstream may assume it. Never gate an amount with `Number(x)` —
   it accepts every one of those inputs.
+- **Quoting math is bigint, and it floors**: `lib/fx.ts` never puts a monetary value
+  through a JS float — `157.2` is not representable, so `(amount - fee) * rate` drifts
+  against the base units actually escrowed. Amounts are minor units, rates are scaled
+  integers, and every monetary division **floors, in the platform's favour** (the
+  effective rate and the destination amount both round down, so a quote never promises
+  a recipient a minor unit the treasury must find). The one exception is the mid-rate
+  table's derived inverses, which round to *nearest*: that is data being represented as
+  accurately as the scale allows, not a fee — flooring there would bias every inverted
+  corridor down (157,200 JPY would round-trip to $999.99). `Number()` in fx.ts is for
+  bps constants only.
 - **Per-network accounts**: operator/treasury/entity addresses differ per network.
   Always resolve via `accountsFor(networkId)` and look up entity wallets by
   `wallet.network` (with `wallets[0]` fallback) — never assume one shared address

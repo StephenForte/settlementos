@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { formatAmount } from "@/lib/assets";
 import { explorerTxUrl } from "@/lib/networks";
 import { usdEquivalent } from "@/lib/fx";
+import { formatMinorUnits, parseAmount } from "@/lib/money";
 import { stuckPayments } from "@/lib/executor";
 import { Card, Stat, StatusBadge, Hash } from "@/components/ui";
 
@@ -20,11 +21,11 @@ export default async function DashboardHome() {
   const settled = payments.filter((p) => p.status === "SETTLED");
   const volumeUsd = settled.reduce((sum, p) => {
     try {
-      return sum + usdEquivalent(Number(p.amount), p.sourceCurrency);
+      return sum + usdEquivalent(parseAmount(p.amount, p.sourceCurrency), p.sourceCurrency);
     } catch {
       return sum;
     }
-  }, 0);
+  }, 0n);
   const pending = payments.filter(
     (p) => !["SETTLED", "COMPENSATED", "REJECTED", "CANCELLED", "REFUNDED", "EXPIRED", "FAILED"].includes(p.status)
   );
@@ -52,7 +53,11 @@ export default async function DashboardHome() {
       </header>
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Stat label="Settled Volume" value={`$${formatAmount(volumeUsd.toFixed(2))}`} sub="USD equivalent" />
+        <Stat
+          label="Settled Volume"
+          value={`$${formatAmount(formatMinorUnits(volumeUsd, "USD"))}`}
+          sub="USD equivalent"
+        />
         <Stat label="Settled Payments" value={String(settled.length)} />
         <Stat label="In Flight" value={String(pending.length)} sub={`${inReview.length} awaiting review`} />
         <Stat label="Failed / Rejected" value={String(failed.length)} />
