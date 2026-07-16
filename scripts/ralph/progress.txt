@@ -59,6 +59,14 @@ Phase 9 Track A: production hardening per AUDIT.md
   `TreasuryErrorCode` union rather than throwing a bare Error, so US-007's routes can
   map cause -> HTTP status in one place. Tests assert with
   `.rejects.toMatchObject({ code: "..." })`.
+- Fixed-point money math (lib/money.ts, lib/fx.ts): amounts are bigint MINOR units,
+  rates are bigint integers scaled by 10^n. Two rounding rules, and they are not the
+  same rule: a monetary division FLOORS in the platform's favour (fees, effective
+  rates, destination amounts), but a derived CONSTANT (an inverted mid rate) rounds to
+  NEAREST — it is data being represented at the scale's precision, and flooring it
+  silently bills the user a cent. When converting minor units across currencies the
+  10^dec factors are load-bearing (USD counts cents, JPY counts yen); a bare multiply
+  by the rate is off by 100x.
 - Rows that model financial history (TreasuryPosition, AuditEvent) are append-only:
   update status in place (ACTIVE -> RECALLED), never delete. Derive current value
   (shares x live index) instead of storing a mutable balance.
@@ -714,4 +722,45 @@ Phase 9 Track A: production hardening per AUDIT.md
     truncating, TreasuryError) — deliberately untouched here since it validates an
     operator's park/recall against token units, not a tenant's fiat amount. Fold it
     in during US-013 if the bigint work makes them converge.
+---
+
+## 2026-07-16 - US-012 (FX and fee math on bigint minor units)
+- lib/fx.ts rewritten as bigint end to end. Amounts = currency MINOR units; rates =
+  integers scaled by 10^RATE_DECIMALS (18). New/changed surface: midRate() -> scaled
+  bigint, formatRate(scaled, dp=6) -> display string, convert(amountMinor, rateScaled,
+  from, to), applyBps(rateScaled, bps), usdEquivalent(amountMinor, cur) -> USD minor,
+  slippageBps(usdMinor), quoteFx(amountMinor, src, dst) -> FxQuote of bigints.
+  roundCurrency DELETED. Number() no longer appears in fx.ts at all.
+- Files: lib/fx.ts (rewrite), lib/money.ts (+formatScaledUnits, the generic half of
+  formatMinorUnits), lib/routing.ts (parses canonical amount -> minor, formats quote
+  strings from bigints, bridged leg via applyBps/convert), lib/compliance.ts
+  (transactionRiskProvider takes the amount STRING; TX_REVIEW/FAIL_THRESHOLD_USD ->
+  *_MINOR bigints), app/page.tsx (Settled Volume reduces to bigint), AGENTS.md,
+  tests/unit/fx.test.ts (8 -> 16 tests). Suite 241 -> 247. tsc + lint green.
+- **Learnings for future iterations:**
+  - THE bug this story nearly shipped: flooring the DERIVED INVERSE mid rates made
+    157,200 JPY round-trip to $999.99 — a cent lost on every inverted corridor. Three
+    unit tests caught it. Floor the money, round the rate table. The rule is "floor
+    favours the platform" applied to amounts/spreads, NOT to a constant's
+    representation. If you touch the rate table in US-013+, keep the round-to-nearest.
+  - Converting minor units across currencies needs the 10^dec factors on BOTH sides
+    (`amountMinor * rate * 10^destDec / (RATE_SCALE * 10^srcDec)`). I fat-fingered this
+    twice on paper (100x out) before the tests pinned it — write the fixture first.
+  - AC2 anticipated fixture churn from floor-vs-round; there was NONE. Floor agreed
+    with the old Math.round on every existing fixture, so all 241 pre-existing tests
+    passed untouched. Don't pre-emptively "fix" quote fixtures — run them first.
+  - Changing an fx.ts signature has a blast radius outside lib/: routing.ts,
+    compliance.ts (TX_RISK tiering), and app/page.tsx (dashboard volume stat) all
+    consume it. `grep -rn "lib/fx\|quoteFx\|usdEquivalent"` before starting.
+  - routing.ts is still Number-based (liquidityCheck takes a number; I bridged with
+    Number(destAmountString) and marked it) — that is US-013's job, next up.
+  - lib/treasury.ts STILL has its own private parseAmount (token decimals,
+    truncating). US-011's note flagged it for US-013; still open.
+  - chain/dev-api-keys.json shape is {operator, reviewer, entities:{<id>:key}} — not
+    a list. `node -p 'require("./chain/dev-api-keys.json").operator'`.
+  - /api/audit returns {integrity:{valid:true}, events:[...]} — not a `verified` field.
+  - Dev-server verification recipe that worked: npm run chain + chain:polygon (bg),
+    npm run setup, rm -rf .next, npm run dev, then curl create -> quote -> execute with
+    an x-api-key header, and `curl localhost:3000/ -H "Cookie: sos_key=$KEY"` to read a
+    server-rendered stat out of the HTML without a browser.
 ---
