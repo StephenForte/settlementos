@@ -14,7 +14,7 @@ The MVP described in this PRD is **built and running**. Code: [github.com/Stephe
 | 6 | Compliance provider sandbox (OpenSanctions + Chainalysis) | ✅ Done 2026-07-10 |
 | 7 | Second real testnet (Polygon Amoy) — public cross-chain demo | ✅ Done 2026-07-15 |
 | 8 | Tokenized MMF / overnight liquidity parking (JLTXX-inspired, see §24) | ✅ Done 2026-07-14 |
-| 9 | Production hardening (AUDIT.md remediation) + regulatory & partner package | Planned |
+| 9 | Production hardening (AUDIT.md remediation) + regulatory & partner package | 🔨 Track A ✅ Done 2026-07-16 (327→341 tests, merged #8); Track B drafts in `docs/regulatory/` |
 
 Live on Base Sepolia (chainId 84532): `PaymentSettlement` at
 [`0x9d8b8b7c476ab02306046f3da719d380fa0456aa`](https://sepolia.basescan.org/address/0x9d8b8b7c476ab02306046f3da719d380fa0456aa);
