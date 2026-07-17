@@ -75,6 +75,7 @@ afterEach(() => {
   delete executorTestHooks.beforeDestinationPayout;
   delete executorTestHooks.beforeCompensationTransfer;
   delete executorTestHooks.beforeRefund;
+  delete executorTestHooks.escrowReadFails;
 });
 
 describe("POST /api/payments/[id]/repair", () => {
@@ -127,6 +128,55 @@ describe("POST /api/payments/[id]/repair", () => {
 
     expect(res.status).toBe(409);
     expect((await res.json()).error_code).toBe("conflict");
+  });
+
+  it("refuses to pay when the escrow read fails — unknown is not SETTLED", async () => {
+    const senderBefore = await walletBalance("mockUSDC", senderWallet());
+    const stuck = await createStuckPayment("500.00");
+    const short = await walletBalance("mockUSDC", senderWallet());
+    expect(short).toBeLessThan(senderBefore);
+
+    executorTestHooks.escrowReadFails = true;
+    const res = await repair(stuck.id);
+    delete executorTestHooks.escrowReadFails;
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      error_code: "conflict",
+      message: expect.stringMatching(/unreachable/i),
+    });
+    // No second transfer on a failed read — the sender stays short until a
+    // real repair confirms the escrow is SETTLED.
+    expect(await walletBalance("mockUSDC", senderWallet())).toBe(short);
+    expect((await prisma.payment.findUniqueOrThrow({ where: { id: stuck.id } })).status).toBe(
+      "COMPENSATION_PENDING"
+    );
+
+    await repair(stuck.id); // leave the fixture treasury whole
+  });
+
+  it("refuses to pay when the escrow was never released", async () => {
+    // COMPENSATION_PENDING without a settled escrow — the DB status alone must
+    // not authorize a treasury-funded transfer.
+    const payment = await createApprovedPayment({ amount: "275.00" });
+    await prisma.payment.update({
+      where: { id: payment.id },
+      data: { status: "COMPENSATION_PENDING", failureReason: "synthetic — escrow never released" },
+    });
+    expect(await onchainPaymentState("base-local", onchainPaymentId(payment.id))).toBe("NONE");
+
+    const senderBefore = await walletBalance("mockUSDC", senderWallet());
+    const res = await repair(payment.id);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      error_code: "conflict",
+      message: expect.stringMatching(/not owed compensation/i),
+    });
+    expect(await walletBalance("mockUSDC", senderWallet())).toBe(senderBefore);
+
+    // Drop out of COMPENSATION_PENDING so stuckPayments does not keep listing it.
+    await prisma.payment.update({ where: { id: payment.id }, data: { status: "FAILED" } });
   });
 
   it("is OPERATOR-only, and hides unknown ids the same way the read routes do", async () => {
@@ -248,6 +298,41 @@ describe("stuck detection reads the chain, not just the DB", () => {
     await operatorWrite("base-local", "failAndRefund", [pid, "operator repair"]);
     const after = await stuckPayments();
     expect(after.find((s) => s.payment.id === payment.id)).toBeUndefined();
+  });
+
+  it("keeps a FAILED held-escrow payment when the escrow RPC read fails", async () => {
+    // Unknown ≠ fine: a flaky read must not drop the payment from the one view
+    // that surfaces stranded funds. Force the read null while the escrow is
+    // really INITIATED — without the null keep, the row would vanish.
+    const payment = await createApprovedPayment({ amount: "625.00" });
+    executorTestHooks.beforeSettlement = () => {
+      throw new Error("fx feed unavailable");
+    };
+    executorTestHooks.beforeRefund = () => {
+      throw new Error("operator signer unavailable");
+    };
+    await executePayment(payment.id);
+    delete executorTestHooks.beforeSettlement;
+    delete executorTestHooks.beforeRefund;
+
+    const pid = onchainPaymentId(payment.id);
+    expect(await onchainPaymentState("base-local", pid)).toBe("INITIATED");
+
+    executorTestHooks.escrowReadFails = true;
+    try {
+      const listed = await stuckPayments();
+      const mine = listed.find((s) => s.payment.id === payment.id);
+      expect(mine).toBeDefined();
+      expect(mine!.escrowState).toBeNull();
+
+      const res = await paymentsGET(stuckRequest(API_KEYS.operator));
+      const row = (await res.json()).payments.find((p: { id: string }) => p.id === payment.id);
+      expect(row).toMatchObject({ status: "FAILED", escrow_state: null });
+    } finally {
+      delete executorTestHooks.escrowReadFails;
+    }
+
+    await operatorWrite("base-local", "failAndRefund", [pid, "operator repair"]);
   });
 
   it("lists a held-escrow FAILED payment even when onchainPaymentId was never recorded", async () => {
