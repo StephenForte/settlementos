@@ -166,6 +166,10 @@ describe("GET /api/treasury/positions and POST /api/treasury/recall", () => {
 
     const listed = await (await positionsGET(getRequest("positions"))).json();
     expect(listed.positions).toHaveLength(1);
+    // The list is paginated (append-only history that only grows), so the paging
+    // envelope is present.
+    expect(listed).toMatchObject({ has_more: false });
+    expect(listed).toHaveProperty("next_cursor");
     const active = listed.positions[0];
     expect(active).toMatchObject({
       position_id: parked.position_id,

@@ -42,7 +42,11 @@ function parseRange(params: URLSearchParams, now: Date): DateRange {
   const rawFrom = params.get("from");
   const rawTo = params.get("to");
 
-  const to = rawTo ? parseBound(rawTo, "to", true) : new Date(now.getTime() + DAY_MS);
+  // Default `to` is `now` — an exclusive instant, and nothing has a createdAt in
+  // the future, so no end-of-day pad is needed here (that pad is only for an
+  // explicit date-only bound). Padding `now` forward a day shifted the default
+  // window to now−29d…now+1d, so the "last 30 days" was really 29.
+  const to = rawTo ? parseBound(rawTo, "to", true) : now;
   const from = rawFrom ? parseBound(rawFrom, "from", false) : new Date(to.getTime() - DEFAULT_RANGE_DAYS * DAY_MS);
   if (from >= to) throw new ExportRangeError("from must be before to");
   return { from, to };

@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 import { GET as auditGET } from "@/app/api/audit/route";
+import { GET as entitiesGET } from "@/app/api/entities/route";
 import { GET as paymentsGET, POST as paymentsPOST } from "@/app/api/payments/route";
 import { GET as reconciliationGET } from "@/app/api/reconciliation/route";
 import { POST as loginPOST } from "@/app/api/auth/login/route";
@@ -227,6 +228,33 @@ describe("GET /api/audit pagination", () => {
     const res = await auditGET(get("/api/audit?cursor=pay_abc", API_KEYS.operator));
     expect(res.status).toBe(400);
   });
+
+  it("rejects a cursor past the 32-bit id range with a 400, not an uncaught 500", async () => {
+    // Digits-only but larger than a Postgres/SQLite Int — Number() then Prisma
+    // would throw and surface as a 500 without the bounds check.
+    const res = await auditGET(get("/api/audit?cursor=99999999999999999999", API_KEYS.operator));
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /api/entities pagination", () => {
+  it("bounds the list and pages with a cursor", async () => {
+    const first = await (await entitiesGET(get("/api/entities?limit=1", API_KEYS.operator))).json();
+    expect(first.entities).toHaveLength(1);
+    // Four demo entities are seeded, so a limit of 1 has more to come.
+    expect(first.has_more).toBe(true);
+    expect(first.next_cursor).toBe(first.entities[0].id);
+
+    const second = await (
+      await entitiesGET(get(`/api/entities?limit=1&cursor=${first.next_cursor}`, API_KEYS.operator))
+    ).json();
+    expect(second.entities[0].id).not.toBe(first.entities[0].id);
+  });
+
+  it("rejects a limit over the cap", async () => {
+    const res = await entitiesGET(get(`/api/entities?limit=${MAX_PAGE_LIMIT + 1}`, API_KEYS.operator));
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("GET /api/reconciliation date range", () => {
@@ -241,6 +269,18 @@ describe("GET /api/reconciliation date range", () => {
     const fresh = await createDraftPayment({ amount: "2.00" });
     const text = await (await reconciliationGET(get("/api/reconciliation", API_KEYS.operator))).text();
     expect(csvIds(text)).toContain(fresh.id);
+  });
+
+  it("includes a payment 29.5 days old — the default window is a full 30 days", async () => {
+    const p = await createDraftPayment({ amount: "4.00" });
+    // Inside 30 days but outside the buggy 29-day window (the default `to` used to
+    // be padded a day forward, so `from` only reached now−29d).
+    await prisma.payment.update({
+      where: { id: p.id },
+      data: { createdAt: new Date(Date.now() - 29.5 * 24 * 60 * 60 * 1000) },
+    });
+    const text = await (await reconciliationGET(get("/api/reconciliation", API_KEYS.operator))).text();
+    expect(csvIds(text)).toContain(p.id);
   });
 
   it("excludes payments outside the range", async () => {

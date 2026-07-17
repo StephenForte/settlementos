@@ -121,6 +121,25 @@ describe("GET /api/payments tenant scoping", () => {
     expect(ids).not.toContain(othersPayment);
   });
 
+  it("does not leak payment existence through the cursor", async () => {
+    // Prisma resolves the cursor by id independent of the tenant filter, so a
+    // foreign existing id would page normally while a nonexistent one returned
+    // empty — an existence oracle. Both must now be an identical 400.
+    const foreign = await paymentsGET(
+      get(`/api/payments?cursor=${othersPayment}`, API_KEYS.entities.ent_acme_us)
+    );
+    const ghost = await paymentsGET(
+      get("/api/payments?cursor=pay_does_not_exist", API_KEYS.entities.ent_acme_us)
+    );
+    expect(foreign.status).toBe(400);
+    expect(ghost.status).toBe(400);
+    expect(await foreign.json()).toEqual(await ghost.json());
+
+    // The tenant's own payment is a valid cursor.
+    const own = await paymentsGET(get(`/api/payments?cursor=${acmePayment}`, API_KEYS.entities.ent_acme_us));
+    expect(own.status).toBe(200);
+  });
+
   it("counts the recipient as a party, not just the sender", async () => {
     const res = await paymentsGET(get("/api/payments", API_KEYS.entities.ent_tokyo_supplier));
     const ids = (await res.json()).payments.map((p: { id: string }) => p.id);

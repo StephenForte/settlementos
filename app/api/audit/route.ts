@@ -17,12 +17,18 @@ export async function GET(req: NextRequest) {
     throw e;
   }
 
-  // The cursor is an AuditEvent id, which is an autoincrement Int. A cursor that
-  // is not one is a client bug, not a lookup that returns nothing.
+  // The cursor is an AuditEvent id, which is an autoincrement 32-bit Int. A cursor
+  // that is not one is a client bug, not a lookup that returns nothing — including
+  // one past the Int range, which Prisma would otherwise reject with an uncaught
+  // 500 rather than the 400 every other bad input gets.
+  const INT4_MAX = 2147483647;
   let cursorId: number | null = null;
   if (page.cursor !== null) {
-    if (!/^[0-9]+$/.test(page.cursor)) return invalidRequest("cursor is not valid");
-    cursorId = Number(page.cursor);
+    const n = Number(page.cursor);
+    if (!/^[0-9]+$/.test(page.cursor) || !Number.isSafeInteger(n) || n > INT4_MAX) {
+      return invalidRequest("cursor is not valid");
+    }
+    cursorId = n;
   }
 
   const [rows, integrity] = await Promise.all([

@@ -12,7 +12,7 @@
 // rate rounds down, and so does the destination amount. A quote therefore never
 // promises a recipient a minor unit the treasury has to find somewhere.
 
-import { currencyDecimals, formatScaledUnits } from "./money";
+import { currencyDecimals, formatScaledUnits, parseScaledUnits } from "./money";
 
 /** Rate precision. 18 keeps ~15 significant digits on inverted corridors. */
 export const RATE_DECIMALS = 18;
@@ -33,16 +33,15 @@ export function corridorCode(source: string, dest: string): string {
   return `${source}-${dest}`;
 }
 
-/** A decimal rate string ("157.2") to its RATE_SCALE integer. Exact. */
-function scaleRate(rate: string): bigint {
-  const [whole, frac = ""] = rate.split(".");
-  return BigInt(whole + frac.padEnd(RATE_DECIMALS, "0").slice(0, RATE_DECIMALS));
-}
-
 const MID_RATES: Record<string, bigint> = Object.fromEntries(
   Object.entries(MID_RATE_DECIMALS).flatMap(([code, rate]) => {
     const [source, dest] = code.split("-");
-    const scaled = scaleRate(rate);
+    // The one scaled-decimal parser (lib/money): it *rejects* excess precision
+    // rather than truncating it, the same reject-never-repair rule the rest of
+    // the money model follows. The rate table is trusted data, so this only ever
+    // validates it — but a second, truncating parser here was a rule waiting to
+    // be broken the moment anyone fed it a non-constant.
+    const scaled = parseScaledUnits(rate, RATE_DECIMALS, { what: `${code} rate` });
     // 1/rate at rate scale, rounded to nearest rather than floored. The rate
     // table is *data*: it should be the closest representation of 157.2⁻¹ the
     // scale allows. Flooring it instead would bias every inverted corridor

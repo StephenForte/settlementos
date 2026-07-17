@@ -119,6 +119,45 @@ function selectedRoute(payment: Payment): RouteOption {
  * before anything reads a chain or moves a token, so a second concurrent execute
  * throws ExecutionLeaseError (→ 409) having touched no chain state at all.
  */
+/**
+ * Claim the payment's single execution lease at `fromStatus`, run `fn` under it,
+ * and release the lease on the way out. Both money-moving entry points — a fresh
+ * execute and an operator repair — go through here so the claim/release
+ * choreography lives once, not in two copies that could drift.
+ *
+ * The claim, not any status check the caller did first, is what decides the race:
+ * the CAS on (id, status = fromStatus, executionLeaseId: null) admits exactly one
+ * winner; everyone else matches zero rows and throws ExecutionLeaseError having
+ * touched no chain state. The finally is the backstop for throws that never reach
+ * a lease-releasing transition (an unquoted payment, a wallet lookup that fails,
+ * an RPC down mid-setup) — transitionStatus already frees the lease at
+ * LEASE_RELEASE_STATES, so on the happy path it matches zero rows. Scoped to our
+ * own leaseId so it can never free a later attempt's.
+ */
+async function withExecutionLease<T>(
+  paymentId: string,
+  fromStatus: PaymentStatus,
+  fn: (leaseId: string) => Promise<T>
+): Promise<T> {
+  const leaseId = randomUUID();
+  const { count } = await prisma.payment.updateMany({
+    where: { id: paymentId, status: fromStatus, executionLeaseId: null },
+    data: { executionLeaseId: leaseId, leasedAt: new Date() },
+  });
+  if (count === 0) throw new ExecutionLeaseError(paymentId);
+
+  try {
+    return await fn(leaseId);
+  } finally {
+    await prisma.payment
+      .updateMany({
+        where: { id: paymentId, executionLeaseId: leaseId },
+        data: { executionLeaseId: null, leasedAt: null },
+      })
+      .catch(() => {});
+  }
+}
+
 export async function executePayment(paymentId: string): Promise<Payment> {
   const payment = await prisma.payment.findUniqueOrThrow({
     where: { id: paymentId },
@@ -129,32 +168,9 @@ export async function executePayment(paymentId: string): Promise<Payment> {
     throw new Error(`Payment must be APPROVED to execute (current: ${payment.status})`);
   }
 
-  // The claim, not the check above, is what decides the race: the status read a
-  // moment ago is already stale. `executionLeaseId: null` admits exactly one
-  // winner; everyone else matches zero rows.
-  const leaseId = randomUUID();
-  const { count } = await prisma.payment.updateMany({
-    where: { id: paymentId, status: "APPROVED", executionLeaseId: null },
-    data: { executionLeaseId: leaseId, leasedAt: new Date() },
-  });
-  if (count === 0) throw new ExecutionLeaseError(paymentId);
-
-  try {
-    return await runExecution({ ...payment, executionLeaseId: leaseId }, leaseId);
-  } finally {
-    // transitionStatus releases the lease at SETTLED/FAILED/REFUNDED, so this
-    // normally matches zero rows. It exists for the throws that never reach a
-    // transition at all — an unquoted payment, a wallet lookup that fails, an
-    // RPC down during setup — which would otherwise strand the lease and lock
-    // the payment out of every retry. Scoped to our own leaseId so it can never
-    // free a later attempt's.
-    await prisma.payment
-      .updateMany({
-        where: { id: paymentId, executionLeaseId: leaseId },
-        data: { executionLeaseId: null, leasedAt: null },
-      })
-      .catch(() => {});
-  }
+  return withExecutionLease(paymentId, "APPROVED", (leaseId) =>
+    runExecution({ ...payment, executionLeaseId: leaseId }, leaseId)
+  );
 }
 
 async function runExecution(claimed: PaymentWithParties, leaseId: string): Promise<Payment> {
@@ -678,16 +694,9 @@ export async function repairCompensation(paymentId: string): Promise<Payment> {
     throw new ApiError("conflict", `payment cannot be repaired from status ${payment.status}`);
   }
 
-  // Same shape as the executor's claim: the CAS, not the check above, is what
-  // decides the race between two operators clicking Repair at once.
-  const leaseId = randomUUID();
-  const { count } = await prisma.payment.updateMany({
-    where: { id: paymentId, status: "COMPENSATION_PENDING", executionLeaseId: null },
-    data: { executionLeaseId: leaseId, leasedAt: new Date() },
-  });
-  if (count === 0) throw new ExecutionLeaseError(paymentId);
-
-  try {
+  // The same lease the executor claims — the CAS, not the check above, decides the
+  // race between two operators clicking Repair at once.
+  return withExecutionLease(paymentId, "COMPENSATION_PENDING", async (leaseId) => {
     const ctx = compensationContextFor(payment);
     const escrow = await onchainPaymentState(ctx.network, onchainPaymentId(payment.id)).catch(() => null);
     // Stopping on an unreadable escrow costs nothing: the transfer would run on
@@ -698,15 +707,6 @@ export async function repairCompensation(paymentId: string): Promise<Payment> {
     if (escrow !== "SETTLED") {
       throw new ApiError("conflict", "source escrow was not released — this payment is not owed compensation");
     }
-    return await runCompensationTransfer({ ...payment, executionLeaseId: leaseId }, ctx);
-  } finally {
-    // transitionStatus frees the lease at COMPENSATED; this catches the exits that
-    // never reach a transition (an unreadable escrow, a transfer that threw).
-    await prisma.payment
-      .updateMany({
-        where: { id: paymentId, executionLeaseId: leaseId },
-        data: { executionLeaseId: null, leasedAt: null },
-      })
-      .catch(() => {});
-  }
+    return runCompensationTransfer({ ...payment, executionLeaseId: leaseId }, ctx);
+  });
 }

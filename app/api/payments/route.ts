@@ -43,13 +43,30 @@ export async function GET(req: NextRequest) {
     throw e;
   }
 
+  const scope = isPlatformRole(principal)
+    ? {}
+    : { OR: [{ senderId: principal.entityId }, { recipientId: principal.entityId }] };
+
+  // Prisma resolves `cursor` by id independently of the `where`, so a tenant
+  // passing another tenant's payment id as the cursor would get a normal page
+  // while a nonexistent id returns empty — an existence oracle for payment ids,
+  // the very thing the detail route's 404-not-403 refuses to be. Require a
+  // tenant's cursor to resolve inside its own scope first, so a foreign id and a
+  // nonexistent one both get the same 400. Platform roles see everything, so no
+  // oracle exists for them.
+  if (page.cursor !== null && !isPlatformRole(principal)) {
+    const inScope = await prisma.payment.findFirst({
+      where: { id: page.cursor, ...scope },
+      select: { id: true },
+    });
+    if (!inScope) return invalidRequest("cursor is not valid");
+  }
+
   // A tenant sees only the payments it is party to; operators and reviewers see
   // all. Tenant scoping stays a `where` filter, never a post-filter — a page of
   // rows a caller may not see would otherwise be silently short.
   const rows = await prisma.payment.findMany({
-    where: isPlatformRole(principal)
-      ? {}
-      : { OR: [{ senderId: principal.entityId }, { recipientId: principal.entityId }] },
+    where: scope,
     // Tiebroken by id: createdAt alone is not unique (two payments created in
     // the same millisecond are ordinary), and an unstable order makes a cursor
     // walk skip or repeat rows.
