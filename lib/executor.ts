@@ -48,13 +48,8 @@ type PaymentWithParties = Prisma.PaymentGetPayload<{
   include: { sender: { include: { wallets: true } }; recipient: { include: { wallets: true } } };
 }>;
 
-/**
- * Test-only injection points. The compensation saga only runs when the
- * destination leg fails *after* the source escrow was already released, which no
- * real input can provoke on a healthy fixture chain — so tests reach in here.
- * Nothing in the app assigns these; leave them undefined in every other context.
- */
-export const executorTestHooks: {
+/** The test-only injection points (see `executorTestHooks` below for the contract). */
+interface ExecutorTestHooks {
   /** Throws with the escrow held but not yet released — the refund path. */
   beforeSettlement?: () => void | Promise<void>;
   /** Throws in the payout leg, with the source chain already settled — the compensation path. */
@@ -91,7 +86,30 @@ export const executorTestHooks: {
    * escrow.
    */
   escrowReadFails?: boolean;
-} = {};
+}
+
+/**
+ * Test-only injection points. The compensation saga only runs when the
+ * destination leg fails *after* the source escrow was already released, which no
+ * real input can provoke on a healthy fixture chain — so tests reach in here.
+ *
+ * Fail closed: these hooks divert real refund/repair/stuck money movement, so a
+ * write from anywhere but the test runner (a stray import, a leftover assignment
+ * in a long-lived process) must be impossible, not merely discouraged. The set
+ * trap admits writes only under Vitest (which sets `process.env.VITEST`); a
+ * production assignment throws instead of silently arming a hook. Reads are
+ * untouched — outside a test every key is undefined and every `?.()` is a no-op.
+ */
+export const executorTestHooks: ExecutorTestHooks = new Proxy({} as ExecutorTestHooks, {
+  set(target, key, value) {
+    if (!process.env.VITEST) {
+      throw new Error(
+        `executorTestHooks are test-only and cannot be armed outside the test runner (attempted to set "${String(key)}")`
+      );
+    }
+    return Reflect.set(target, key, value);
+  },
+});
 
 // Every status change the executor makes is a compare-and-swap against the
 // status it last observed, so a concurrent writer can never be overwritten:
@@ -426,13 +444,18 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
     // instead of compensating. The reservation stays RESERVED here
     // (completeSettledPayout consumes it), so this returns before the release
     // below. Same-chain routes never set destinationTxHash — the ledger credit
-    // alone is the proof the recipient was paid.
+    // alone is the proof the recipient was paid. That inference is only sound
+    // because a credit exists iff this payment's recipient was paid: the unique
+    // constraint on LedgerCredit.paymentId means no duplicate or stray second
+    // credit can force this branch, so the credit's existence *is* the proof.
     const ledgerCredit = await prisma.ledgerCredit.findFirst({
       where: { paymentId: payment.id },
       select: { id: true },
     });
     if (payment.destinationTxHash || ledgerCredit) {
-      return await completeSettledPayout(payment, destAmount, reason);
+      return await completeSettledPayout(payment, destAmount, reason, {
+        evidence: payment.destinationTxHash ? "destination_tx_hash" : "ledger_credit",
+      });
     }
 
     await prisma.liquidityReservation
@@ -496,7 +519,12 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
  * SETTLED. If a step throws again the payment stays PAYOUT_PENDING (visible to
  * the repair view), never compensated.
  */
-async function completeSettledPayout(payment: Payment, destAmount: string, reason: string): Promise<Payment> {
+async function completeSettledPayout(
+  payment: Payment,
+  destAmount: string,
+  reason: string,
+  { evidence }: { evidence: "destination_tx_hash" | "ledger_credit" }
+): Promise<Payment> {
   const existing = await prisma.ledgerCredit.findFirst({ where: { paymentId: payment.id } });
   if (!existing) {
     await prisma.ledgerCredit.create({
@@ -520,6 +548,11 @@ async function completeSettledPayout(payment: Payment, destAmount: string, reaso
     "payment.settlement_recovered",
     {
       note: "recipient already paid; completed forward",
+      // Which catch branch fired and the signal it fired on — greppable
+      // recovery telemetry, so a post-incident read never has to re-derive
+      // why a payment settled forward instead of compensating.
+      branch: "forward_complete",
+      evidence,
       recoveredFrom: reason.slice(0, 200),
     },
     payment.id

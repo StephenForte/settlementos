@@ -149,6 +149,13 @@ model LedgerCredit {
 
   payment Payment @relation(fields: [paymentId], references: [id])
   entity  Entity  @relation(fields: [entityId], references: [id])
+
+  // One credit per payment, enforced. The executor's catch path treats an
+  // existing credit as proof the recipient was paid (and completes forward
+  // rather than compensating), so a duplicate credit could force a false
+  // forward-complete and strand a sender after a released escrow. This makes a
+  // second create() throw instead of silently double-crediting.
+  @@unique([paymentId])
 }
 
 // A parked treasury position in the tokenized MMF. Append-only history: recall
