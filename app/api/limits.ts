@@ -38,17 +38,61 @@ function writeLimit(): number {
 }
 
 /**
+ * How many proxies of ours sit in front of the app, from `TRUSTED_PROXY_HOPS`.
+ *
+ * Zero (the default) means we do not know, and the caller's address is taken
+ * best-effort — see `clientAddress`. Read per request so a test can move it.
+ */
+function trustedProxyHops(): number {
+  const raw = process.env.TRUSTED_PROXY_HOPS;
+  if (!raw || !/^[0-9]+$/.test(raw)) return 0;
+  return Number(raw);
+}
+
+/**
+ * The caller's address, as far as the deployment can actually vouch for it.
+ *
+ * `x-forwarded-for` is a client-settable header. Next fills it in from the socket
+ * only when it is absent (`req.headers['x-forwarded-for'] ??= socket.remoteAddress`),
+ * so a client that sends its own wins — and the leftmost entry, the one everybody
+ * reaches for, is precisely the entry an attacker controls. Rotating fake values
+ * through it would give each forged address its own budget and walk straight through
+ * a per-address limit.
+ *
+ * The list reads left to right as client → … → nearest proxy, and each proxy we run
+ * appends the address it *observed*. So with N trusted hops, the entry N from the
+ * right is the last one written by our own infrastructure: the address the outermost
+ * trusted proxy saw. Anything left of it is hearsay from upstream, and an attacker
+ * lengthening the list only pushes their own forgeries further left, away from where
+ * we read.
+ *
+ * With TRUSTED_PROXY_HOPS unset we cannot tell a real hop from a forged one, so this
+ * stays the documented best-effort behavior rather than pretending: set the variable
+ * to the number of proxies you actually run in front of this app.
+ */
+function clientAddress(req: Request): string {
+  const forwarded = (req.headers.get("x-forwarded-for") ?? "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+
+  const hops = trustedProxyHops();
+  if (hops > 0 && forwarded.length >= hops) return forwarded[forwarded.length - hops];
+
+  return forwarded[0] || req.headers.get("x-real-ip") || "unknown";
+}
+
+/**
  * What the limiter counts against. A principal is the real subject — an
- * authenticated caller cannot shed its budget by changing address. The IP
- * fallback is for the endpoints that have no principal yet (the login
- * exchange), and is best-effort: `x-forwarded-for` is client-settable, so it is
- * only trustworthy behind a proxy that overwrites it. That is why it is the
- * fallback and not the key.
+ * authenticated caller cannot shed its budget by changing address. The address
+ * fallback is for the endpoints that have no principal yet (the login exchange);
+ * how far it can be trusted is `clientAddress`'s problem. That it is only a
+ * fallback is the point: everything authenticated is keyed on something a caller
+ * cannot rotate.
  */
 export function rateLimitKey(req: Request, principal: Principal | null): string {
   if (principal) return `key:${principal.keyId}`;
-  const forwarded = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  return `ip:${forwarded || req.headers.get("x-real-ip") || "unknown"}`;
+  return `ip:${clientAddress(req)}`;
 }
 
 /** The 429 to return, with the Retry-After the window actually implies. */
