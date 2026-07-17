@@ -35,6 +35,7 @@ afterEach(() => {
   delete executorTestHooks.beforeSettlement;
   delete executorTestHooks.beforeDestinationPayout;
   delete executorTestHooks.afterDestinationPayout;
+  delete executorTestHooks.afterLedgerCredit;
   delete executorTestHooks.escrowReadFails;
 });
 
@@ -166,6 +167,35 @@ describe("no double payout — a failure AFTER the recipient is paid completes f
 
     // The recovered payment is a normal settlement: reservation consumed, one
     // ledger credit, lease released.
+    const reservation = await prisma.liquidityReservation.findUnique({ where: { paymentId: payment.id } });
+    expect(reservation?.status).toBe("CONSUMED");
+    expect(await prisma.ledgerCredit.count({ where: { paymentId: payment.id } })).toBe(1);
+    expect(result.executionLeaseId).toBeNull();
+  });
+
+  it("same-chain: completes forward when the ledger credit landed but SETTLED did not", async () => {
+    // Same-chain never writes destinationTxHash — the ledger credit *is* the
+    // recipient payout. A catch gated only on the hash would fall through to
+    // compensateSender (escrow already SETTLED), refunding the sender while the
+    // recipient keeps the credit.
+    const senderBefore = await walletBalance("base-local", "mockUSDC", senderWallet("base-local"));
+    const payment = await createApprovedPayment({ amount: "4000.00" });
+    executorTestHooks.afterLedgerCredit = () => {
+      throw new Error("reservation consume failed after ledger credit");
+    };
+
+    const result = await executePayment(payment.id);
+
+    expect(result.status).toBe("SETTLED");
+    expect(result.destinationTxHash).toBeNull();
+    expect(await walletBalance("base-local", "mockUSDC", senderWallet("base-local"))).toBeLessThan(senderBefore);
+
+    const actions = await auditActions(payment.id);
+    expect(actions).toContain("payout.ledger_credit");
+    expect(actions).toContain("payment.settlement_recovered");
+    expect(actions).not.toContain("payment.status.compensation_pending");
+    expect(actions).not.toContain("payment.compensation_transfer");
+
     const reservation = await prisma.liquidityReservation.findUnique({ where: { paymentId: payment.id } });
     expect(reservation?.status).toBe("CONSUMED");
     expect(await prisma.ledgerCredit.count({ where: { paymentId: payment.id } })).toBe(1);

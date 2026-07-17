@@ -66,6 +66,14 @@ export const executorTestHooks: {
    * payout while the treasury also refunds the sender.
    */
   afterDestinationPayout?: () => void | Promise<void>;
+  /**
+   * Throws *after* the ledger credit has been written (recipient paid on the
+   * simulated fiat rail) but before the reservation is consumed / SETTLED — the
+   * same-chain twin of afterDestinationPayout. Cross-chain routes usually set
+   * destinationTxHash earlier; same-chain has only the ledger credit as proof
+   * the recipient was paid, so this is the window that must complete forward.
+   */
+  afterLedgerCredit?: () => void | Promise<void>;
   /** Throws in the on-chain refund, stranding a held escrow at FAILED. */
   beforeRefund?: () => void | Promise<void>;
   /**
@@ -397,6 +405,7 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
       { entityId: payment.recipientId, currency: payment.destinationCurrency, amount: destAmount },
       payment.id
     );
+    await executorTestHooks.afterLedgerCredit?.();
 
     // 6. Consume the reservation and settle.
     await prisma.liquidityReservation.update({
@@ -408,15 +417,19 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
 
-    // The recipient was already paid on the destination chain (destinationTxHash
-    // written): undoing now would pay twice — treasury refunds the sender while the
-    // recipient keeps the payout. The money movement is done; only bookkeeping
-    // threw, so finish the settlement forward instead of compensating. The
-    // reservation stays RESERVED here (completeSettledPayout consumes it), so this
-    // returns before the release below. Only cross-chain routes set the hash, so a
-    // same-chain post-settlement failure — recipient paid only via ledger — still
-    // compensates correctly.
-    if (payment.destinationTxHash) {
+    // The recipient was already paid — on-chain bridge payout (destinationTxHash)
+    // and/or the simulated fiat ledger credit. Undoing now would pay twice:
+    // treasury refunds the sender while the recipient keeps the credit. The money
+    // movement is done; only bookkeeping threw, so finish the settlement forward
+    // instead of compensating. The reservation stays RESERVED here
+    // (completeSettledPayout consumes it), so this returns before the release
+    // below. Same-chain routes never set destinationTxHash — the ledger credit
+    // alone is the proof the recipient was paid.
+    const ledgerCredit = await prisma.ledgerCredit.findFirst({
+      where: { paymentId: payment.id },
+      select: { id: true },
+    });
+    if (payment.destinationTxHash || ledgerCredit) {
       return await completeSettledPayout(payment, destAmount, reason);
     }
 
@@ -473,13 +486,13 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
 }
 
 /**
- * Finish a payment whose recipient was already paid on the destination chain
- * (destinationTxHash set) but whose post-payout bookkeeping threw. Compensation is
- * off the table — the money reached the recipient, and refunding the sender too
- * would pay twice out of treasury — so the remaining steps run forward,
- * idempotently: create the ledger credit if it did not land, consume the
- * reservation, mark SETTLED. If a step throws again the payment stays
- * PAYOUT_PENDING (visible to the repair view), never compensated.
+ * Finish a payment whose recipient was already paid (destinationTxHash and/or a
+ * ledger credit) but whose post-payout bookkeeping threw. Compensation is off the
+ * table — the money reached the recipient, and refunding the sender too would
+ * pay twice out of treasury — so the remaining steps run forward, idempotently:
+ * create the ledger credit if it did not land, consume the reservation, mark
+ * SETTLED. If a step throws again the payment stays PAYOUT_PENDING (visible to
+ * the repair view), never compensated.
  */
 async function completeSettledPayout(payment: Payment, destAmount: string, reason: string): Promise<Payment> {
   const existing = await prisma.ledgerCredit.findFirst({ where: { paymentId: payment.id } });
@@ -503,7 +516,10 @@ async function completeSettledPayout(payment: Payment, destAmount: string, reaso
     .catch(() => {});
   await audit(
     "payment.settlement_recovered",
-    { note: "recipient already paid on destination chain; completed forward", recoveredFrom: reason.slice(0, 200) },
+    {
+      note: "recipient already paid; completed forward",
+      recoveredFrom: reason.slice(0, 200),
+    },
     payment.id
   );
   return await setStatus(payment, "SETTLED");
