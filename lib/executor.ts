@@ -83,10 +83,12 @@ export const executorTestHooks: {
    */
   beforeCompensationTransfer?: () => void | Promise<void>;
   /**
-   * Force the catch-path escrow reconciliation read to come back null, as an RPC
-   * flap would. The only way to exercise the "settlement provably happened per the
-   * DB, but the chain read failed" branch — where a post-settlement status must
-   * compensate rather than strand the sender at FAILED.
+   * Force every escrow reconciliation read to come back null, as an RPC flap
+   * would: the executor's catch path, stuckPayments(), and repairCompensation().
+   * The catch path needs it for "settlement provably happened per the DB, but
+   * the chain read failed"; the stuck/repair paths need it so a flaky RPC cannot
+   * hide a stranded payment or authorize a treasury transfer on an unconfirmed
+   * escrow.
    */
   escrowReadFails?: boolean;
 } = {};
@@ -669,9 +671,11 @@ export async function stuckPayments(): Promise<StuckPayment[]> {
   const rows = await Promise.all(
     candidates.map(async (payment) => ({
       payment,
-      escrowState: await onchainPaymentState(payment.sourceNetwork, onchainPaymentId(payment.id)).catch(
-        () => null
-      ),
+      escrowState: executorTestHooks.escrowReadFails
+        ? null
+        : await onchainPaymentState(payment.sourceNetwork, onchainPaymentId(payment.id)).catch(
+            () => null
+          ),
     }))
   );
 
@@ -714,7 +718,9 @@ export async function repairCompensation(paymentId: string): Promise<Payment> {
   // race between two operators clicking Repair at once.
   return withExecutionLease(paymentId, "COMPENSATION_PENDING", async (leaseId) => {
     const ctx = compensationContextFor(payment);
-    const escrow = await onchainPaymentState(ctx.network, onchainPaymentId(payment.id)).catch(() => null);
+    const escrow = executorTestHooks.escrowReadFails
+      ? null
+      : await onchainPaymentState(ctx.network, onchainPaymentId(payment.id)).catch(() => null);
     // Stopping on an unreadable escrow costs nothing: the transfer would run on
     // that same unreachable network anyway.
     if (escrow === null) {

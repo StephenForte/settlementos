@@ -16,6 +16,7 @@ import {
   freeTreasuryBalance,
   park,
   parkedBalance,
+  recall,
   TREASURY_AUTO_RECALLED,
   TREASURY_RECALLED,
 } from "@/lib/treasury";
@@ -153,6 +154,31 @@ describe("executePayment — auto-recall from the MMF", () => {
     expect(reservation?.status).toBe("CONSUMED");
 
     await expect(verifyAuditChain()).resolves.toMatchObject({ valid: true });
+    await unwind();
+  });
+
+  it("no-ops the auto-recall when free liquidity already covers a stale recall_required", async () => {
+    // recall_required is a quote-time snapshot. Between quoting and execute the
+    // world can move — free balance may cover again — so the executor must not
+    // treat the flag as a hard "must redeem or fail" branch.
+    const parked = await parkAllButHeadroom();
+    const payment = await usdPayment();
+    const route = (JSON.parse(payment.quoteJson!) as RouteOption[])[0];
+    expect(route.recall_required).toBe(true);
+
+    // Restore free liquidity the way an operator recall would, leaving the
+    // frozen quote still flagged recall_required.
+    await recall(parked.positionId);
+    expect(await parkedBalance(NETWORK, "mockUSDC")).toBe(0n);
+    const free = await freeTreasuryBalance(NETWORK, "mockUSDC");
+    expect(free.free).toBeGreaterThan(toBaseUnits(route.estimated_destination_amount, USDC_DECIMALS));
+
+    const settled = await executePayment(payment.id);
+
+    expect(settled.status).toBe("SETTLED");
+    const events = await prisma.auditEvent.findMany({ where: { paymentId: payment.id } });
+    expect(events.map((e) => e.action)).not.toContain(TREASURY_AUTO_RECALLED);
+
     await unwind();
   });
 
