@@ -61,7 +61,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/idempotency.ts](lib/idempotency.ts) | Idempotent-write records: `beginIdempotent()` (reserve the key or report replay/mismatch/in-flight), `completeIdempotent()` / `abandonIdempotent()`, `hashRequest()` (canonical, key-order-independent body fingerprint), `IDEMPOTENCY_TTL_MS` (24h, checked at read time — no cron). Framework-free; the response half is app/api/idempotency.ts |
 | [lib/rate-limit.ts](lib/rate-limit.ts) | In-memory sliding-window limiter: `consumeRateLimit(key, {limit, windowMs, now})` → `RateLimitDecision`, `resetRateLimits()` (test-only). `now` is a **parameter**, so the window is testable without fake timers. Per-process by design — behind >1 instance it becomes a per-instance limit, and the fix is a shared store, not a cleverer Map |
 | [lib/pagination.ts](lib/pagination.ts) | The bound on every list read: `parsePageRequest(searchParams)` → `{limit, cursor}` (default 50, max 200, canonical-integer grammar — `Number("1e3")` is 1000, so a regex decides), `toPage(rows, limit, idOf)` (fetch `limit + 1`, the extra row *is* the `has_more` evidence and is dropped), `PaginationError` → a route's 400 |
-| [app/api/limits.ts](app/api/limits.ts) | The HTTP half of both: `beginWrite(req, principal)` → `{body}` **or** the 429/413 to return (same narrowing convention as guard.ts), `enforceWriteRateLimit()` for the bodyless writes, `rateLimitKey()` (principal → `key:<keyId>`, else `ip:<addr>`), `WRITE_RATE_LIMIT` (30/min, `RATE_LIMIT_WRITES_PER_MINUTE` overrides), `MAX_BODY_BYTES` (64KB) |
+| [app/api/limits.ts](app/api/limits.ts) | The HTTP half of both: `beginWrite(req, principal)` → `{body}` **or** the 429/413 to return (same narrowing convention as guard.ts), `enforceWriteRateLimit()` for the bodyless writes, `rateLimitKey()` (principal → `key:<keyId>`, else `ip:<addr>` — the address read per `TRUSTED_PROXY_HOPS`, see gotcha), `WRITE_RATE_LIMIT` (30/min, `RATE_LIMIT_WRITES_PER_MINUTE` overrides), `MAX_BODY_BYTES` (64KB) |
 | [lib/session.ts](lib/session.ts) | Next-only half of auth: `currentPrincipal()` resolves the `sos_key` cookie via `cookies()` for **server components** (which have no `Request`); `paymentScopeWhere(principal)` is the page-side tenant filter mirroring GET /api/payments; `sessionCookieOptions()` is the one place the cookie's flags are defined. Keep `next/headers` out of lib/auth.ts so route tests can pass a plain `Request`. Pages gate with these + `<AuthRequired>` (components/auth-required.tsx) |
 | [lib/treasury.ts](lib/treasury.ts) | Tokenized-MMF treasury ops: `park()` (subscribe unreserved liquidity into the fund), `recall()` (T+0 redeem of a position, principal + accrued yield back to the treasury), `accrueDaily()` (advance the fund index by one day at `MMF_ANNUAL_RATE_BPS`, default 3.5% APY; `dailyIndex()`/`valueOfShares()` are the pure bigint math), `freeTreasuryBalance()` (bigint balance − RESERVED rows), `parkedBalance()` (derived value of ACTIVE positions; `0n`, never a throw, where no fund exists), `recallForPayment()` (FIFO auto-recall for the executor), `TreasuryError` (typed codes for route handlers), `TREASURY_*` audit actions |
 | [lib/assets.ts](lib/assets.ts) | Asset metadata, currency↔token mapping, base-unit conversion |
@@ -422,6 +422,21 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   which re-renders the server parent and flows **new props** down — so never copy a
   server prop into `useState`, or the view goes stale after a mutation. (The payment
   pages predate this and fetch client-side instead; both patterns exist.)
+- **`x-forwarded-for` is client-settable, and Next only fills it from the socket when
+  it is absent** (`req.headers['x-forwarded-for'] ??= socket.remoteAddress`) — so the
+  leftmost entry, the obvious one to read, is the one an attacker controls. The
+  address-keyed limit on `POST /api/auth/login` (the only principal-less write) reads
+  `TRUSTED_PROXY_HOPS` from the right of the list instead: with N proxies of ours, the
+  Nth-from-right entry is the last one our own infrastructure wrote. Unset → the old
+  best-effort leftmost read, which is what local demos want. Anything keyed on a
+  principal is unaffected — a caller cannot rotate its API key.
+- **A stored `Payment.amount` is not automatically canonical.** Rows written before
+  the money gate passed only `Number(amount) > 0`, so a pre-gate DB can hold `"1e5"`
+  or `"100.001"`; `lib/money` rejects all of them. Anything that acts on a payment
+  must validate the amount *before* it moves the status — the execute route does, and
+  the reason is that a `MoneyError` raised mid-gate strands the payment in
+  COMPLIANCE_PENDING, which execute will not resume from (cancel is the only way out).
+  Fail while the row is still QUOTED.
 - Addresses read back from a contract are EIP-55 checksummed, but
   `chain/deployments*.json` stores them lowercase. Lowercase both sides before
   comparing, or the assertion fails on case alone.

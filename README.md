@@ -125,6 +125,29 @@ curl -X POST http://localhost:3000/api/payments \
   }'
 ```
 
+### Deploying behind a proxy
+
+Writes are rate-limited per API key. The one endpoint with no key to count yet is
+`POST /api/auth/login`, which falls back to the caller's address — and the only
+source for that is `x-forwarded-for`, a header the client sets. Next fills it in
+from the socket *only when it is absent*, so a caller that sends its own wins and
+can rotate fake values to dodge the limit.
+
+If anything fronts the app, tell it how many of those hops are yours:
+
+```bash
+# Number of proxies you run in front of this app (load balancer, ingress, CDN…).
+# The address that many hops from the right of x-forwarded-for is the one your
+# outermost proxy actually observed; everything left of it is unverifiable.
+TRUSTED_PROXY_HOPS=1
+
+# optional: writes per key per minute (default 30)
+RATE_LIMIT_WRITES_PER_MINUTE=30
+```
+
+Unset (the default, and what local demos want) the leftmost entry is used as
+before — best-effort, and only sound behind a proxy that overwrites the header.
+
 ## Compliance model
 
 Every execution runs the full provider set and persists results:

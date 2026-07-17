@@ -125,6 +125,100 @@ describe("write rate limits", () => {
   });
 });
 
+/**
+ * `x-forwarded-for` is client-settable — Next only fills it from the socket when
+ * it is absent (`??=`), so a client that sends its own wins. Behind a known number
+ * of our own proxies we can read past the forged part of the list.
+ */
+describe("login rate limit behind a trusted proxy", () => {
+  let restore = () => {};
+  let restoreHops = () => {};
+
+  beforeEach(() => {
+    restore = withWriteLimit(3);
+  });
+  afterEach(() => {
+    restore();
+    restoreHops();
+  });
+
+  function withHops(hops: string | undefined) {
+    const previous = process.env.TRUSTED_PROXY_HOPS;
+    if (hops === undefined) delete process.env.TRUSTED_PROXY_HOPS;
+    else process.env.TRUSTED_PROXY_HOPS = hops;
+    restoreHops = () => {
+      if (previous === undefined) delete process.env.TRUSTED_PROXY_HOPS;
+      else process.env.TRUSTED_PROXY_HOPS = previous;
+    };
+  }
+
+  const guess = (xff: string) =>
+    loginPOST(post("/api/auth/login", { api_key: "sos_wrong" }, undefined, { "x-forwarded-for": xff }));
+
+  it("counts the address the trusted proxy observed, not the client's claim", async () => {
+    withHops("1");
+
+    // One proxy of ours, which appends what it saw: 198.51.100.5. The attacker
+    // forges the left of the list, rotating a fresh value every attempt to look
+    // like a new caller each time.
+    for (let i = 0; i < 3; i++) {
+      expect((await guess(`10.0.0.${i}, 198.51.100.5`)).status).toBe(401);
+    }
+
+    // Rotation buys nothing: the rightmost hop is the one we count, and it is the
+    // one entry the attacker cannot write.
+    expect((await guess("10.0.0.99, 198.51.100.5")).status).toBe(429);
+  });
+
+  it("a genuinely different caller behind the same proxy keeps its own budget", async () => {
+    withHops("1");
+
+    for (let i = 0; i < 3; i++) expect((await guess(`10.0.0.1, 198.51.100.20`)).status).toBe(401);
+    expect((await guess("10.0.0.1, 198.51.100.20")).status).toBe(429);
+
+    // Blocking the proxy itself would lock out every user behind it.
+    expect((await guess("10.0.0.1, 198.51.100.21")).status).toBe(401);
+  });
+
+  it("an attacker cannot escape by lengthening the list", async () => {
+    withHops("1");
+
+    // Padding the left just pushes the forgeries further from where we read.
+    for (let i = 0; i < 3; i++) {
+      expect((await guess(`10.0.0.${i}, 172.16.0.${i}, 192.0.2.${i}, 198.51.100.30`)).status).toBe(401);
+    }
+    expect((await guess("10.0.0.9, 172.16.0.9, 192.0.2.9, 198.51.100.30")).status).toBe(429);
+  });
+
+  it("two trusted hops read one further left", async () => {
+    withHops("2");
+
+    // client, edge-observed, inner-proxy-observed: with two hops of ours the
+    // second from the right is the outermost address we can vouch for.
+    for (let i = 0; i < 3; i++) {
+      expect((await guess(`10.0.0.${i}, 198.51.100.40, 172.16.9.9`)).status).toBe(401);
+    }
+    expect((await guess("10.0.0.9, 198.51.100.40, 172.16.9.9")).status).toBe(429);
+  });
+
+  it("unset keeps the documented best-effort behavior", async () => {
+    withHops(undefined);
+
+    // No claim about the topology, so no pretending: the leftmost entry is used,
+    // exactly as before. This is the case the env var exists to fix.
+    for (let i = 0; i < 3; i++) expect((await guess("203.0.113.50, 198.51.100.60")).status).toBe(401);
+    expect((await guess("203.0.113.50, 198.51.100.60")).status).toBe(429);
+  });
+
+  it("falls back rather than misreading a list shorter than the configured hops", async () => {
+    // A misconfiguration (or a request that skipped the proxy) must not index off
+    // the end of the list and key everything on "undefined".
+    withHops("3");
+    expect((await guess("203.0.113.70")).status).toBe(401);
+    expect((await guess("203.0.113.70")).status).toBe(401);
+  });
+});
+
 describe("request body cap", () => {
   it("413s a body past the cap", async () => {
     const huge = JSON.stringify({ ...createBody("TOO-BIG"), memo: "x".repeat(MAX_BODY_BYTES) });

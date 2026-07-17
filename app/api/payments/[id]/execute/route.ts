@@ -4,6 +4,7 @@ import { runComplianceChecks } from "@/lib/compliance";
 import { executePayment } from "@/lib/executor";
 import { transitionStatus } from "@/lib/transitions";
 import { fromThrown } from "@/lib/api-errors";
+import { MoneyError, parseAmount } from "@/lib/money";
 import {
   actorOf,
   authorizePaymentWrite,
@@ -47,12 +48,40 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 }
 
+/**
+ * Re-validate the amount already on the row, before anything acts on it.
+ *
+ * Rows written before the money gate (lib/money) passed only a `Number(amount) > 0`
+ * check, so a database that predates it can still hold "1e5" or an over-precise
+ * "100.001" — strings every parse downstream now rejects. The first read of one is
+ * deep inside the compliance gate, which is far too late: the payment has already
+ * left QUOTED, so the MoneyError strands it in COMPLIANCE_PENDING, a status execute
+ * refuses to resume from. The row was then executable from nowhere.
+ *
+ * Checking here costs one parse and leaves the payment exactly where it was —
+ * QUOTED (or APPROVED), both still cancellable. 409, not 400: the request is
+ * well-formed; it is the stored payment that cannot be executed. MoneyError
+ * messages are written for clients and carry no internals, so one can be quoted.
+ */
+function unusableAmount(payment: { amount: string; sourceCurrency: string }): NextResponse | null {
+  try {
+    parseAmount(payment.amount, payment.sourceCurrency);
+    return null;
+  } catch (e) {
+    if (e instanceof MoneyError) return conflict(`payment cannot be executed: ${e.message}`);
+    throw e;
+  }
+}
+
 async function runExecute(principal: Principal, id: string, body: { route_id?: string }): Promise<NextResponse> {
   let payment = await prisma.payment.findUnique({ where: { id } });
   if (!payment) return notFound();
 
   const denied = authorizePaymentWrite(principal, payment);
   if (denied) return denied;
+
+  const unusable = unusableAmount(payment);
+  if (unusable) return unusable;
 
   const actor = actorOf(principal);
 
