@@ -43,20 +43,25 @@ export async function POST(req: NextRequest) {
     return invalidRequest("name and country are required");
   }
   const externalId = `ent_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 24)}_${randomBytes(2).toString("hex")}`;
-  const entity = await prisma.entity.create({
-    data: {
-      externalId,
-      name,
-      country,
-      role,
-      kybStatus: "PENDING", // new entities always start unverified
-      approvedCorridors: JSON.stringify(approved_corridors),
-      wallets: wallet_address
-        ? { create: { address: wallet_address, network: "local-anvil", allowlisted: false, riskScore: 50 } }
-        : undefined,
-    },
-    include: { wallets: true },
+  // Create and audit in one transaction: the row and the record of it commit or
+  // roll back together (atomic-write invariant).
+  const entity = await prisma.$transaction(async (tx) => {
+    const created = await tx.entity.create({
+      data: {
+        externalId,
+        name,
+        country,
+        role,
+        kybStatus: "PENDING", // new entities always start unverified
+        approvedCorridors: JSON.stringify(approved_corridors),
+        wallets: wallet_address
+          ? { create: { address: wallet_address, network: "local-anvil", allowlisted: false, riskScore: 50 } }
+          : undefined,
+      },
+      include: { wallets: true },
+    });
+    await audit("entity.created", { externalId, name, country }, undefined, actorOf(principal), tx);
+    return created;
   });
-  await audit("entity.created", { externalId, name, country }, undefined, actorOf(principal));
   return NextResponse.json({ entity }, { status: 201 });
 }

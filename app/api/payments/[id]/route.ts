@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { isPlatformRole, notFound, requirePrincipal, scrubFailureReason } from "../../guard";
+import {
+  isPlatformRole,
+  notFound,
+  requirePrincipal,
+  scrubAuditDetail,
+  scrubFailureReason,
+} from "../../guard";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const principal = await requirePrincipal(req);
@@ -24,5 +30,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!isPlatformRole(principal) && ![payment.senderId, payment.recipientId].includes(principal.entityId!)) {
     return notFound();
   }
-  return NextResponse.json({ payment: scrubFailureReason(principal, payment) });
+  // Two boundaries, not one: the failureReason column *and* the audit-event detail
+  // that can echo the same operator diagnostics.
+  const scrubbed = scrubFailureReason(principal, payment);
+  return NextResponse.json({
+    payment: { ...scrubbed, auditEvents: scrubAuditDetail(principal, scrubbed.auditEvents) },
+  });
 }

@@ -249,4 +249,34 @@ describe("stuck detection reads the chain, not just the DB", () => {
     const after = await stuckPayments();
     expect(after.find((s) => s.payment.id === payment.id)).toBeUndefined();
   });
+
+  it("lists a held-escrow FAILED payment even when onchainPaymentId was never recorded", async () => {
+    // The receipt-timeout strand: the escrow tx mined but confirmation threw, so
+    // the payment FAILED with onchainPaymentId still null while the funds are held.
+    // The escrow id is deterministic from payment.id, so the DB column is not the
+    // signal — keying the stuck query off it (the old filter) hid exactly this.
+    const payment = await createApprovedPayment({ amount: "650.00" });
+    executorTestHooks.beforeSettlement = () => {
+      throw new Error("fx feed unavailable");
+    };
+    executorTestHooks.beforeRefund = () => {
+      throw new Error("operator signer unavailable");
+    };
+    await executePayment(payment.id);
+    delete executorTestHooks.beforeSettlement;
+    delete executorTestHooks.beforeRefund;
+
+    const pid = onchainPaymentId(payment.id);
+    expect(await onchainPaymentState("base-local", pid)).toBe("INITIATED");
+
+    // Model the strand: null the column the old query keyed on. The payment has a
+    // reservation (created just before escrow), which is the real "attempted
+    // escrow" signal, so it must stay visible.
+    await prisma.payment.update({ where: { id: payment.id }, data: { onchainPaymentId: null } });
+
+    const listed = await stuckPayments();
+    expect(listed.find((s) => s.payment.id === payment.id)?.escrowState).toBe("INITIATED");
+
+    await operatorWrite("base-local", "failAndRefund", [pid, "operator repair"]); // leave the escrow clean
+  });
 });

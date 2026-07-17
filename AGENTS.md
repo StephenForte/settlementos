@@ -50,7 +50,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/chain.ts](lib/chain.ts) | viem chain adapter. Loads/merges `chain/deployments*.json`, per-network accounts via `accountsFor()`, contract ABIs (`SETTLEMENT_ABI`, `MMF_ABI`), `operatorWrite()` (escrow) / `mmfOperatorWrite()` (fund), `treasuryTokenTransfer()`, `ensureSenderAllowance()` (exact per-payment escrow approval) / `ensureTreasuryAllowance()`, `mmfAddress()` (undefined where no fund is deployed). Resolves no keys itself — `walletFor(networkId, signer)` takes a `Signer`. **`server-only`** |
 | [lib/signers.ts](lib/signers.ts) | The custody seam: `Signer` (`address` + async `account()`), `signerFor(ref, role)` dispatching on the `AccountRef` (`kmsKeyId` → `KmsSigner`, else `LocalKeySigner`), `resolveKey()` (inline key or `privateKeyEnv` → .env), `AccountRef`. `KmsSigner` is the documented extension point and throws "not configured". **`server-only`** |
 | [lib/state.ts](lib/state.ts) | Payment lifecycle state machine; `assertTransition()` enforces legal moves. Pure — no DB, no framework |
-| [lib/transitions.ts](lib/transitions.ts) | The one way a payment's status changes: `transitionStatus(payment, to, {data, detail, action, actor})` asserts the move is legal, then compare-and-swaps on the observed status (`updateMany where {id, status: from}`). Zero rows → `StaleTransitionError` (an `ApiError` with code `conflict`, so `caughtErrorResponse` renders a 409 with no mapping). Audits only after a successful swap |
+| [lib/transitions.ts](lib/transitions.ts) | The one way a payment's status changes: `transitionStatus(payment, to, {data, detail, auditData, action, actor})` asserts the move is legal, then compare-and-swaps on the observed status (`updateMany where {id, status: from}`). Zero rows → `StaleTransitionError` (an `ApiError` with code `conflict`, so `caughtErrorResponse` renders a 409 with no mapping). Audits only after a successful swap. `auditData` replaces `data` in the audit detail when a written column is too large/redundant to log (a quote's full `quoteJson`) |
 | [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: execution-lease claim, auto-recall of parked MMF liquidity, liquidity reservation, escrow, FX, payout, and the failure exits — refund while the escrow is held, **compensation** once it is released (`compensateSender`). `ExecutionLeaseError` (an `ApiError` with code `conflict` → 409, like `StaleTransitionError`) is a second attempt losing the lease. Also the operator-repair half: `stuckPayments()` (payments still holding funds, each with its escrow state read live) and `repairCompensation()` (re-run a compensation transfer that failed). `executorTestHooks` are the test-only throw points for every failure exit |
 | [lib/routing.ts](lib/routing.ts) | Route quotes (instant/batched/bridged), treasury liquidity checks. Parked MMF liquidity counts as available: free-short-but-parked-covers still quotes, flagged `recall_required`. `availableLiquidity()` is a display wrapper over `treasury.freeTreasuryBalance()` (bigint base units + formatted strings), and `liquidityCheck()`/`destinationUnits()` compare in **token base units** |
 | [lib/fx.ts](lib/fx.ts) | Simulated FX, **all bigint**: static mid rates, spread + tiered slippage, platform fee. Amounts are currency **minor units**; rates are integers scaled by `10^RATE_DECIMALS` (18) — `midRate()` returns a scaled bigint, `formatRate()` renders it. `convert()` (minor units across currencies at a rate), `applyBps()` (worsen a rate), `usdEquivalent()` (→ USD minor units, for tiering/risk thresholds) |
@@ -62,14 +62,14 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/rate-limit.ts](lib/rate-limit.ts) | In-memory sliding-window limiter: `consumeRateLimit(key, {limit, windowMs, now})` → `RateLimitDecision`, `resetRateLimits()` (test-only). `now` is a **parameter**, so the window is testable without fake timers. Per-process by design — behind >1 instance it becomes a per-instance limit, and the fix is a shared store, not a cleverer Map |
 | [lib/pagination.ts](lib/pagination.ts) | The bound on every list read: `parsePageRequest(searchParams)` → `{limit, cursor}` (default 50, max 200, canonical-integer grammar — `Number("1e3")` is 1000, so a regex decides), `toPage(rows, limit, idOf)` (fetch `limit + 1`, the extra row *is* the `has_more` evidence and is dropped), `PaginationError` → a route's 400 |
 | [app/api/limits.ts](app/api/limits.ts) | The HTTP half of both: `beginWrite(req, principal)` → `{body}` **or** the 429/413 to return (same narrowing convention as guard.ts), `enforceWriteRateLimit()` for the bodyless writes, `rateLimitKey()` (principal → `key:<keyId>`, else `ip:<addr>`), `WRITE_RATE_LIMIT` (30/min, `RATE_LIMIT_WRITES_PER_MINUTE` overrides), `MAX_BODY_BYTES` (64KB) |
-| [lib/session.ts](lib/session.ts) | Next-only half of auth: `currentPrincipal()` resolves the `sos_key` cookie via `cookies()` for **server components** (which have no `Request`); `sessionCookieOptions()` is the one place the cookie's flags are defined. Keep `next/headers` out of lib/auth.ts so route tests can pass a plain `Request` |
+| [lib/session.ts](lib/session.ts) | Next-only half of auth: `currentPrincipal()` resolves the `sos_key` cookie via `cookies()` for **server components** (which have no `Request`); `paymentScopeWhere(principal)` is the page-side tenant filter mirroring GET /api/payments; `sessionCookieOptions()` is the one place the cookie's flags are defined. Keep `next/headers` out of lib/auth.ts so route tests can pass a plain `Request`. Pages gate with these + `<AuthRequired>` (components/auth-required.tsx) |
 | [lib/treasury.ts](lib/treasury.ts) | Tokenized-MMF treasury ops: `park()` (subscribe unreserved liquidity into the fund), `recall()` (T+0 redeem of a position, principal + accrued yield back to the treasury), `accrueDaily()` (advance the fund index by one day at `MMF_ANNUAL_RATE_BPS`, default 3.5% APY; `dailyIndex()`/`valueOfShares()` are the pure bigint math), `freeTreasuryBalance()` (bigint balance − RESERVED rows), `parkedBalance()` (derived value of ACTIVE positions; `0n`, never a throw, where no fund exists), `recallForPayment()` (FIFO auto-recall for the executor), `TreasuryError` (typed codes for route handlers), `TREASURY_*` audit actions |
 | [lib/assets.ts](lib/assets.ts) | Asset metadata, currency↔token mapping, base-unit conversion |
 | [lib/money.ts](lib/money.ts) | The amount gate at the API boundary: `parseAmount(amount, currency)` → bigint **minor units** (canonical grammar only — no exponent/sign/whitespace, at most the currency's decimals, ≤15 integer digits, > 0), `formatMinorUnits()` / `canonicalAmount()` for the stored string, `formatScaledUnits()` / `parseScaledUnits()` (the generic halves — any integer scaled by `10^n`, at any precision: FX rates, and reservation strings read back as token base units), `CURRENCY_DECIMALS` (USD/SGD 2, JPY 0), typed `MoneyError`. Framework-free; routes map it to a 400 |
 | [scripts/setup.mjs](scripts/setup.mjs) | Local deploy (tokens, escrow, TokenizedMMF + its yield buffer and treasury approval) + DB seed (dev-mnemonic accounts, local only) |
 | [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy via argv): env deployer key, per-network gas-dust targets, generated dust wallets, DB registration |
 | `app/api/*` | REST route handlers (thin; logic lives in lib/) |
-| [app/api/guard.ts](app/api/guard.ts) | Authorization glue: `requirePrincipal(req)` / `requireRole(req, ...roles)` return a `Principal` **or** the `NextResponse` to return (`if (x instanceof NextResponse) return x`), plus `isPlatformRole()` for the OPERATOR/REVIEWER-see-everything check, `authorizePaymentWrite(principal, payment)` for the quote/execute/cancel rule (OPERATOR or the sender; returns the response to send or null), and `actorOf(principal)` for the audit actor. Also the error responses every handler returns: `errorResponse(code, msg?)` / `invalidRequest()` / `conflict()` / `unauthorized()` / `forbidden()` / `notFound()`, and `caughtErrorResponse(e, fallback, context)` for catch paths; `scrubFailureReason(principal, payment)` redacts operator detail for tenants. HTTP concerns live here, not in lib/auth.ts |
+| [app/api/guard.ts](app/api/guard.ts) | Authorization glue: `requirePrincipal(req)` / `requireRole(req, ...roles)` return a `Principal` **or** the `NextResponse` to return (`if (x instanceof NextResponse) return x`), plus `isPlatformRole()` for the OPERATOR/REVIEWER-see-everything check, `authorizePaymentWrite(principal, payment)` for the quote/execute/cancel rule (OPERATOR or the sender; returns the response to send or null), and `actorOf(principal)` for the audit actor. Also the error responses every handler returns: `errorResponse(code, msg?)` / `invalidRequest()` / `conflict()` / `unauthorized()` / `forbidden()` / `notFound()`, and `caughtErrorResponse(e, fallback, context)` for catch paths; `scrubFailureReason(principal, payment)` redacts the failure column and `scrubAuditDetail(principal, events)` the included audit-event detail for tenants. `isPlatformRole` is re-exported from lib/auth (pure, so pages can use it). HTTP concerns live here, not in lib/auth.ts |
 | [lib/api-errors.ts](lib/api-errors.ts) | Framework-free error vocabulary: the `ApiErrorCode` union (unauthorized/forbidden/not_found/invalid_request/conflict/idempotency_conflict/execution_failed/internal), the code→status and code→canned-message tables, `ApiError` (throw when a lib wants to pick the client's message), `apiError()`, `fromThrown()` (logs the real error, returns a safe one), `SAFE_FAILURE_SUMMARY`. The NextResponse wrappers live in app/api/guard.ts |
 | [app/api/idempotency.ts](app/api/idempotency.ts) | `beginIdempotency(req, principal, route, body)` → an `IdempotentScope` (`complete(res)` / `abandon()`) **or** the `NextResponse` to return (replay / 422 / 409), same narrowing convention as guard.ts. No `Idempotency-Key` header → a pass-through scope, so the wrapper is uniform and the browser demo is unaffected |
 | `app/api/treasury/*` | MMF routes: `park`, `recall`, `positions` (GET, derived value per position), `accrue`. `errors.ts` holds the single `TreasuryErrorCode` → HTTP status table — add a code there when you add one to lib/treasury |
@@ -109,18 +109,24 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 - **Audit everything**: any state change or fund movement gets an `audit(...)`
   event. The log is append-only — never update or delete `AuditEvent` rows; that
   breaks the hash chain (`GET /api/audit` verifies it, the UI shows INTACT/BROKEN).
-- **The anchor is what the chain cannot do for itself**: hashes only catch an
-  *edit* — anyone with DB write access can re-hash the log from the tampered event
-  forward and it verifies clean. `AuditCheckpoint` signs the tip hash with
-  `AUDIT_ANCHOR_KEY` (HMAC, key in the env and never in the DB), so a re-hashed
-  history moves the tip to a value the attacker cannot sign. Verification is
-  therefore anchor-first (signature → the anchored event is still that hash and
-  still hashes to it → re-hash only what came after), which is also why it stays
-  fast as the log grows. No key = no checkpoints and a `mode: "full"`,
-  `anchored: false` verdict: the demo still runs, and says out loud that its
-  INTACT is the weaker claim. Residual limit, deliberate: deleting the checkpoints
-  outright drops verification back to full — closing that needs the anchor
-  published where we do not control it.
+- **The anchor is what the chain cannot do for itself**: the hash chain catches a
+  naive *edit* (an event no longer hashes to its stored hash), but not an attacker
+  with DB write access who re-hashes the log from the tampered event forward — that
+  verifies clean. `AuditCheckpoint` signs the tip hash with `AUDIT_ANCHOR_KEY`
+  (HMAC, key in the env and never in the DB), so a re-hashed history moves the tip
+  to a value the attacker cannot sign. **Verification always re-hashes the whole
+  chain from genesis** and the signature is a *second* check layered on top, not a
+  shortcut: an edit before a checkpoint leaves the forward links and the signed tip
+  untouched, so skipping pre-anchor events (an earlier "incremental" mode did
+  exactly this) passed such an edit as INTACT — the one tamper the chain exists to
+  catch. So verification is O(events) by necessity; there is no sound way to skip
+  reading an event you might have to detect a change in. `verifyAuditChain` returns
+  `mode: "full"` always; `anchored` says whether a key/checkpoint added the
+  re-hash-attack layer. No key = no checkpoints and `anchored: false`: the demo
+  still runs and says out loud that its INTACT is the weaker claim. Residual limit,
+  deliberate: deleting the checkpoint rows drops back to chain-only, which a
+  re-hash attack passes — closing that needs the anchor published where we do not
+  control it.
 - **Money types**: fiat amounts are decimal **strings** in the DB and API
   (`"100000.00"`); on-chain amounts are **bigint** base units via
   `toBaseUnits`/`fromBaseUnits`. mockJPY has **0 decimals**. Never put a JS float
@@ -208,7 +214,19 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 - **Tenant scoping is a query filter, not a post-filter**: an ENTITY principal's
   reads are narrowed in the `where` clause (`isPlatformRole(p) ? {} : { ... }`),
   so a row it may not see is never loaded and cannot leak through a count, an
-  aggregate, or a forgotten field.
+  aggregate, or a forgotten field. Included relations count too: the payment-detail
+  route redacts `auditEvents[].detail` for tenants (`scrubAuditDetail`), because the
+  same operator diagnostics scrubbed from `failureReason` also ride inside the audit
+  events transitionStatus merges the failed transition's columns into.
+- **Server components gate themselves — the API filter does not cover them**: a
+  page reads Prisma directly (no `Request`), so tenant isolation lives in the page,
+  not a shared route guard. Every page resolves `currentPrincipal()` (lib/session)
+  and either scopes its reads (`paymentScopeWhere`, or `id: principal.entityId` for
+  entities) or gates to a platform role, rendering `<AuthRequired>` otherwise —
+  dashboard/compliance/liquidity are platform-only; payments/entities scope per
+  tenant. A page that reads a domain table without one of these renders every
+  tenant's data to whoever asks (the `/payments/stuck` page was the original
+  template for the check).
 - **Compliance fail-safe**: a screening that cannot be performed (provider
   error, timeout, malformed response) resolves MANUAL_REVIEW — never PASS.
   Mocks stay the default when no provider env keys are set, so demos work
@@ -278,17 +296,34 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   COMPENSATION_PENDING → treasury-funded transfer of the **source** asset back to the
   sender's wallet on the **source** network → COMPENSATED. A compensation transfer that
   itself fails leaves the payment in COMPENSATION_PENDING for an operator, never FAILED.
+- **Compensate only when the recipient was *not* paid; otherwise complete forward**:
+  once the destination payout has landed (`destinationTxHash` set, cross-chain only),
+  the recipient has the money and compensating the sender would pay twice out of
+  treasury. A throw after that point (the ledger credit, the SETTLED transition)
+  runs `completeSettledPayout` — create the ledger credit if missing, consume the
+  reservation, mark SETTLED — never `compensateSender`. So the executor's catch
+  checks `destinationTxHash` *before* the escrow reconciliation below.
 - **Reconcile with the chain before undoing anything**: the executor's catch decides
   refund-vs-compensate from `onchainPaymentState()` (the escrow's own `getPayment`), not
   from the DB status — they disagree exactly when a step threw mid-flight, which is the
   only time this path runs. The DB says what the attempt *tried*; the chain says what
-  landed. The status list is only a fallback for when the read itself fails.
+  landed. When the read itself fails, the DB status is the fallback — and a
+  *post-settlement* status (FX_OR_SWAP_COMPLETED/PAYOUT_PENDING) is decisive on its
+  own: those transitions only happen after `settlePayment` confirmed, so an
+  unreadable escrow there means "released" → compensate, never FAILED (which would
+  strand the sender, since compensation is unreachable from FAILED).
 - **A stranded payment must stay visible**: `stuckPayments()` answers "who is still
   holding a sender's funds" from the DB *and* the chain — a FAILED payment is only
-  really finished if its escrow refunded. An escrow read that fails degrades to
-  `escrowState: null` and the payment is **kept** in the list: unknown is not the
-  same as fine, and a flaky RPC must never make a stranded payment vanish from the
-  one view that would surface it.
+  really finished if its escrow refunded. Candidacy keys off having a
+  `LiquidityReservation` (created immediately before `initiatePayment`), **not**
+  `onchainPaymentId`: a receipt that times out leaves the escrow held with that
+  column still null, and keying off it hid exactly that stranded payment. The
+  escrow id is recomputed deterministically from `payment.id`, so the DB column is
+  never the signal. An escrow read that fails degrades to `escrowState: null` and
+  the payment is **kept**; only INITIATED/SETTLED/null keep it, while NONE (a
+  reservation whose escrow tx reverted before mining) and REFUNDED are done —
+  unknown is not the same as fine, and a flaky RPC must never make a stranded
+  payment vanish from the one view that would surface it.
 - **Repairing is not retrying**: `repairCompensation()` re-sends real money, so it
   claims the same execution lease (CAS on COMPENSATION_PENDING + `executionLeaseId`
   null), re-reads the escrow (only a *released* escrow may be repaid from treasury),

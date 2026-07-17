@@ -47,9 +47,10 @@ describe("GET /api/audit", () => {
       new NextRequest("http://test.local/api/audit", { headers: { [API_KEY_HEADER]: API_KEYS.operator } })
     );
     const { integrity } = await res.json();
-    expect(integrity).toMatchObject({ valid: true, mode: "incremental", anchored: true });
-    // Only the event appended after the anchor needed re-hashing.
-    expect(integrity.events_verified).toBe(1);
+    expect(integrity).toMatchObject({ valid: true, mode: "full", anchored: true });
+    // Verification always re-hashes the whole chain (the count is shared-suite
+    // dependent, so just assert it covered the log, not an exact number).
+    expect(integrity.events_verified).toBeGreaterThan(0);
     expect(integrity.checkpoint.last_event_id).toBeGreaterThan(0);
   });
 });

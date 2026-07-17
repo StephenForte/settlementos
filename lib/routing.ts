@@ -8,7 +8,7 @@ import { formatMinorUnits, parseAmount, parseScaledUnits, MoneyError } from "./m
 import { assetForCurrency, fromBaseUnits, toBaseUnits, type AssetSymbol } from "./assets";
 import { isChainReady, loadDeployments } from "./chain";
 import { networkInfo } from "./networks";
-import { freeTreasuryBalance, parkedBalance } from "./treasury";
+import { freeTreasuryBalance, parkedBalance, TreasuryError } from "./treasury";
 import { prisma } from "./db";
 
 export const BRIDGE_FEE_BPS = 5; // simulated bridge/liquidity-network fee
@@ -117,8 +117,12 @@ export async function liquidityCheck(
   } catch (e) {
     // An unreadable amount is our own bug, not a flaky endpoint — quoting a
     // route as fundable because we could not parse what it needs is how a
-    // payment gets to the executor with nothing behind it.
+    // payment gets to the executor with nothing behind it. A bad reservation
+    // string surfaces from freeTreasuryBalance as TreasuryError("INVALID_AMOUNT")
+    // (it re-types the MoneyError), so catch that too — otherwise the parse
+    // failure the MoneyError branch is meant to stop slips through as ok:true.
     if (e instanceof MoneyError) throw e;
+    if (e instanceof TreasuryError && e.code === "INVALID_AMOUNT") throw e;
     return { ok: true, recallRequired: false }; // chain unreachable while quoting → execution re-checks
   }
 }

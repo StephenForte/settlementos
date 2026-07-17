@@ -5,11 +5,23 @@ import { explorerTxUrl } from "@/lib/networks";
 import { usdEquivalent } from "@/lib/fx";
 import { formatMinorUnits, parseAmount } from "@/lib/money";
 import { stuckPayments } from "@/lib/executor";
+import { isPlatformRole } from "@/lib/auth";
+import { currentPrincipal } from "@/lib/session";
+import { AuthRequired } from "@/components/auth-required";
 import { Card, Stat, StatusBadge, Hash } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardHome() {
+  // The dashboard aggregates platform-wide volume, the review queue, and the
+  // stuck-payment count — an operations overview, so platform roles only. A
+  // signed-in tenant works from /payments (scoped to its own rows); an anonymous
+  // browser gets the sign-in wall instead of every tenant's data.
+  const principal = await currentPrincipal();
+  if (!principal || !isPlatformRole(principal)) {
+    return <AuthRequired message="Operator or reviewer access is required to view the dashboard." />;
+  }
+
   const payments = await prisma.payment.findMany({
     include: { sender: true, recipient: true },
     orderBy: { createdAt: "desc" },

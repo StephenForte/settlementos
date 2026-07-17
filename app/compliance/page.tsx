@@ -2,6 +2,9 @@ import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { verifyAuditChain, type AuditIntegrity } from "@/lib/audit";
 import { formatAmount } from "@/lib/assets";
+import { isPlatformRole } from "@/lib/auth";
+import { currentPrincipal } from "@/lib/session";
+import { AuthRequired } from "@/components/auth-required";
 import { Card, StatusBadge } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -20,6 +23,13 @@ function auditChainLabel(integrity: AuditIntegrity): string {
 }
 
 export default async function CompliancePage() {
+  // The review queue, screening results, and the audit log span every tenant —
+  // platform roles only.
+  const principal = await currentPrincipal();
+  if (!principal || !isPlatformRole(principal)) {
+    return <AuthRequired message="Operator or reviewer access is required to view the compliance queue." />;
+  }
+
   const [queue, recentChecks, auditEvents, integrity] = await Promise.all([
     prisma.payment.findMany({
       where: { status: "MANUAL_REVIEW" },

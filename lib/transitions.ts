@@ -43,6 +43,13 @@ export interface TransitionOpts {
   data?: Partial<Payment>;
   /** Merged into the audit detail alongside { from, to, ...data }. */
   detail?: Record<string, unknown>;
+  /**
+   * When set, replaces `data` in the audit detail (the columns are still
+   * written). For a column written for state but too large or redundant to
+   * belong in the log — a quote's full quoteJson. Defaults to `data`, so every
+   * existing caller is unchanged.
+   */
+  auditData?: Partial<Payment>;
   /** Defaults to `payment.status.<to>`; override for domain events (reviews). */
   action?: string;
   /** Defaults to "system" — the machine acting on its own initiative. */
@@ -61,7 +68,7 @@ export async function transitionStatus(
   to: PaymentStatus,
   opts: TransitionOpts = {}
 ): Promise<Payment> {
-  const { data = {}, detail = {}, action, actor } = opts;
+  const { data = {}, detail = {}, auditData, action, actor } = opts;
   const from = payment.status;
   assertTransition(from, to);
 
@@ -90,7 +97,7 @@ export async function transitionStatus(
     const updated = await tx.payment.findUniqueOrThrow({ where: { id: payment.id } });
     await audit(
       action ?? `payment.status.${to.toLowerCase()}`,
-      { from, to, ...data, ...detail },
+      { from, to, ...(auditData ?? data), ...detail },
       payment.id,
       actor,
       tx

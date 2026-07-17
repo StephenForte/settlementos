@@ -88,6 +88,21 @@ describe("the liquidity boundary", () => {
     expect((await liquidityCheck("mockUSDC", NETWORK, liq.available)).ok).toBe(true);
   });
 
+  it("throws (never quotes fundable) when a reservation amount is unreadable", async () => {
+    // A corrupt reservation string surfaces from freeTreasuryBalance as a
+    // TreasuryError, not a MoneyError. liquidityCheck used to rethrow only
+    // MoneyError, so this fell through to `{ ok: true }` — quoting a route as
+    // fundable because we could not parse what a rival payment already promised.
+    const payment = await createDraftPayment();
+    await prisma.liquidityReservation.create({
+      // Excess precision for 6-decimal mockUSDC — the parser rejects it.
+      data: { paymentId: payment.id, asset: "mockUSDC", network: NETWORK, amount: "99.8765432" },
+    });
+    created.push(payment.id);
+
+    await expect(liquidityCheck("mockUSDC", NETWORK, "10.00")).rejects.toThrow();
+  });
+
   it("agrees with the park guard on the same rows, to the base unit", async () => {
     // Routing and treasury answer the same question for two different callers (a
     // payment and a park). They must never disagree about what is free.

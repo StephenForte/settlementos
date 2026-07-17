@@ -17,6 +17,9 @@ import {
   freeTreasuryBalance,
   valueOfShares,
 } from "@/lib/treasury";
+import { isPlatformRole } from "@/lib/auth";
+import { currentPrincipal } from "@/lib/session";
+import { AuthRequired } from "@/components/auth-required";
 import { Card } from "@/components/ui";
 import { MmfCard, type MmfCardProps, type MmfPositionView } from "./mmf-card";
 
@@ -116,6 +119,13 @@ async function mmfCardProps(
 }
 
 export default async function LiquidityPage() {
+  // Treasury balances and MMF positions are platform funds — operator/reviewer
+  // only, and park/recall (the card's controls) are OPERATOR-gated at the API.
+  const principal = await currentPrincipal();
+  if (!principal || !isPlatformRole(principal)) {
+    return <AuthRequired message="Operator or reviewer access is required to view treasury liquidity." />;
+  }
+
   if (!isChainReady()) {
     return (
       <Card title="Liquidity & Treasury">

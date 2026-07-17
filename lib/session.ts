@@ -5,8 +5,9 @@
 // resolves the same principal from the `sos_key` cookie for server components,
 // which render with no Request object in hand.
 
+import type { Prisma } from "@prisma/client";
 import { cookies } from "next/headers";
-import { API_KEY_COOKIE, principalForKey, type Principal } from "./auth";
+import { API_KEY_COOKIE, isPlatformRole, principalForKey, type Principal } from "./auth";
 
 /** Cookie lifetime — a demo session, re-authenticated by pasting the key again. */
 export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
@@ -32,4 +33,16 @@ export async function currentPrincipal(): Promise<Principal | null> {
   const raw = (await cookies()).get(API_KEY_COOKIE)?.value;
   if (!raw) return null;
   return principalForKey(raw);
+}
+
+/**
+ * The payment `where` filter for a server component, mirroring GET /api/payments:
+ * platform roles see everything; an ENTITY sees only payments it is party to.
+ * Scoping is a query filter, never a post-filter — a row a caller may not see is
+ * never loaded (and never leaks through a count or an aggregate).
+ */
+export function paymentScopeWhere(principal: Principal): Prisma.PaymentWhereInput {
+  return isPlatformRole(principal)
+    ? {}
+    : { OR: [{ senderId: principal.entityId }, { recipientId: principal.entityId }] };
 }

@@ -80,6 +80,35 @@ describe("POST /api/treasury/park", () => {
     await unwind();
   });
 
+  it("replays a retried park with the same Idempotency-Key instead of parking twice", async () => {
+    const key = "park-idem-001";
+    const request = () =>
+      new NextRequest("http://test.local/api/treasury/park", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          [API_KEY_HEADER]: API_KEYS.operator,
+          "idempotency-key": key,
+        },
+        body: JSON.stringify(parkBody({ amount: "5000.00" })),
+        ...({ duplex: "half" } as object),
+      });
+
+    const first = await parkPOST(request());
+    const second = await parkPOST(request());
+    const firstData = await first.json();
+    const secondData = await second.json();
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    // The retry replays the first response — same position, not a second park.
+    expect(secondData.position_id).toBe(firstData.position_id);
+    expect(second.headers.get("idempotent-replay")).toBe("true");
+    expect(await prisma.treasuryPosition.count({ where: { status: "ACTIVE" } })).toBe(1);
+
+    await unwind();
+  });
+
   it("rejects an entity that is not MMF-eligible or has not opted in", async () => {
     // ent_tokyo_supplier is a normal counterparty: neither cleared nor opted in.
     const res = await parkPOST(postJson("park", parkBody({ entity_id: "ent_tokyo_supplier" })));

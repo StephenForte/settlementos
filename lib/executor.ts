@@ -59,6 +59,13 @@ export const executorTestHooks: {
   beforeSettlement?: () => void | Promise<void>;
   /** Throws in the payout leg, with the source chain already settled — the compensation path. */
   beforeDestinationPayout?: () => void | Promise<void>;
+  /**
+   * Throws *after* the destination payout has already landed (recipient paid,
+   * destinationTxHash written) but before the settlement is recorded — the path
+   * that must complete forward, never compensate, or the recipient keeps the
+   * payout while the treasury also refunds the sender.
+   */
+  afterDestinationPayout?: () => void | Promise<void>;
   /** Throws in the on-chain refund, stranding a held escrow at FAILED. */
   beforeRefund?: () => void | Promise<void>;
   /**
@@ -67,6 +74,13 @@ export const executorTestHooks: {
    * repair's transfer too, so a test must clear it before repairing.
    */
   beforeCompensationTransfer?: () => void | Promise<void>;
+  /**
+   * Force the catch-path escrow reconciliation read to come back null, as an RPC
+   * flap would. The only way to exercise the "settlement provably happened per the
+   * DB, but the chain read failed" branch — where a post-settlement status must
+   * compensate rather than strand the sender at FAILED.
+   */
+  escrowReadFails?: boolean;
 } = {};
 
 // Every status change the executor makes is a compare-and-swap against the
@@ -351,6 +365,8 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
       );
     }
 
+    await executorTestHooks.afterDestinationPayout?.();
+
     // Simulated fiat rail: credit the recipient's local-currency ledger.
     await prisma.ledgerCredit.create({
       data: {
@@ -375,6 +391,19 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
     return payment;
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
+
+    // The recipient was already paid on the destination chain (destinationTxHash
+    // written): undoing now would pay twice — treasury refunds the sender while the
+    // recipient keeps the payout. The money movement is done; only bookkeeping
+    // threw, so finish the settlement forward instead of compensating. The
+    // reservation stays RESERVED here (completeSettledPayout consumes it), so this
+    // returns before the release below. Only cross-chain routes set the hash, so a
+    // same-chain post-settlement failure — recipient paid only via ledger — still
+    // compensates correctly.
+    if (payment.destinationTxHash) {
+      return await completeSettledPayout(payment, destAmount, reason);
+    }
+
     await prisma.liquidityReservation
       .update({ where: { paymentId: payment.id }, data: { status: "RELEASED" } })
       .catch(() => {});
@@ -384,11 +413,20 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
     // when a step threw mid-flight. Refunding an already-released escrow reverts
     // ("not initiated"); marking a released one FAILED strands the sender's money.
     // A read that itself fails (RPC down) falls back to the DB's view.
-    const escrow = await onchainPaymentState(sourceNet, pid).catch(() => null);
+    const escrow = executorTestHooks.escrowReadFails
+      ? null
+      : await onchainPaymentState(sourceNet, pid).catch(() => null);
 
     // Escrow already released to the treasury: nothing to refund, so make the
-    // sender whole out of treasury instead.
-    if (escrow === "SETTLED") {
+    // sender whole out of treasury instead. When the read fails, a post-settlement
+    // status is decisive on its own — settlePayment lands before those transitions,
+    // so reaching FX_OR_SWAP_COMPLETED/PAYOUT_PENDING proves the escrow released.
+    // Without this, an unreadable escrow at those statuses fell through to FAILED,
+    // from which compensation is unreachable and the sender's money is stranded.
+    const settledOnChain =
+      escrow === "SETTLED" ||
+      (escrow === null && ["FX_OR_SWAP_COMPLETED", "PAYOUT_PENDING"].includes(payment.status));
+    if (settledOnChain) {
       return await compensateSender(payment, { ...compensationContextFor(payment), reason });
     }
 
@@ -416,6 +454,43 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
     if (payment.status === "FAILED") return payment;
     return await setStatus(payment, "FAILED", { failureReason: reason });
   }
+}
+
+/**
+ * Finish a payment whose recipient was already paid on the destination chain
+ * (destinationTxHash set) but whose post-payout bookkeeping threw. Compensation is
+ * off the table — the money reached the recipient, and refunding the sender too
+ * would pay twice out of treasury — so the remaining steps run forward,
+ * idempotently: create the ledger credit if it did not land, consume the
+ * reservation, mark SETTLED. If a step throws again the payment stays
+ * PAYOUT_PENDING (visible to the repair view), never compensated.
+ */
+async function completeSettledPayout(payment: Payment, destAmount: string, reason: string): Promise<Payment> {
+  const existing = await prisma.ledgerCredit.findFirst({ where: { paymentId: payment.id } });
+  if (!existing) {
+    await prisma.ledgerCredit.create({
+      data: {
+        paymentId: payment.id,
+        entityId: payment.recipientId,
+        currency: payment.destinationCurrency,
+        amount: destAmount,
+      },
+    });
+    await audit(
+      "payout.ledger_credit",
+      { entityId: payment.recipientId, currency: payment.destinationCurrency, amount: destAmount },
+      payment.id
+    );
+  }
+  await prisma.liquidityReservation
+    .update({ where: { paymentId: payment.id }, data: { status: "CONSUMED" } })
+    .catch(() => {});
+  await audit(
+    "payment.settlement_recovered",
+    { note: "recipient already paid on destination chain; completed forward", recoveredFrom: reason.slice(0, 200) },
+    payment.id
+  );
+  return await setStatus(payment, "SETTLED");
 }
 
 interface CompensationContext {
@@ -545,9 +620,14 @@ export async function stuckPayments(): Promise<StuckPayment[]> {
     where: {
       OR: [
         { status: "COMPENSATION_PENDING" },
-        // Nothing was escrowed without an onchainPaymentId, so those FAILED
-        // payments (rejected quote, insufficient liquidity) hold no funds.
-        { status: "FAILED", onchainPaymentId: { not: null } },
+        // A FAILED payment attempted escrow iff it has a reservation row: the
+        // reservation is created immediately before initiatePayment, and the
+        // earlier failures (rejected quote, insufficient liquidity, failed
+        // auto-recall) stop before it. onchainPaymentId is NOT the signal — a
+        // receipt that timed out leaves the escrow held with that column still
+        // null, and keying off it hid exactly that stranded payment. The escrow's
+        // deterministic id is recomputed from payment.id below regardless.
+        { status: "FAILED", reservation: { isNot: null } },
       ],
     },
     include: { sender: { include: { wallets: true } }, recipient: { include: { wallets: true } } },
@@ -563,10 +643,19 @@ export async function stuckPayments(): Promise<StuckPayment[]> {
     }))
   );
 
-  // A FAILED payment whose escrow really did refund is done: the sender has their
-  // funds back and only the REFUNDED transition is missing. Everything else here
-  // has money sitting somewhere it does not belong.
-  return rows.filter((r) => r.payment.status === "COMPENSATION_PENDING" || r.escrowState !== "REFUNDED");
+  // Keep only the payments actually holding funds. INITIATED/SETTLED = money is
+  // somewhere it does not belong; null = the read failed, and unknown is not the
+  // same as fine, so keep it. NONE (a reservation that never escrowed — the tx
+  // reverted before mining) and REFUNDED (the sender already has it back, only the
+  // REFUNDED transition missing) are done. COMPENSATION_PENDING is always kept —
+  // the sender is owed a transfer regardless of escrow state.
+  return rows.filter(
+    (r) =>
+      r.payment.status === "COMPENSATION_PENDING" ||
+      r.escrowState === "INITIATED" ||
+      r.escrowState === "SETTLED" ||
+      r.escrowState === null
+  );
 }
 
 /**

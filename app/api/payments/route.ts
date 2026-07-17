@@ -198,36 +198,45 @@ async function createPayment(principal: Principal, body: CreatePaymentBody): Pro
     return notFound();
   }
 
+  // Create and audit commit together: a payment that exists with no
+  // payment.created event — or an event for a row that rolled back — is exactly
+  // the split the atomic-write invariant forbids. Without this, an audit failure
+  // after the create left the row committed, then idem.abandon() freed the
+  // Idempotency-Key and a retry minted a second payment.
   const id = `pay_${randomBytes(6).toString("hex")}`;
-  const payment = await prisma.payment.create({
-    data: {
+  const payment = await prisma.$transaction(async (tx) => {
+    const created = await tx.payment.create({
+      data: {
+        id,
+        senderId: sender.id,
+        recipientId: recipient.id,
+        amount: canonical,
+        sourceCurrency: source_currency,
+        destinationCurrency: destination_currency,
+        sourceAsset,
+        destinationAsset: destAsset,
+        sourceNetwork: source_network,
+        destinationNetwork: destination_network,
+        purpose,
+        referenceId: reference_id,
+        memo,
+      },
+    });
+    await audit(
+      "payment.created",
+      {
+        sender: sender_id,
+        recipient: recipient_id,
+        amount: canonical,
+        corridor: `${source_currency}-${destination_currency}`,
+        route: `${source_network} → ${destination_network}`,
+      },
       id,
-      senderId: sender.id,
-      recipientId: recipient.id,
-      amount: canonical,
-      sourceCurrency: source_currency,
-      destinationCurrency: destination_currency,
-      sourceAsset,
-      destinationAsset: destAsset,
-      sourceNetwork: source_network,
-      destinationNetwork: destination_network,
-      purpose,
-      referenceId: reference_id,
-      memo,
-    },
+      actorOf(principal),
+      tx
+    );
+    return created;
   });
-  await audit(
-    "payment.created",
-    {
-      sender: sender_id,
-      recipient: recipient_id,
-      amount: canonical,
-      corridor: `${source_currency}-${destination_currency}`,
-      route: `${source_network} → ${destination_network}`,
-    },
-    id,
-    actorOf(principal)
-  );
 
   return NextResponse.json({ payment_id: payment.id, status: payment.status }, { status: 201 });
 }

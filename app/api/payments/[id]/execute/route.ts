@@ -56,26 +56,34 @@ async function runExecute(principal: Principal, id: string, body: { route_id?: s
 
   const actor = actorOf(principal);
 
+  // The caller's route pick is validated here but written *with* the status move
+  // below — not as a standalone update. A raw update({ where: { id } }) here would
+  // clobber a concurrent execute that already advanced the row: the loser's write
+  // could land after the winner left QUOTED, leaving selectedRouteId/fxRate naming
+  // a route that was never executed. Folding it into the CAS makes a stale pick
+  // match zero rows.
+  let routeSelection: { selectedRouteId: string; fxRate: string; destinationAmount: string } | undefined;
   if (body.route_id && payment.status === "QUOTED") {
     const routes = payment.quoteJson ? JSON.parse(payment.quoteJson) : [];
     const route = routes.find((r: { route_id: string }) => r.route_id === body.route_id);
     if (!route) return invalidRequest("unknown route_id");
-    payment = await prisma.payment.update({
-      where: { id },
-      data: {
-        selectedRouteId: route.route_id,
-        fxRate: route.estimated_fx_rate,
-        destinationAmount: route.estimated_destination_amount,
-      },
-    });
+    routeSelection = {
+      selectedRouteId: route.route_id,
+      fxRate: route.estimated_fx_rate,
+      destinationAmount: route.estimated_destination_amount,
+    };
   }
 
   if (payment.status === "QUOTED") {
     // Each move is a compare-and-swap, so of two concurrent executes only one
     // enters the compliance gate; the loser 409s here rather than screening (and
-    // billing a provider for) the same payment twice.
+    // billing a provider for) the same payment twice. The route selection rides
+    // in the same swap.
     try {
-      payment = await transitionStatus(payment, "COMPLIANCE_PENDING", { actor });
+      payment = await transitionStatus(payment, "COMPLIANCE_PENDING", {
+        actor,
+        ...(routeSelection ? { data: routeSelection } : {}),
+      });
 
       const outcome = await runComplianceChecks(id);
       if (outcome.overall === "REJECTED") {

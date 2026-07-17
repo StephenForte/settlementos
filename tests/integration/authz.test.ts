@@ -15,6 +15,7 @@ import { GET as paymentGET } from "@/app/api/payments/[id]/route";
 import { GET as paymentsGET } from "@/app/api/payments/route";
 import { GET as reconciliationGET } from "@/app/api/reconciliation/route";
 import { API_KEY_COOKIE, API_KEY_HEADER } from "@/lib/auth";
+import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { API_KEYS } from "../fixture";
 
@@ -159,6 +160,54 @@ describe("GET /api/payments/[id] tenant scoping", () => {
       routeParams(othersPayment)
     );
     expect(res.status).toBe(200);
+  });
+
+  it("redacts audit-event detail for a tenant, but not for a platform role", async () => {
+    // A dedicated payment: it gets an audit event, and deleting an audited payment
+    // SetNulls paymentId and breaks the hash chain (AGENTS.md), so it is not
+    // tracked for cleanup — leaking one inert row beats a broken chain.
+    const [sender, recipient] = await Promise.all([
+      prisma.entity.findUniqueOrThrow({ where: { externalId: "ent_acme_us" } }),
+      prisma.entity.findUniqueOrThrow({ where: { externalId: "ent_tokyo_supplier" } }),
+    ]);
+    const id = "pay_authz_scrub";
+    await prisma.payment.upsert({
+      where: { id },
+      update: {},
+      create: {
+        id,
+        senderId: sender.id,
+        recipientId: recipient.id,
+        amount: "1000.00",
+        sourceCurrency: "USD",
+        destinationCurrency: "USD",
+        sourceAsset: "mockUSDC",
+        destinationAsset: "mockUSDC",
+        sourceNetwork: "base-local",
+        destinationNetwork: "base-local",
+      },
+    });
+    // The kind of operator diagnostic that must never reach a counterparty:
+    // treasury balances, networks, an RPC URL.
+    const secret = "Insufficient mockJPY on polygon-local: need 5, available 1 (rpc https://secret.example)";
+    await audit("payment.status.failed", { reason: secret }, id, "system");
+
+    const asEntity = await paymentGET(
+      get(`/api/payments/${id}`, API_KEYS.entities.ent_acme_us),
+      routeParams(id)
+    );
+    const entityDetail = (await asEntity.json()).payment.auditEvents
+      .map((e: { detail: string }) => e.detail)
+      .join(" ");
+    expect(entityDetail).not.toContain(secret);
+    expect(entityDetail).not.toContain("mockJPY");
+    expect(entityDetail).toContain("redacted");
+
+    const asOperator = await paymentGET(get(`/api/payments/${id}`, API_KEYS.operator), routeParams(id));
+    const operatorDetail = (await asOperator.json()).payment.auditEvents
+      .map((e: { detail: string }) => e.detail)
+      .join(" ");
+    expect(operatorDetail).toContain(secret);
   });
 });
 

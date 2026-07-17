@@ -1,11 +1,22 @@
 import { Fragment } from "react";
 import { prisma } from "@/lib/db";
+import { isPlatformRole } from "@/lib/auth";
+import { currentPrincipal } from "@/lib/session";
+import { AuthRequired } from "@/components/auth-required";
 import { Card, StatusBadge } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
 export default async function EntitiesPage() {
+  // Scoped like GET /api/entities: platform roles see every onboarded business, a
+  // tenant sees only itself, an anonymous browser none.
+  const principal = await currentPrincipal();
+  if (!principal) {
+    return <AuthRequired message="Sign in to view entities." />;
+  }
+
   const entities = await prisma.entity.findMany({
+    where: isPlatformRole(principal) ? {} : { id: principal.entityId },
     include: { wallets: true, ledgerCredits: true },
     orderBy: { createdAt: "asc" },
   });

@@ -3,6 +3,8 @@ import { prisma } from "@/lib/db";
 import { formatAmount } from "@/lib/assets";
 import { explorerTxUrl } from "@/lib/networks";
 import { DEFAULT_PAGE_LIMIT, parsePageRequest, toPage } from "@/lib/pagination";
+import { currentPrincipal, paymentScopeWhere } from "@/lib/session";
+import { AuthRequired } from "@/components/auth-required";
 import { Card, StatusBadge, Hash } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -30,9 +32,18 @@ export default async function PaymentsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  // Scoped like GET /api/payments: a tenant sees only its own payments, an
+  // anonymous browser none. Without this the list rendered every tenant's rows to
+  // whoever asked.
+  const principal = await currentPrincipal();
+  if (!principal) {
+    return <AuthRequired message="Sign in to view payments." />;
+  }
+
   const page = pageFromSearch(await searchParams);
 
   const rows = await prisma.payment.findMany({
+    where: paymentScopeWhere(principal),
     include: { sender: true, recipient: true },
     // Tiebroken by id for the same reason GET /api/payments is: createdAt is not
     // unique, and an unstable sort makes a cursor walk skip or repeat rows.

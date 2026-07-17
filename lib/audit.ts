@@ -160,12 +160,19 @@ export type AuditIntegrity = {
   brokenAtId?: number;
   /** Machine-readable cause when `valid` is false. */
   reason?: string;
-  /** Whether verification could start from a signed anchor or had to re-hash everything. */
-  mode: "incremental" | "full";
+  /**
+   * Always "full": every event is re-hashed from genesis. A naive content edit
+   * leaves an event's stored hash column stale while the forward links and the
+   * signed tip value stay intact, so skipping any event before the anchor (the
+   * former "incremental" path) missed exactly that edit. The checkpoint is a
+   * second layer over the full re-hash, not a shortcut past it. Field kept so the
+   * response shape and UI are stable.
+   */
+  mode: "full";
   /** False when AUDIT_ANCHOR_KEY is unset: the chain is self-consistent but nothing is signed. */
   anchored: boolean;
   checkpoint: { id: number; lastEventId: number; createdAt: Date } | null;
-  /** Events re-hashed by this call (the rest are covered by the anchor). */
+  /** Events re-hashed by this call. */
   eventsVerified: number;
 };
 
@@ -187,48 +194,60 @@ async function verifyFrom(prevHash: string, afterId: number) {
 /**
  * Verify the chain and report the first broken link, if any.
  *
- * With an anchor, only events after it are re-hashed — the anchor's signature is
- * what vouches for everything before it. Note the residual limit: an attacker who
- * deletes the checkpoint rows outright drops us back to full verification of a
- * chain they may have re-hashed. Detecting *that* needs the anchor published
- * somewhere we do not control (a counterparty, a public chain), which is the
- * next step beyond this one.
+ * Two independent properties are checked, and both cost a full re-hash from
+ * genesis — there is no sound shortcut:
+ *
+ *  1. Every event's stored hash is the hash its own content produces, and each
+ *     links to the previous (`verifyFrom` from GENESIS). This catches a naive
+ *     edit — the tamper the chain exists to detect. It cannot be skipped for
+ *     events before a checkpoint: an edit there leaves the forward links and the
+ *     signed tip value undisturbed, so trusting stored pre-anchor hashes would
+ *     miss it. (An earlier "incremental" mode did exactly that and passed such an
+ *     edit as INTACT.)
+ *  2. The signed anchor still matches. An attacker who re-hashes the whole
+ *     history from an edited event forward produces a chain that passes (1), but
+ *     its hash at the anchor position is no longer the value we signed, and they
+ *     cannot forge a signature for the value they produced.
+ *
+ * Residual limit, unchanged: deleting the checkpoint rows drops us to (1) alone,
+ * which a re-hash attack passes. Closing that needs the anchor published where we
+ * do not control it (a counterparty, a public chain).
  */
 export async function verifyAuditChain(): Promise<AuditIntegrity> {
   const key = anchorKey();
-  const fullVerify = async (anchored: boolean): Promise<AuditIntegrity> => ({
-    ...(await verifyFrom("GENESIS", 0)),
-    mode: "full",
-    anchored,
-    checkpoint: null,
-  });
-  if (!key) return fullVerify(false);
+  const full = await verifyFrom("GENESIS", 0);
+
+  if (!key) return { ...full, mode: "full", anchored: false, checkpoint: null };
 
   const checkpoint = await prisma.auditCheckpoint.findFirst({ orderBy: { id: "desc" } });
-  if (!checkpoint) return fullVerify(true);
+  if (!checkpoint) return { ...full, mode: "full", anchored: true, checkpoint: null };
 
   const anchor = { id: checkpoint.id, lastEventId: checkpoint.lastEventId, createdAt: checkpoint.createdAt };
-  const base = { mode: "incremental" as const, anchored: true, checkpoint: anchor, eventsVerified: 0 };
+  const base = {
+    mode: "full" as const,
+    anchored: true,
+    checkpoint: anchor,
+    eventsVerified: full.eventsVerified,
+  };
 
+  // A broken chain is the more specific fault: report it with its brokenAtId
+  // rather than the anchor mismatch it would also trip.
+  if (!full.valid) return { ...base, ...full };
+
+  // The chain re-hashes clean — now confirm it is the same history we signed.
   if (!signatureMatches(signAnchor(checkpoint.lastEventId, checkpoint.chainHash, key), checkpoint.signature)) {
     return { ...base, valid: false, reason: "checkpoint_signature_mismatch" };
   }
-
   const anchorEvent = await prisma.auditEvent.findUnique({ where: { id: checkpoint.lastEventId } });
   if (!anchorEvent) {
     return { ...base, valid: false, reason: "checkpoint_anchor_missing" };
   }
-  // The signed hash must still be the log's own hash at that position — this is
-  // the check a re-hashed history fails, since the attacker cannot re-sign the
-  // tip they produced.
+  // Full verify already proved anchorEvent.hash is what its content produces, so
+  // if the signed chainHash still equals it, a re-hash attack (which would move
+  // this value to one it cannot sign) is ruled out.
   if (anchorEvent.hash !== checkpoint.chainHash) {
     return { ...base, valid: false, reason: "checkpoint_chain_hash_mismatch", brokenAtId: anchorEvent.id };
   }
-  // ...and it must be a hash the anchor event's own content actually produces,
-  // so the signed value cannot simply be pasted into the `hash` column.
-  if (hashEvent(anchorEvent.prevHash, anchorEvent) !== anchorEvent.hash) {
-    return { ...base, valid: false, reason: "checkpoint_anchor_forged", brokenAtId: anchorEvent.id };
-  }
 
-  return { ...base, ...(await verifyFrom(checkpoint.chainHash, checkpoint.lastEventId)) };
+  return { ...base, valid: true };
 }

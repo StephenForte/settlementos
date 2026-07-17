@@ -41,6 +41,16 @@ function isRole(value: string): value is Role {
 }
 
 /**
+ * True when the principal has platform-wide access (operator or reviewer), i.e.
+ * is not a single-tenant ENTITY. Lives here — framework-free, beside the Role
+ * type — so server components can scope reads by it without importing the HTTP
+ * guard layer. app/api/guard.ts re-exports it for route handlers.
+ */
+export function isPlatformRole(principal: Pick<Principal, "role">): boolean {
+  return principal.role === "OPERATOR" || principal.role === "REVIEWER";
+}
+
+/**
  * Resolve a raw key to its principal, or null if the key is unknown or the row
  * is malformed. Lookup is by hash, so the raw key never needs a constant-time
  * compare — an attacker cannot steer a sha256 preimage toward an indexed match.
@@ -66,7 +76,17 @@ function keyFromCookie(request: Request): string | null {
     const eq = part.indexOf("=");
     if (eq === -1) continue;
     if (part.slice(0, eq).trim() !== API_KEY_COOKIE) continue;
-    return decodeURIComponent(part.slice(eq + 1).trim()) || null;
+    const raw = part.slice(eq + 1).trim();
+    // A malformed percent-encoding (e.g. `sos_key=%zz`) makes decodeURIComponent
+    // throw URIError. Left unguarded it escapes authenticate() and every route's
+    // requirePrincipal — outside any try/catch — turning one bad cookie into a 500
+    // on every API call. Our keys are `sos_`+hex and never need decoding, so a
+    // value that will not decode is not a usable key: fail closed to anonymous.
+    try {
+      return decodeURIComponent(raw) || null;
+    } catch {
+      return null;
+    }
   }
   return null;
 }

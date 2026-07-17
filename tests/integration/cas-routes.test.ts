@@ -7,6 +7,7 @@ import { describe, it, expect } from "vitest";
 import { NextRequest } from "next/server";
 import { POST as cancelPOST } from "@/app/api/payments/[id]/cancel/route";
 import { POST as reviewPOST } from "@/app/api/payments/[id]/review/route";
+import { POST as quotePOST } from "@/app/api/payments/[id]/quote/route";
 import { API_KEY_HEADER } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { API_KEYS } from "../fixture";
@@ -74,5 +75,27 @@ describe("concurrent writes on the same payment", () => {
       where: { paymentId: payment.id, action: "payment.status.cancelled" },
     });
     expect(events).toHaveLength(1);
+  });
+
+  it("a quote racing a cancel can never resurrect the cancelled payment", async () => {
+    const payment = await createDraftPayment();
+    await prisma.payment.update({ where: { id: payment.id }, data: { status: "QUOTED" } });
+
+    // The quote route once wrote QUOTED via a raw update with no status guard, so a
+    // cancel landing mid-quote could be clobbered back to QUOTED — an illegal
+    // CANCELLED→QUOTED resurrection. Through transitionStatus the quote's write is a
+    // CAS on QUOTED: once the cancel lands CANCELLED, the quote matches zero rows and
+    // 409s. The cancel therefore always wins the final state.
+    const [q, c] = await Promise.all([
+      quotePOST(post(`/api/payments/${payment.id}/quote`, {}, API_KEYS.operator), routeParams(payment.id)),
+      cancelPOST(post(`/api/payments/${payment.id}/cancel`, {}, API_KEYS.operator), routeParams(payment.id)),
+    ]);
+
+    expect(c.status).toBe(200);
+    expect([200, 409]).toContain(q.status);
+    // The invariant that matters: never QUOTED after a successful cancel.
+    expect(await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } })).toMatchObject({
+      status: "CANCELLED",
+    });
   });
 });

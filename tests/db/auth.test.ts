@@ -77,6 +77,18 @@ describe("API-key identity", () => {
     await expect(authenticate(both)).resolves.toMatchObject({ role: "OPERATOR" });
   });
 
+  it("fails closed to anonymous on a malformed cookie instead of throwing", async () => {
+    // A cookie value that will not percent-decode (`sos_key=%zz`) once made
+    // decodeURIComponent throw URIError out of authenticate() — and the guard runs
+    // outside any try/catch, so every API route 500'd. It must resolve to null.
+    await expect(authenticate(withCookie(`${API_KEY_COOKIE}=%zz`))).resolves.toBeNull();
+    await expect(authenticate(withCookie(`${API_KEY_COOKIE}=%`))).resolves.toBeNull();
+    // A valid key alongside a benign encoding still resolves.
+    await expect(authenticate(withCookie(`${API_KEY_COOKIE}=${API_KEYS.operator}`))).resolves.toMatchObject({
+      role: "OPERATOR",
+    });
+  });
+
   it("stores only key hashes — no raw key is recoverable from the DB", async () => {
     const rows = await prisma.apiKey.findMany();
     const raws = [API_KEYS.operator, API_KEYS.reviewer, ...Object.values(API_KEYS.entities)];

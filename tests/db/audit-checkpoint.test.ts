@@ -81,17 +81,17 @@ describe("automatic checkpoints", () => {
   });
 });
 
-describe("incremental verification", () => {
-  it("re-hashes only the events after the anchor", async () => {
+describe("full verification with an anchor", () => {
+  it("re-hashes the whole chain and reports the anchor it verified against", async () => {
     for (let i = 0; i < INTERVAL; i++) await audit(`test.${i}`, {});
     const anchored = await prisma.auditEvent.findFirst({ orderBy: { id: "desc" } });
     await audit("test.after", {});
 
     const result = await verifyAuditChain();
-    expect(result).toMatchObject({ valid: true, mode: "incremental", anchored: true });
-    // Only the one event past the anchor was re-hashed; the other INTERVAL are
-    // vouched for by the signature.
-    expect(result.eventsVerified).toBe(1);
+    expect(result).toMatchObject({ valid: true, mode: "full", anchored: true });
+    // Every event is re-hashed — skipping the pre-anchor ones is what let a naive
+    // edit slip through (see the regression test below). INTERVAL events + one.
+    expect(result.eventsVerified).toBe(INTERVAL + 1);
     expect(result.checkpoint).toMatchObject({ lastEventId: anchored!.id });
   });
 
@@ -104,6 +104,25 @@ describe("incremental verification", () => {
     });
 
     expect(await verifyAuditChain()).toMatchObject({ valid: false, brokenAtId: after.id });
+  });
+
+  it("catches a naive edit of an event BEFORE the checkpoint (the incremental-mode gap)", async () => {
+    const first = await audit("test.first", { amount: "1.00" });
+    // Push the checkpoint past `first`, so an incremental verifier that trusted
+    // events up to the anchor would never re-hash it.
+    for (let i = 0; i < INTERVAL; i++) await audit(`test.${i}`, {});
+    expect(await verifyAuditChain()).toMatchObject({ valid: true });
+
+    // Edit a pre-checkpoint event's content, leaving its stored hash — and so
+    // every forward link and the signed tip — untouched. This is the exact tamper
+    // the plain hash chain exists to catch, and the removed incremental mode
+    // passed it as INTACT.
+    await prisma.auditEvent.update({
+      where: { id: first.id },
+      data: { detail: JSON.stringify({ amount: "1000000.00" }) },
+    });
+
+    expect(await verifyAuditChain()).toMatchObject({ valid: false, brokenAtId: first.id });
   });
 });
 
@@ -148,21 +167,18 @@ describe("tamper detection through the signature", () => {
     });
   });
 
-  it("catches the signed hash pasted onto an event whose content does not produce it", async () => {
+  it("catches a content edit to the anchor event itself", async () => {
     for (let i = 0; i < INTERVAL; i++) await audit(`test.${i}`, {});
     const anchor = await prisma.auditEvent.findFirst({ orderBy: { id: "desc" } });
-    // Content edited, stored hash left alone: chainHash still matches the row,
-    // but the row no longer hashes to it.
+    // Content edited, stored hash left alone: the full re-hash reaches this event
+    // and finds it no longer hashes to its stored hash, so the chain break is
+    // reported directly (more specific than the anchor mismatch it would also trip).
     await prisma.auditEvent.update({
       where: { id: anchor!.id },
       data: { detail: JSON.stringify({ forged: true }) },
     });
 
-    expect(await verifyAuditChain()).toMatchObject({
-      valid: false,
-      reason: "checkpoint_anchor_forged",
-      brokenAtId: anchor!.id,
-    });
+    expect(await verifyAuditChain()).toMatchObject({ valid: false, brokenAtId: anchor!.id });
   });
 
   it("catches a deleted anchor event", async () => {
@@ -205,7 +221,7 @@ describe("checkpoints on demand", () => {
 
     const checkpoint = await createCheckpoint();
     expect(checkpoint).toMatchObject({ lastEventId: tip.id, chainHash: tip.hash });
-    expect(await verifyAuditChain()).toMatchObject({ valid: true, mode: "incremental", eventsVerified: 0 });
+    expect(await verifyAuditChain()).toMatchObject({ valid: true, mode: "full", eventsVerified: 2 });
   });
 
   it("returns the existing anchor rather than duplicating one at the same tip", async () => {

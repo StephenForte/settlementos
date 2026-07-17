@@ -7,8 +7,12 @@
 // 403, so no response tells an attacker what exists.
 
 import { NextResponse } from "next/server";
-import { authenticate, type Principal, type Role } from "@/lib/auth";
+import { authenticate, isPlatformRole, type Principal, type Role } from "@/lib/auth";
 import { apiError, fromThrown, SAFE_FAILURE_SUMMARY, type ApiErrorCode } from "@/lib/api-errors";
+
+// Re-exported so route handlers keep importing it from the guard layer while the
+// pure definition lives beside Principal in lib/auth.ts (server components use it).
+export { isPlatformRole };
 
 /** Turn a client-safe error into the response to return. */
 export function errorResponse(code: ApiErrorCode, message?: string): NextResponse {
@@ -62,11 +66,6 @@ export async function requireRole(req: Request, ...roles: Role[]): Promise<Princ
   return roles.includes(principal.role) ? principal : forbidden();
 }
 
-/** True when the principal has platform-wide read access (i.e. is not a tenant). */
-export function isPlatformRole(principal: Principal): boolean {
-  return principal.role === "OPERATOR" || principal.role === "REVIEWER";
-}
-
 /**
  * The audit-trail actor for a principal. The audit log records who the key says
  * they are, never what a request body claims — a caller cannot forge an actor.
@@ -89,6 +88,25 @@ export function scrubFailureReason<T extends { failureReason: string | null }>(
 ): T {
   if (isPlatformRole(principal) || payment.failureReason === null) return payment;
   return { ...payment, failureReason: SAFE_FAILURE_SUMMARY };
+}
+
+/** What a tenant sees in place of an audit event's raw detail. Valid JSON, so a
+ *  consumer that parses `detail` still gets an object. */
+const REDACTED_AUDIT_DETAIL = JSON.stringify({ redacted: true });
+
+/**
+ * Redact audit-event detail for tenant callers. Event detail is free-form and
+ * routinely carries operator diagnostics — failure reasons naming treasury
+ * balances and networks (transitionStatus merges the written columns in), and raw
+ * viem/RPC error strings. Scrubbing only Payment.failureReason is not enough when
+ * the same text rides inside an included audit event. Platform roles see detail
+ * verbatim; a tenant still gets each event's action, timestamps, and hash (the
+ * chain is intact — the hash was computed server-side over the original detail and
+ * is verified against the DB, never this response). Never mutate the prisma rows.
+ */
+export function scrubAuditDetail<T extends { detail: string }>(principal: Principal, events: T[]): T[] {
+  if (isPlatformRole(principal)) return events;
+  return events.map((e) => ({ ...e, detail: REDACTED_AUDIT_DETAIL }));
 }
 
 /**

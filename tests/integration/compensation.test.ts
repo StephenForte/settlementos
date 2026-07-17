@@ -34,6 +34,8 @@ async function auditActions(paymentId: string): Promise<string[]> {
 afterEach(() => {
   delete executorTestHooks.beforeSettlement;
   delete executorTestHooks.beforeDestinationPayout;
+  delete executorTestHooks.afterDestinationPayout;
+  delete executorTestHooks.escrowReadFails;
 });
 
 describe("compensation saga — destination leg fails after settlement", () => {
@@ -122,6 +124,79 @@ describe("compensation saga — destination leg fails after settlement", () => {
       to: senderWallet("base-local"),
     });
     expect(detail.txHash).toMatch(/^0x[0-9a-f]{64}$/);
+  });
+});
+
+describe("no double payout — a failure AFTER the recipient is paid completes forward", () => {
+  it("keeps the recipient's payout and settles, never compensating the sender", async () => {
+    const recipient = accountsFor("polygon-local").entityWallets.ent_tokyo_supplier.address as Address;
+    const senderBefore = await walletBalance("base-local", "mockUSDC", senderWallet("base-local"));
+    const recipientJpyBefore = await walletBalance("polygon-local", "mockJPY", recipient);
+
+    const payment = await createApprovedPayment({
+      amount: "5000.00",
+      sourceNetwork: "base-local",
+      destinationNetwork: "polygon-local",
+    });
+    // Throw AFTER the bridge payout has landed (destinationTxHash written) but
+    // before the ledger credit — the window where compensating would refund the
+    // sender while the recipient keeps the payout, paying twice out of treasury.
+    executorTestHooks.afterDestinationPayout = () => {
+      throw new Error("ledger write failed after payout");
+    };
+
+    const result = await executePayment(payment.id);
+
+    // Completed forward, not compensated.
+    expect(result.status).toBe("SETTLED");
+    expect(result.destinationTxHash).toMatch(/^0x[0-9a-f]{64}$/);
+
+    // The recipient keeps the bridge payout...
+    expect(await walletBalance("polygon-local", "mockJPY", recipient)).toBeGreaterThan(recipientJpyBefore);
+    // ...and the sender is NOT paid back: the payment genuinely settled, so the
+    // escrowed source amount stays with the treasury. A compensation here would
+    // have restored senderBefore — the double-pay bug.
+    expect(await walletBalance("base-local", "mockUSDC", senderWallet("base-local"))).toBeLessThan(senderBefore);
+
+    const actions = await auditActions(payment.id);
+    expect(actions).toContain("payment.settlement_recovered");
+    expect(actions).toContain("payout.ledger_credit");
+    expect(actions).not.toContain("payment.status.compensation_pending");
+    expect(actions).not.toContain("payment.compensation_transfer");
+
+    // The recovered payment is a normal settlement: reservation consumed, one
+    // ledger credit, lease released.
+    const reservation = await prisma.liquidityReservation.findUnique({ where: { paymentId: payment.id } });
+    expect(reservation?.status).toBe("CONSUMED");
+    expect(await prisma.ledgerCredit.count({ where: { paymentId: payment.id } })).toBe(1);
+    expect(result.executionLeaseId).toBeNull();
+  });
+});
+
+describe("compensation reconciliation — an unreadable escrow at a settled status still compensates", () => {
+  it("compensates (not FAILs) when the payout throws and the escrow read fails", async () => {
+    const senderBefore = await walletBalance("base-local", "mockUSDC", senderWallet("base-local"));
+    const payment = await createApprovedPayment({ amount: "3000.00" });
+
+    // The payout leg throws (status is PAYOUT_PENDING, escrow already SETTLED
+    // on-chain), and the reconciling escrow read also fails — an RPC flap hitting
+    // both. The DB status alone proves settlement happened, so the sender must be
+    // compensated; before the fix this fell through to FAILED and stranded them.
+    executorTestHooks.beforeDestinationPayout = () => {
+      throw new Error("payout rail down");
+    };
+    executorTestHooks.escrowReadFails = true;
+
+    const result = await executePayment(payment.id);
+
+    expect(result.status).toBe("COMPENSATED");
+    expect(result.compensationTxHash).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(await walletBalance("base-local", "mockUSDC", senderWallet("base-local"))).toBe(senderBefore);
+
+    const actions = await auditActions(payment.id);
+    expect(actions).toContain("payment.status.compensation_pending");
+    expect(actions).toContain("payment.compensation_transfer");
+    expect(actions).not.toContain("payment.status.failed");
   });
 });
 
