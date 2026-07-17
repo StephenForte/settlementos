@@ -15,7 +15,17 @@ export const POLYGON_RPC = "http://127.0.0.1:9546";
 
 /** Env applied in setup-env.ts (per worker) and global-setup.ts (fixture build). */
 export const FIXTURE_ENV = {
-  DATABASE_URL: `file:${DB_PATH}`,
+  // connection_limit=1 serializes all DB access through one connection. SQLite
+  // admits a single writer, so a pool of connections (Prisma's default is
+  // num_cpus*2+1) just races the write lock: concurrent write transactions — three
+  // parallel createPayments each doing create+audit-append, the CAS/lease races —
+  // fight over it and, under CI load, one waits past the busy timeout and dies with
+  // P1008 ("database failed to respond"). One connection makes them queue cleanly
+  // instead. Safe here because every $transaction is short and DB-only (chain calls
+  // happen outside them) and audit() is always handed the caller's tx, so no
+  // transaction ever waits on a second connection. Test-only — a real deployment
+  // runs Postgres, where a pool is correct.
+  DATABASE_URL: `file:${DB_PATH}?connection_limit=1`,
   SETTLEMENTOS_CHAIN_DIR: CHAIN_DIR,
   BASE_LOCAL_RPC_URL: BASE_RPC,
   POLYGON_LOCAL_RPC_URL: POLYGON_RPC,
