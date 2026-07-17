@@ -510,3 +510,31 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   anything that reads them.
 - The cross-chain "bridge" is simulated: escrow + FX on the source chain, then a
   treasury-funded ERC-20 payout on the destination chain. Not lock-and-mint.
+
+## Cursor Cloud specific instructions
+
+The startup update script runs `npm install`, ensures a gitignored `.env` exists
+with `DATABASE_URL="file:./dev.db"`, and runs `npx prisma generate`. Everything
+below is per-session service startup the agent does by hand — do not add it to the
+update script.
+
+- **`.env` is required and gitignored** (never committed), so it does not persist in
+  the repo across fresh VMs — the update script recreates it. The app, `npm run
+  setup`, and `npm run dev` all fail with `Environment variable not found:
+  DATABASE_URL` without it. `npm test` does *not* need it (the fixture sets its own
+  `DATABASE_URL`). No other secrets are needed for the local demo (real testnets and
+  real compliance providers are optional — see README).
+- **To run the app end-to-end**, both local Hardhat chains must be running *before*
+  `npm run setup` (see README "Quick start" / AGENTS "Run & verify"): start `npm run
+  chain` (:8545) and `npm run chain:polygon` (:8546) as long-lived processes (use
+  tmux), then `npm run setup` (compile + `prisma db push` + deploy + seed), then `npm
+  run dev` (:3000). `npm run setup` prints seeded API keys and also writes them to
+  gitignored `chain/dev-api-keys.json` — sign in at `/login` with the OPERATOR key, or
+  pass it as the `x-api-key` header to the API.
+- **Hello-world smoke test** (verified working): create → quote → execute a payment
+  (ACME US Inc → Tokyo Trading KK, `100000.00` USD→JPY, both networks `base-local`)
+  reaches `SETTLED` with real on-chain escrow/settlement tx hashes; `GET /api/audit`
+  reports the chain INTACT.
+- `npm test` is self-contained (boots its own chains on 9545/9546 + a fresh DB under
+  `tests/.tmp/`) and needs neither the dev chains nor `npm run setup` — see AGENTS
+  "Tests".
