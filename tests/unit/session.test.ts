@@ -1,7 +1,7 @@
 // Page-side auth helpers. Server components read Prisma directly (no Request),
 // so tenant isolation lives here — API route tests do not cover this module.
 
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   paymentScopeWhere,
   sessionCookieOptions,
@@ -18,9 +18,8 @@ const entity: Principal = {
   label: "acme",
 };
 
-const previousNodeEnv = process.env.NODE_ENV;
 afterEach(() => {
-  process.env.NODE_ENV = previousNodeEnv;
+  vi.unstubAllEnvs();
 });
 
 describe("paymentScopeWhere", () => {
@@ -48,10 +47,10 @@ describe("sessionCookieOptions", () => {
   });
 
   it("forces Secure only off localhost (production)", () => {
-    process.env.NODE_ENV = "development";
+    vi.stubEnv("NODE_ENV", "development");
     expect(sessionCookieOptions().secure).toBe(false);
 
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     expect(sessionCookieOptions().secure).toBe(true);
   });
 });
