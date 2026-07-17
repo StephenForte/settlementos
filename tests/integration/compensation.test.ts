@@ -31,6 +31,21 @@ async function auditActions(paymentId: string): Promise<string[]> {
   return events.map((e) => e.action);
 }
 
+async function auditDetail(paymentId: string, action: string): Promise<Record<string, unknown>> {
+  const event = await prisma.auditEvent.findFirstOrThrow({ where: { paymentId, action } });
+  return JSON.parse(event.detail);
+}
+
+// The invariant the forward-complete path exists to protect: a payment that
+// completed forward must never carry both a compensation transfer and a kept
+// recipient credit — that pairing is the treasury double-pay.
+async function assertNeverBothPaidAndCompensated(paymentId: string): Promise<void> {
+  const actions = await auditActions(paymentId);
+  const credits = await prisma.ledgerCredit.count({ where: { paymentId } });
+  const compensated = actions.includes("payment.compensation_transfer");
+  expect(credits > 0 && compensated).toBe(false);
+}
+
 afterEach(() => {
   delete executorTestHooks.beforeSettlement;
   delete executorTestHooks.beforeDestinationPayout;
@@ -171,6 +186,14 @@ describe("no double payout — a failure AFTER the recipient is paid completes f
     expect(reservation?.status).toBe("CONSUMED");
     expect(await prisma.ledgerCredit.count({ where: { paymentId: payment.id } })).toBe(1);
     expect(result.executionLeaseId).toBeNull();
+
+    // Recovery telemetry names the branch and the signal it fired on. Here the
+    // credit had not yet been written, so the destination tx hash is the proof.
+    expect(await auditDetail(payment.id, "payment.settlement_recovered")).toMatchObject({
+      branch: "forward_complete",
+      evidence: "destination_tx_hash",
+    });
+    await assertNeverBothPaidAndCompensated(payment.id);
   });
 
   it("same-chain: completes forward when the ledger credit landed but SETTLED did not", async () => {
@@ -200,6 +223,14 @@ describe("no double payout — a failure AFTER the recipient is paid completes f
     expect(reservation?.status).toBe("CONSUMED");
     expect(await prisma.ledgerCredit.count({ where: { paymentId: payment.id } })).toBe(1);
     expect(result.executionLeaseId).toBeNull();
+
+    // Same-chain has no destination tx hash, so the ledger credit is the proof
+    // the recovery branch fired on.
+    expect(await auditDetail(payment.id, "payment.settlement_recovered")).toMatchObject({
+      branch: "forward_complete",
+      evidence: "ledger_credit",
+    });
+    await assertNeverBothPaidAndCompensated(payment.id);
   });
 });
 
@@ -250,5 +281,40 @@ describe("compensation saga — the refund path is unchanged before settlement",
     expect(actions).toContain("payment.onchain_refund");
     expect(actions).not.toContain("payment.status.compensation_pending");
     expect(result.compensationTxHash).toBeNull();
+  });
+});
+
+describe("guardrails behind the forward-complete gate", () => {
+  it("rejects a second ledger credit for the same payment", async () => {
+    // The catch gate treats an existing credit as proof the recipient was paid.
+    // The unique constraint on LedgerCredit.paymentId is what makes that inference
+    // sound: a duplicate or stray credit cannot exist to force a false forward.
+    const payment = await createApprovedPayment({ amount: "1200.00" });
+    const data = {
+      paymentId: payment.id,
+      entityId: payment.recipientId,
+      currency: payment.destinationCurrency,
+      amount: "1200",
+    };
+    await prisma.ledgerCredit.create({ data });
+    await expect(prisma.ledgerCredit.create({ data })).rejects.toThrow();
+    expect(await prisma.ledgerCredit.count({ where: { paymentId: payment.id } })).toBe(1);
+  });
+
+  it("refuses to arm a test hook outside the test runner", () => {
+    // The hooks divert real refund/repair/stuck money movement, so an assignment
+    // from anywhere but the test runner must throw, not silently arm a hook. We
+    // simulate production by clearing the env flag the set trap keys on.
+    const saved = process.env.VITEST;
+    delete process.env.VITEST;
+    try {
+      expect(() => {
+        executorTestHooks.beforeSettlement = () => {};
+      }).toThrow(/test-only/);
+    } finally {
+      if (saved === undefined) delete process.env.VITEST;
+      else process.env.VITEST = saved;
+      delete executorTestHooks.beforeSettlement;
+    }
   });
 });
