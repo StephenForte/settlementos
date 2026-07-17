@@ -70,7 +70,22 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
   web hardening — CSP + security headers, 30 writes/min per principal, a 64KB
   body cap, cursor pagination, and a date-bounded CSV export (US-018). Suite now
   327 tests; lint, tsc, and build green.
-- NEXT: Phase 9 Track B (regulatory package) per PRD.
+- Phase 9 Track A hardened + merged (2026-07-16, PR #8 → main `e328ca2`): an
+  8-angle multi-agent review found 16 confirmed issues; the 12 critical/high
+  (double-payout, FAILED-strands-compensation, stuck-view visibility, quote-route
+  CAS bypass, route-select race, create+audit atomicity, audit incremental→full
+  verification, tenant page scoping, tenant audit-detail scrub, cookie 500,
+  liquidity fallthrough, treasury idempotency) + 4 mediums (cursor oracle,
+  unbounded lists, audit cursor overflow, 29→30-day reconciliation) + cleanups
+  (withExecutionLease, fx parseScaledUnits) all fixed with regression tests.
+  Suite 327 → 341. 2 PLAUSIBLE findings deferred to a background task (legacy
+  amount rows, login x-forwarded-for spoof).
+- Phase 9 Track B drafts written (2026-07-16, branch track-b-regulatory):
+  `docs/regulatory/` — technical architecture + regulatory design, legal
+  classification (framed as questions for counsel), partner integration, corridor
+  strategy, and pilot options memos. Decisions: markdown memos, US-first, no legal
+  conclusions. DRAFTS for Stephen's review; the legal memo is for actual counsel.
+- NEXT: Stephen's review of the Track B drafts; optionally a regulator demo deck.
 
 ## Base Sepolia (live)
 - Deployed 2026-07-07, verified with a real settled payment.
