@@ -58,7 +58,7 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
         body: JSON.stringify(body ?? {}),
       });
       const data = await res.json();
-      if (!res.ok && data.error) setError(data.error);
+      if (!res.ok && data.message) setError(data.message);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -75,7 +75,9 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
   const fees = payment.feeJson ? JSON.parse(payment.feeJson) : null;
   const status: string = payment.status;
   const lifecycleIdx = LIFECYCLE.indexOf(status);
-  const isTerminalBad = ["REJECTED", "FAILED", "CANCELLED", "REFUNDED", "EXPIRED"].includes(status);
+  const isTerminalBad = ["REJECTED", "FAILED", "CANCELLED", "REFUNDED", "EXPIRED", "COMPENSATED"].includes(
+    status
+  );
 
   return (
     <div className="max-w-5xl space-y-6">

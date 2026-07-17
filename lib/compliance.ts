@@ -15,14 +15,16 @@
 import type { Entity, Wallet } from "@prisma/client";
 import { prisma } from "./db";
 import { usdEquivalent, corridorCode } from "./fx";
+import { parseAmount } from "./money";
 import { providerResult, type ComplianceStatus, type ProviderResult } from "./providers/types";
 import { openSanctionsScreen } from "./providers/opensanctions";
 import { chainalysisOracleScreen } from "./providers/chainalysis";
 
 export type { ComplianceStatus, ProviderResult };
 
-export const TX_REVIEW_THRESHOLD_USD = 250_000;
-export const TX_FAIL_THRESHOLD_USD = 1_000_000;
+/** USD-equivalent thresholds, in USD minor units — what usdEquivalent returns. */
+export const TX_REVIEW_THRESHOLD_MINOR = 250_000_00n;
+export const TX_FAIL_THRESHOLD_MINOR = 1_000_000_00n;
 export const WALLET_REVIEW_SCORE = 40;
 export const WALLET_FAIL_SCORE = 70;
 
@@ -49,13 +51,15 @@ export function walletRiskProvider(wallet: Wallet): ProviderResult {
   return result("mock_wallet_risk", "PASS", wallet.riskScore);
 }
 
-export function transactionRiskProvider(amount: number, sourceCurrency: string): ProviderResult {
-  const usd = usdEquivalent(amount, sourceCurrency);
-  if (usd > TX_FAIL_THRESHOLD_USD)
+/** `amount` is the canonical decimal string on the payment row. */
+export function transactionRiskProvider(amount: string, sourceCurrency: string): ProviderResult {
+  const usd = usdEquivalent(parseAmount(amount, sourceCurrency), sourceCurrency);
+  if (usd > TX_FAIL_THRESHOLD_MINOR)
     return result("mock_tx_monitoring", "FAIL", 90, ["amount_exceeds_hard_limit"]);
-  if (usd > TX_REVIEW_THRESHOLD_USD)
+  if (usd > TX_REVIEW_THRESHOLD_MINOR)
     return result("mock_tx_monitoring", "MANUAL_REVIEW", 65, ["amount_exceeds_review_threshold"]);
-  return result("mock_tx_monitoring", "PASS", Math.min(30, Math.round(usd / 10_000)));
+  // A risk score, not money: one point per $10k of notional, capped at 30.
+  return result("mock_tx_monitoring", "PASS", Number(usd / 10_000_00n < 30n ? usd / 10_000_00n : 30n));
 }
 
 export function corridorRiskProvider(
@@ -125,7 +129,6 @@ export async function runComplianceChecks(paymentId: string): Promise<Compliance
     wallets.find((w) => w.network === network) ?? wallets[0] ?? null;
   const senderWallet = walletOn(payment.sender.wallets, payment.sourceNetwork);
   const recipientWallet = walletOn(payment.recipient.wallets, payment.destinationNetwork);
-  const amount = Number(payment.amount);
 
   const [sanctions, senderWalletRisk, recipientWalletRisk] = await Promise.all([
     sanctionsCheck(payment.sender, payment.recipient),
@@ -141,7 +144,7 @@ export async function runComplianceChecks(paymentId: string): Promise<Compliance
     { checkType: "WALLET_RISK_RECIPIENT", result: recipientWalletRisk },
     {
       checkType: "TX_RISK",
-      result: transactionRiskProvider(amount, payment.sourceCurrency),
+      result: transactionRiskProvider(payment.amount, payment.sourceCurrency),
     },
     {
       checkType: "CORRIDOR_RISK",

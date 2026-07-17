@@ -88,7 +88,7 @@ export function MmfCard(props: MmfCardProps) {
         body: JSON.stringify(body),
       });
       const data = await res.json();
-      if (!res.ok) setError(data.error ?? `${label} failed`);
+      if (!res.ok) setError(data.message ?? `${label} failed`);
       else setNotice(ok(data));
     } catch (e) {
       setError(String(e));

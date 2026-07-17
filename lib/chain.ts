@@ -4,7 +4,11 @@
 // chain/deployments.<network>.json overlay per live network (real testnets,
 // written by scripts/deploy-testnet.mjs). Real networks carry their own account
 // set; hot keys for them live in .env and are referenced via privateKeyEnv.
+//
+// No key is resolved here: every write signs through lib/signers.ts, so custody
+// has one seam. Server-only — this module reads the filesystem and .env.
 
+import "server-only";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -18,22 +22,16 @@ import {
   type Hex,
   type PublicClient,
 } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import { LIVE_NETWORK_IDS, NETWORKS, networkInfo } from "./networks";
+import { signerFor, type AccountRef, type Signer } from "./signers";
+
+export type { AccountRef, Signer };
 
 export interface NetworkContracts {
   PaymentSettlement: Address;
   /** Tokenized MMF for parked treasury liquidity. Absent on networks without one. */
   TokenizedMMF?: Address;
   tokens: Record<string, { address: Address; decimals: number }>;
-}
-
-/** An account role. Either the key is stored inline (local dev chains, generated
- *  testnet wallets holding faucet dust) or referenced via an env var (funded keys). */
-export interface AccountRef {
-  address: Address;
-  privateKey?: Hex;
-  privateKeyEnv?: string;
 }
 
 export interface NetworkAccounts {
@@ -103,19 +101,6 @@ export function accountsFor(networkId: string): NetworkAccounts {
   return accounts;
 }
 
-/** Resolve an account's signing key (inline or from the env var it references). */
-export function resolveKey(ref: AccountRef, role: string): Hex {
-  const key = ref.privateKey ?? (ref.privateKeyEnv ? process.env[ref.privateKeyEnv] : undefined);
-  if (!key || !key.startsWith("0x")) {
-    throw new Error(
-      `Missing private key for ${role} (${ref.address}). ${
-        ref.privateKeyEnv ? `Set ${ref.privateKeyEnv} in .env` : "Re-run the deploy script"
-      }`
-    );
-  }
-  return key as Hex;
-}
-
 export function networkContracts(networkId: string): NetworkContracts {
   const dep = loadDeployments();
   const net = dep.networks[networkId];
@@ -146,12 +131,14 @@ export function publicClientFor(networkId: string): PublicClient {
   return publicClients[networkId];
 }
 
-export function walletFor(networkId: string, privateKey: Hex) {
+/** A wallet client that signs as `signer`. Key material (if there is any) is the
+ *  signer's business — see lib/signers.ts. */
+export async function walletFor(networkId: string, signer: Signer) {
   const info = networkInfo(networkId);
   return createWalletClient({
     chain: viemChain(networkId),
     transport: http(info.rpcUrl),
-    account: privateKeyToAccount(privateKey),
+    account: await signer.account(),
   });
 }
 
@@ -251,7 +238,37 @@ export const SETTLEMENT_ABI = [
     ],
     outputs: [],
   },
+  {
+    type: "function",
+    name: "getPayment",
+    stateMutability: "view",
+    inputs: [{ name: "paymentId", type: "bytes32" }],
+    outputs: [
+      {
+        type: "tuple",
+        components: [
+          { name: "sender", type: "address" },
+          { name: "recipient", type: "address" },
+          { name: "asset", type: "address" },
+          { name: "amount", type: "uint256" },
+          { name: "state", type: "uint8" },
+        ],
+      },
+    ],
+  },
 ] as const;
+
+/** PaymentSettlement.PaymentState, by enum ordinal. */
+export const ONCHAIN_PAYMENT_STATES = [
+  "NONE",
+  "INITIATED",
+  "SETTLED",
+  "CANCELLED",
+  "REFUNDED",
+  "FAILED",
+] as const;
+
+export type OnchainPaymentState = (typeof ONCHAIN_PAYMENT_STATES)[number];
 
 export const MMF_ABI = [
   {
@@ -322,6 +339,27 @@ export function onchainPaymentId(paymentId: string): Hex {
   return keccak256(toHex(paymentId));
 }
 
+/**
+ * What the escrow contract itself says about a payment. The ground truth when a
+ * DB status and a chain may disagree — an execution that threw mid-flight knows
+ * what it *attempted*, not what landed, so a recovery path must read this before
+ * deciding whether to refund (escrow still held) or compensate (already released).
+ * "NONE" means the escrow was never initiated for this id.
+ */
+export async function onchainPaymentState(
+  networkId: string,
+  paymentId: Hex
+): Promise<OnchainPaymentState> {
+  const dep = loadDeployments();
+  const p = await publicClientFor(networkId).readContract({
+    address: dep.networks[networkId].contracts.PaymentSettlement,
+    abi: SETTLEMENT_ABI,
+    functionName: "getPayment",
+    args: [paymentId],
+  });
+  return ONCHAIN_PAYMENT_STATES[p.state] ?? "NONE";
+}
+
 export async function tokenBalance(
   networkId: string,
   token: Address,
@@ -379,10 +417,13 @@ export async function operatorWrite(
 ): Promise<TxResult> {
   const dep = loadDeployments();
   const operator = accountsFor(networkId).operator;
-  const wallet = walletFor(networkId, resolveKey(operator, `${networkId} operator`));
-  // Every function except initiatePayment requires the escrow row written by a
-  // prior tx, so "not initiated" right after that tx confirmed is replica lag.
-  const dependsOnPriorTx = functionName !== "initiatePayment";
+  const wallet = await walletFor(networkId, signerFor(operator, `${networkId} operator`));
+  // Every call here depends on state a previous tx wrote, so the matching revert
+  // right after that tx confirmed is replica lag rather than a real failure:
+  // every function except initiatePayment needs the escrow row, and
+  // initiatePayment needs the sender's allowance (approved one tx earlier — a
+  // replica that hasn't seen that block yet estimates against a zero allowance).
+  const dependsOnEscrowRow = functionName !== "initiatePayment";
   const hash = await retryOnReplicaLag(
     () =>
       wallet.writeContract({
@@ -392,7 +433,8 @@ export async function operatorWrite(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         args: args as any,
       }),
-    (message) => dependsOnPriorTx && message.includes("not initiated")
+    (message) =>
+      dependsOnEscrowRow ? message.includes("not initiated") : message.includes("insufficient allowance")
   );
   return confirm(networkId, hash);
 }
@@ -410,7 +452,7 @@ export async function mmfOperatorWrite(
   const fund = mmfAddress(networkId);
   if (!fund) throw new Error(`No TokenizedMMF deployed on ${networkId}`);
   const operator = accountsFor(networkId).operator;
-  const wallet = walletFor(networkId, resolveKey(operator, `${networkId} operator`));
+  const wallet = await walletFor(networkId, signerFor(operator, `${networkId} operator`));
   const hash = await wallet.writeContract({
     address: fund,
     abi: MMF_ABI,
@@ -452,7 +494,7 @@ export async function ensureTreasuryAllowance(
   const treasury = accountsFor(networkId).treasury;
   if ((await tokenAllowance(networkId, token.address, treasury.address, spender)) >= amount) return;
 
-  const wallet = walletFor(networkId, resolveKey(treasury, `${networkId} treasury`));
+  const wallet = await walletFor(networkId, signerFor(treasury, `${networkId} treasury`));
   const hash = await wallet.writeContract({
     address: token.address,
     abi: ERC20_ABI,
@@ -460,6 +502,46 @@ export async function ensureTreasuryAllowance(
     args: [spender, 2n ** 256n - 1n],
   });
   await confirm(networkId, hash);
+}
+
+/**
+ * Approve the escrow contract for exactly `amount` of the sender's token, right
+ * before the escrow pulls it. Never an unlimited approval: a standing MAX
+ * allowance leaves an entity wallet drainable for its whole balance by whatever
+ * the escrow address turns out to be, whereas an exact one caps the loss at the
+ * payment in flight and `initiatePayment` consumes it back to zero.
+ *
+ * An allowance that already covers the amount short-circuits with no tx, so
+ * networks deployed before this — whose entity wallets hold MAX approvals from
+ * the old deploy scripts — keep settling untouched.
+ *
+ * Returns the approval tx, or null when none was needed.
+ */
+export async function ensureSenderAllowance(
+  networkId: string,
+  entityExternalId: string,
+  tokenSymbol: string,
+  amount: bigint
+): Promise<TxResult | null> {
+  const contracts = networkContracts(networkId);
+  const token = contracts.tokens[tokenSymbol];
+  if (!token) throw new Error(`Token ${tokenSymbol} not deployed on ${networkId}`);
+  const spender = contracts.PaymentSettlement;
+  const sender = accountsFor(networkId).entityWallets[entityExternalId];
+  if (!sender) throw new Error(`No wallet configured for ${entityExternalId} on ${networkId}`);
+  if ((await tokenAllowance(networkId, token.address, sender.address, spender)) >= amount) return null;
+
+  const wallet = await walletFor(
+    networkId,
+    signerFor(sender, `${networkId} wallet for ${entityExternalId}`)
+  );
+  const hash = await wallet.writeContract({
+    address: token.address,
+    abi: ERC20_ABI,
+    functionName: "approve",
+    args: [spender, amount],
+  });
+  return confirm(networkId, hash);
 }
 
 /**
@@ -477,7 +559,7 @@ export async function treasuryTokenTransfer(
   const token = dep.networks[networkId].contracts.tokens[tokenSymbol];
   if (!token) throw new Error(`Token ${tokenSymbol} not deployed on ${networkId}`);
   const treasury = accountsFor(networkId).treasury;
-  const wallet = walletFor(networkId, resolveKey(treasury, `${networkId} treasury`));
+  const wallet = await walletFor(networkId, signerFor(treasury, `${networkId} treasury`));
   const hash = await wallet.writeContract({
     address: token.address,
     abi: ERC20_ABI,

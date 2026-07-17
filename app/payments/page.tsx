@@ -2,15 +2,56 @@ import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { formatAmount } from "@/lib/assets";
 import { explorerTxUrl } from "@/lib/networks";
+import { DEFAULT_PAGE_LIMIT, parsePageRequest, toPage } from "@/lib/pagination";
+import { currentPrincipal, paymentScopeWhere } from "@/lib/session";
+import { AuthRequired } from "@/components/auth-required";
 import { Card, StatusBadge, Hash } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
-export default async function PaymentsPage() {
-  const payments = await prisma.payment.findMany({
+/**
+ * The same page bound the API applies, read off the URL. A hand-mangled query
+ * string falls back to the defaults rather than 500ing a page — the API is
+ * where a bad `limit` is a client error worth reporting; here it is a typo.
+ */
+function pageFromSearch(params: Record<string, string | string[] | undefined>) {
+  const query = new URLSearchParams();
+  for (const key of ["limit", "cursor"]) {
+    const value = params[key];
+    if (typeof value === "string") query.set(key, value);
+  }
+  try {
+    return parsePageRequest(query);
+  } catch {
+    return { limit: DEFAULT_PAGE_LIMIT, cursor: null };
+  }
+}
+
+export default async function PaymentsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  // Scoped like GET /api/payments: a tenant sees only its own payments, an
+  // anonymous browser none. Without this the list rendered every tenant's rows to
+  // whoever asked.
+  const principal = await currentPrincipal();
+  if (!principal) {
+    return <AuthRequired message="Sign in to view payments." />;
+  }
+
+  const page = pageFromSearch(await searchParams);
+
+  const rows = await prisma.payment.findMany({
+    where: paymentScopeWhere(principal),
     include: { sender: true, recipient: true },
-    orderBy: { createdAt: "desc" },
+    // Tiebroken by id for the same reason GET /api/payments is: createdAt is not
+    // unique, and an unstable sort makes a cursor walk skip or repeat rows.
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: page.limit + 1,
+    ...(page.cursor ? { cursor: { id: page.cursor }, skip: 1 } : {}),
   });
+  const { rows: payments, nextCursor, hasMore } = toPage(rows, page.limit, (p) => p.id);
 
   return (
     <div className="space-y-6">
@@ -83,6 +124,25 @@ export default async function PaymentsPage() {
           </table>
         )}
       </Card>
+      {(hasMore || page.cursor) && (
+        <div className="flex items-center justify-between text-sm">
+          {page.cursor ? (
+            <Link href="/payments" className="text-slate-400 hover:text-white hover:underline">
+              ← Newest
+            </Link>
+          ) : (
+            <span />
+          )}
+          {hasMore && nextCursor && (
+            <Link
+              href={`/payments?cursor=${encodeURIComponent(nextCursor)}`}
+              className="text-emerald-400 hover:underline"
+            >
+              Older →
+            </Link>
+          )}
+        </div>
+      )}
     </div>
   );
 }

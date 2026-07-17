@@ -10,6 +10,8 @@
 
 import { describe, it, expect, afterAll } from "vitest";
 import { NextRequest } from "next/server";
+import { API_KEY_HEADER } from "@/lib/auth";
+import { API_KEYS } from "../fixture";
 import { POST as parkPOST } from "@/app/api/treasury/park/route";
 import { prisma } from "@/lib/db";
 import { verifyAuditChain } from "@/lib/audit";
@@ -60,7 +62,7 @@ async function unwind() {
 function parkRequest(body: Record<string, unknown>) {
   return new NextRequest("http://test.local/api/treasury/park", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", [API_KEY_HEADER]: API_KEYS.operator },
     body: JSON.stringify(body),
     // undici requires duplex when a body is present on a constructed Request
     ...({ duplex: "half" } as object),
@@ -203,7 +205,7 @@ describe("segregation and the audit chain across park -> accrue -> recall", () =
       yield: fromBaseUnits(recalled.assetAmount - principal, USDC_DECIMALS),
       indexAtExit: accrual.newIndex.toString(),
     });
-    await expect(verifyAuditChain()).resolves.toEqual({ valid: true });
+    await expect(verifyAuditChain()).resolves.toMatchObject({ valid: true });
 
     // History survives: the row is flipped in place, never deleted.
     const after = await prisma.treasuryPosition.findUniqueOrThrow({ where: { id: parked.positionId } });

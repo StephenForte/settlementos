@@ -94,13 +94,10 @@ export async function deployChain(rpcUrl: string, chainId: number) {
     await write(operator, tokens[symbol].address, tokens[symbol].abi, "mint", [to, amount]);
   }
 
+  // No standing entity allowances, mirroring scripts/setup.mjs: the executor
+  // approves each payment's exact amount before escrowing it, so the whole E2E
+  // suite exercises that path.
   const MAX = 2n ** 256n - 1n;
-  for (const who of ["acme", "tokyo", "singapore", "osaka"] as const) {
-    const w = walletFor(ACCOUNTS[who].privateKey);
-    for (const t of Object.values(tokens)) {
-      await write(w, t.address, t.abi, "approve", [settlement.address, MAX]);
-    }
-  }
   // The treasury parks into the MMF, which pulls the asset via transferFrom.
   const treasury = walletFor(ACCOUNTS.treasury.privateKey);
   await write(treasury, tokens.mockUSDC.address, tokens.mockUSDC.abi, "approve", [mmf.address, MAX]);

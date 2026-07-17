@@ -1,15 +1,37 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { ASSETS, fromBaseUnits, type AssetSymbol } from "@/lib/assets";
 import { prisma } from "@/lib/db";
+import { PaginationError, parsePageRequest, toPage } from "@/lib/pagination";
 import { currentIndexOf, valueOfShares } from "@/lib/treasury";
+import { invalidRequest, requireRole } from "../../guard";
 
 /**
  * Parked MMF positions, newest first. A position's value is always derived
  * (shares x the fund's live index), never stored on the row — so ACTIVE rows
  * carry a live value and accrued yield, RECALLED rows carry their history.
  */
-export async function GET() {
-  const positions = await prisma.treasuryPosition.findMany({ orderBy: { createdAt: "desc" } });
+export async function GET(req: NextRequest) {
+  // Platform treasury positions, not a tenant's own funds.
+  const principal = await requireRole(req, "OPERATOR", "REVIEWER");
+  if (principal instanceof NextResponse) return principal;
+
+  let page;
+  try {
+    page = parsePageRequest(req.nextUrl.searchParams);
+  } catch (e) {
+    if (e instanceof PaginationError) return invalidRequest(e.message);
+    throw e;
+  }
+
+  // Bounded: the table is append-only history (recall flips status in place, rows
+  // are never deleted), so it only grows — and each ACTIVE row costs a live index
+  // read. Page it, tiebroken by id like the other list reads.
+  const pageRows = await prisma.treasuryPosition.findMany({
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: page.limit + 1,
+    ...(page.cursor ? { cursor: { id: page.cursor }, skip: 1 } : {}),
+  });
+  const { rows: positions, nextCursor, hasMore } = toPage(pageRows, page.limit, (p) => p.id);
 
   // One index read per network rather than per row, and a network whose fund is
   // gone or whose RPC is unreachable simply reports no live value — the page
@@ -44,5 +66,7 @@ export async function GET() {
         recalled_at: p.recalledAt ? p.recalledAt.toISOString() : null,
       };
     }),
+    next_cursor: nextCursor,
+    has_more: hasMore,
   });
 }

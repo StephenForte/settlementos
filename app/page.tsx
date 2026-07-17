@@ -3,28 +3,47 @@ import { prisma } from "@/lib/db";
 import { formatAmount } from "@/lib/assets";
 import { explorerTxUrl } from "@/lib/networks";
 import { usdEquivalent } from "@/lib/fx";
+import { formatMinorUnits, parseAmount } from "@/lib/money";
+import { stuckPayments } from "@/lib/executor";
+import { isPlatformRole } from "@/lib/auth";
+import { currentPrincipal } from "@/lib/session";
+import { AuthRequired } from "@/components/auth-required";
 import { Card, Stat, StatusBadge, Hash } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardHome() {
+  // The dashboard aggregates platform-wide volume, the review queue, and the
+  // stuck-payment count — an operations overview, so platform roles only. A
+  // signed-in tenant works from /payments (scoped to its own rows); an anonymous
+  // browser gets the sign-in wall instead of every tenant's data.
+  const principal = await currentPrincipal();
+  if (!principal || !isPlatformRole(principal)) {
+    return <AuthRequired message="Operator or reviewer access is required to view the dashboard." />;
+  }
+
   const payments = await prisma.payment.findMany({
     include: { sender: true, recipient: true },
     orderBy: { createdAt: "desc" },
   });
+  // The same read the repair view does, so the count and the list can never
+  // disagree. Chain reads, so it degrades to zero rather than breaking the page.
+  const stuck = await stuckPayments().catch(() => []);
 
   const settled = payments.filter((p) => p.status === "SETTLED");
   const volumeUsd = settled.reduce((sum, p) => {
     try {
-      return sum + usdEquivalent(Number(p.amount), p.sourceCurrency);
+      return sum + usdEquivalent(parseAmount(p.amount, p.sourceCurrency), p.sourceCurrency);
     } catch {
       return sum;
     }
-  }, 0);
+  }, 0n);
   const pending = payments.filter(
-    (p) => !["SETTLED", "REJECTED", "CANCELLED", "REFUNDED", "EXPIRED", "FAILED"].includes(p.status)
+    (p) => !["SETTLED", "COMPENSATED", "REJECTED", "CANCELLED", "REFUNDED", "EXPIRED", "FAILED"].includes(p.status)
   );
-  const failed = payments.filter((p) => ["FAILED", "REJECTED", "REFUNDED"].includes(p.status));
+  const failed = payments.filter((p) =>
+    ["FAILED", "REJECTED", "REFUNDED", "COMPENSATION_PENDING", "COMPENSATED"].includes(p.status)
+  );
   const inReview = payments.filter((p) => p.status === "MANUAL_REVIEW");
   const recent = payments.slice(0, 8);
 
@@ -46,11 +65,29 @@ export default async function DashboardHome() {
       </header>
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Stat label="Settled Volume" value={`$${formatAmount(volumeUsd.toFixed(2))}`} sub="USD equivalent" />
+        <Stat
+          label="Settled Volume"
+          value={`$${formatAmount(formatMinorUnits(volumeUsd, "USD"))}`}
+          sub="USD equivalent"
+        />
         <Stat label="Settled Payments" value={String(settled.length)} />
         <Stat label="In Flight" value={String(pending.length)} sub={`${inReview.length} awaiting review`} />
         <Stat label="Failed / Rejected" value={String(failed.length)} />
       </div>
+
+      {stuck.length > 0 && (
+        <Card title="Needs Attention">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-rose-300">
+              {stuck.length} payment{stuck.length === 1 ? "" : "s"} holding funds that were neither
+              delivered nor returned
+            </span>
+            <Link href="/payments/stuck" className="text-emerald-400 hover:underline">
+              Repair →
+            </Link>
+          </div>
+        </Card>
+      )}
 
       {inReview.length > 0 && (
         <Card title="Compliance Alerts">

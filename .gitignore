@@ -44,6 +44,7 @@ next-env.d.ts
 chain/artifacts
 chain/cache
 chain/deployments*.json
+chain/dev-api-keys.json
 prisma/dev.db
 
 # test fixtures

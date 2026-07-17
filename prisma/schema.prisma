@@ -25,6 +25,20 @@ model Entity {
   paymentsSent     Payment[]      @relation("sender")
   paymentsReceived Payment[]      @relation("recipient")
   ledgerCredits    LedgerCredit[]
+  apiKeys          ApiKey[]
+}
+
+// API-key identity for API callers. Only the sha256 hash of a key is stored —
+// the raw key exists at seed time and in the caller's hands, never in the DB.
+model ApiKey {
+  id        String   @id @default(cuid())
+  keyHash   String   @unique // sha256 hex of the raw key
+  role      String // OPERATOR | REVIEWER | ENTITY
+  entityId  String? // required when role = ENTITY; null otherwise
+  label     String   @default("")
+  createdAt DateTime @default(now())
+
+  entity Entity? @relation(fields: [entityId], references: [id])
 }
 
 model Wallet {
@@ -66,7 +80,10 @@ model Payment {
   txHash              String? // initiate/escrow tx on source network
   settleTxHash        String? // settlement/release tx on source network
   destinationTxHash   String? // bridge payout tx on destination network (cross-chain routes)
+  compensationTxHash  String? // treasury→sender make-good tx on source network (destination leg failed post-settlement)
   failureReason       String?
+  executionLeaseId    String? // held for the duration of one execution attempt; NULL = executable
+  leasedAt            DateTime?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -108,6 +125,19 @@ model AuditEvent {
   payment Payment? @relation(fields: [paymentId], references: [id])
 }
 
+// A signed anchor over the audit chain: chainHash is the tip event's hash (which
+// covers every event before it), signed with a key the database does not hold.
+// Someone with DB write access can re-hash the whole log, but cannot re-sign it.
+// No FK to AuditEvent on purpose — the log is append-only, so a dangling anchor
+// means events were deleted, and reporting that is the point.
+model AuditCheckpoint {
+  id          Int      @id @default(autoincrement())
+  lastEventId Int
+  chainHash   String
+  signature   String // HMAC-SHA256("<lastEventId>|<chainHash>", AUDIT_ANCHOR_KEY)
+  createdAt   DateTime @default(now())
+}
+
 // Simulated fiat payout leg: recipient's local-currency ledger balance.
 model LedgerCredit {
   id        String   @id @default(cuid())
@@ -136,6 +166,28 @@ model TreasuryPosition {
   txHashRecall  String?
   createdAt     DateTime  @default(now())
   recalledAt    DateTime?
+}
+
+// Safe retries for write endpoints. One row per (principal, Idempotency-Key):
+// the row is created as a *reservation* before the handler runs and stamped with
+// the response afterwards, so a duplicate that arrives mid-flight finds the
+// reservation instead of racing the original. Rows are reclaimed in place once
+// they age out (no cron — expiry is checked when the key is next presented).
+//
+// principalId is an ApiKey.id and deliberately carries no FK: reseeding keys
+// (npm run setup) drops the ApiKey rows, and an orphaned record is harmless —
+// its key can never be presented again.
+model IdempotencyRecord {
+  id             String   @id @default(cuid())
+  principalId    String
+  key            String // the raw Idempotency-Key header value
+  route          String // concrete path, e.g. "POST /api/payments/pay_x/execute"
+  requestHash    String // sha256 of the canonical JSON body
+  responseStatus Int? // null while the request is still in flight
+  responseBody   String?
+  createdAt      DateTime @default(now())
+
+  @@unique([principalId, key])
 }
 
 model LiquidityReservation {

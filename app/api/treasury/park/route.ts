@@ -2,24 +2,46 @@ import { NextRequest, NextResponse } from "next/server";
 import { NETWORKS } from "@/lib/networks";
 import { park } from "@/lib/treasury";
 import { treasuryErrorResponse } from "../errors";
+import { invalidRequest, requireRole } from "../../guard";
+import { beginIdempotency } from "../../idempotency";
+import { beginWrite } from "../../limits";
 
 /**
- * Park idle treasury liquidity into the network's tokenized MMF. The entity must
- * be MMF-eligible and opted in — lib/treasury enforces that guardrail and the
- * refusal surfaces here as a 403.
+ * Park idle treasury liquidity into the network's tokenized MMF. Platform
+ * treasury funds, so OPERATOR only. The entity must be MMF-eligible and opted
+ * in — lib/treasury enforces that guardrail and the refusal surfaces here as a
+ * 403.
+ *
+ * park() moves real funds and has no dedupe of its own, so a retried request
+ * without idempotency would park a second position. The Idempotency-Key wrapper
+ * makes the retry of a timed-out park replay the first response instead.
  */
 export async function POST(req: NextRequest) {
-  const body = await req.json().catch(() => ({}));
+  const principal = await requireRole(req, "OPERATOR");
+  if (principal instanceof NextResponse) return principal;
+
+  const gate = await beginWrite(req, principal);
+  if (gate instanceof NextResponse) return gate;
+  const body = (gate.body ?? {}) as Record<string, unknown>;
+
+  const idem = await beginIdempotency(req, principal, "POST /api/treasury/park", body);
+  if (idem instanceof NextResponse) return idem;
+  try {
+    return await idem.complete(await runPark(body));
+  } catch (e) {
+    await idem.abandon();
+    throw e;
+  }
+}
+
+async function runPark(body: Record<string, unknown>): Promise<NextResponse> {
   const { network, asset, amount, entity_id } = body;
 
   if (!network || !asset || amount === undefined || amount === null || !entity_id) {
-    return NextResponse.json({ error: "network, asset, amount, entity_id are required" }, { status: 400 });
+    return invalidRequest("network, asset, amount, entity_id are required");
   }
-  if (!NETWORKS[network]) {
-    return NextResponse.json(
-      { error: `unknown network — supported: ${Object.keys(NETWORKS).join(", ")}` },
-      { status: 400 }
-    );
+  if (typeof network !== "string" || !NETWORKS[network]) {
+    return invalidRequest(`unknown network — supported: ${Object.keys(NETWORKS).join(", ")}`);
   }
 
   try {

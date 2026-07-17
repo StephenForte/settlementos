@@ -7,10 +7,12 @@
 // API/DB boundary. A position row is append-only history: its current value is
 // always derived (shares x live contract index), never stored.
 
+import "server-only";
 import type { Address } from "viem";
 import { prisma } from "./db";
 import { audit } from "./audit";
-import { ASSETS, fromBaseUnits, toBaseUnits, type AssetSymbol } from "./assets";
+import { ASSETS, fromBaseUnits, type AssetSymbol } from "./assets";
+import { MoneyError, parseScaledUnits } from "./money";
 import {
   accountsFor,
   ensureTreasuryAllowance,
@@ -93,11 +95,22 @@ async function fundAssetFor(networkId: string, assetSymbol: string): Promise<Fun
   return { fund, token: token.address, symbol, decimals: token.decimals };
 }
 
-function parseAmount(amount: string, decimals: number): bigint {
-  if (typeof amount !== "string" || !/^\d+(\.\d+)?$/.test(amount.trim())) {
-    throw new TreasuryError("INVALID_AMOUNT", `Amount must be a positive decimal string, got "${amount}"`);
+/**
+ * A decimal string in asset units to base units, strictly (lib/money): an
+ * over-precise amount is rejected, never truncated down to something the caller
+ * did not ask to park. Re-typed as a TreasuryError so route handlers keep their
+ * single cause → status table.
+ */
+function parseAssetUnits(amount: unknown, decimals: number, what: string): bigint {
+  try {
+    return parseScaledUnits(amount, decimals, { what });
+  } catch (e) {
+    throw new TreasuryError("INVALID_AMOUNT", e instanceof MoneyError ? e.message : `Unreadable ${what}`);
   }
-  const units = toBaseUnits(amount, decimals);
+}
+
+function parseAmount(amount: string, decimals: number): bigint {
+  const units = parseAssetUnits(amount, decimals, "amount");
   if (units <= 0n) {
     throw new TreasuryError("INVALID_AMOUNT", `Amount must be greater than zero, got "${amount}"`);
   }
@@ -114,9 +127,10 @@ export interface TreasuryBalance {
 }
 
 /**
- * Unreserved treasury balance for an asset, in base units. Mirrors
- * `availableLiquidity()` in lib/routing (same balance, same RESERVED rows) but
- * stays in bigint so the park guard never rounds.
+ * Unreserved treasury balance for an asset, in base units — the one definition
+ * of "balance minus RESERVED rows" in the codebase. `availableLiquidity()` in
+ * lib/routing wraps this to add display strings rather than summing the same
+ * rows a second time: two implementations would be two rounding rules.
  */
 export async function freeTreasuryBalance(networkId: string, symbol: AssetSymbol): Promise<TreasuryBalance> {
   const token = networkContracts(networkId).tokens[symbol];
@@ -126,7 +140,13 @@ export async function freeTreasuryBalance(networkId: string, symbol: AssetSymbol
   const reservations = await prisma.liquidityReservation.findMany({
     where: { asset: symbol, network: networkId, status: "RESERVED" },
   });
-  const reserved = reservations.reduce((sum, r) => sum + toBaseUnits(r.amount, token.decimals), 0n);
+  // Strict parse, not toBaseUnits: a reservation string we cannot represent
+  // exactly must not be silently truncated *down*. Under-counting what is
+  // promised to an in-flight payment is what would let it be double-spent.
+  const reserved = reservations.reduce(
+    (sum, r) => sum + parseAssetUnits(r.amount, token.decimals, "reserved amount"),
+    0n
+  );
   return { balance, reserved, free: balance > reserved ? balance - reserved : 0n };
 }
 
@@ -199,28 +219,39 @@ export async function park({ networkId, asset, amount, entityId }: ParkArgs): Pr
   const tx = await mmfOperatorWrite(networkId, "subscribe", [treasury, assetAmount]);
   const shares = (await sharesOf()) - sharesBefore;
 
-  const position = await prisma.treasuryPosition.create({
-    data: {
-      network: networkId,
-      asset: symbol,
-      shares: shares.toString(),
-      assetAmountIn: assetAmount.toString(),
-      indexAtEntry: indexAtEntry.toString(),
-      txHashPark: tx.hash,
-    },
-  });
-
-  await audit(TREASURY_PARKED, {
-    positionId: position.id,
-    network: networkId,
-    asset: symbol,
-    amount: fromBaseUnits(assetAmount, decimals),
-    assetAmountUnits: assetAmount.toString(),
-    shares: shares.toString(),
-    indexAtEntry: indexAtEntry.toString(),
-    fund,
-    txHash: tx.hash,
-    ...(entityId ? { entityId } : {}),
+  // The position row and its audit event commit together — the subscribe is
+  // already on chain, so a position the log does not know about would be
+  // parked liquidity nothing can account for.
+  const position = await prisma.$transaction(async (db) => {
+    const created = await db.treasuryPosition.create({
+      data: {
+        network: networkId,
+        asset: symbol,
+        shares: shares.toString(),
+        assetAmountIn: assetAmount.toString(),
+        indexAtEntry: indexAtEntry.toString(),
+        txHashPark: tx.hash,
+      },
+    });
+    await audit(
+      TREASURY_PARKED,
+      {
+        positionId: created.id,
+        network: networkId,
+        asset: symbol,
+        amount: fromBaseUnits(assetAmount, decimals),
+        assetAmountUnits: assetAmount.toString(),
+        shares: shares.toString(),
+        indexAtEntry: indexAtEntry.toString(),
+        fund,
+        txHash: tx.hash,
+        ...(entityId ? { entityId } : {}),
+      },
+      undefined,
+      "system",
+      db
+    );
+    return created;
   });
 
   return { positionId: position.id, shares, assetAmount, indexAtEntry, txHash: tx.hash };
@@ -267,26 +298,38 @@ export async function recall(positionId: string): Promise<RecallResult> {
   const tx = await mmfOperatorWrite(position.network, "redeem", [treasury, shares]);
   const assetAmount = (await tokenBalance(position.network, token, treasury)) - balanceBefore;
 
-  const recalled = await prisma.treasuryPosition.update({
-    where: { id: position.id },
-    data: { status: "RECALLED", recalledAt: new Date(), txHashRecall: tx.hash },
-  });
-
   const assetAmountIn = BigInt(position.assetAmountIn);
-  await audit(TREASURY_RECALLED, {
-    positionId: position.id,
-    network: position.network,
-    asset: symbol,
-    shares: shares.toString(),
-    amount: fromBaseUnits(assetAmount, decimals),
-    assetAmountUnits: assetAmount.toString(),
-    principal: fromBaseUnits(assetAmountIn, decimals),
-    yield: fromBaseUnits(assetAmount > assetAmountIn ? assetAmount - assetAmountIn : 0n, decimals),
-    indexAtEntry: position.indexAtEntry,
-    indexAtExit: indexAtExit.toString(),
-    fund,
-    txHash: tx.hash,
-    recalledAt: recalled.recalledAt?.toISOString(),
+  // Status flip and audit event commit together: a position left ACTIVE after a
+  // redeem would double-count liquidity that is already back in the treasury.
+  await prisma.$transaction(async (db) => {
+    const recalled = await db.treasuryPosition.update({
+      where: { id: position.id },
+      data: { status: "RECALLED", recalledAt: new Date(), txHashRecall: tx.hash },
+    });
+    await audit(
+      TREASURY_RECALLED,
+      {
+        positionId: position.id,
+        network: position.network,
+        asset: symbol,
+        shares: shares.toString(),
+        amount: fromBaseUnits(assetAmount, decimals),
+        assetAmountUnits: assetAmount.toString(),
+        principal: fromBaseUnits(assetAmountIn, decimals),
+        yield: fromBaseUnits(
+          assetAmount > assetAmountIn ? assetAmount - assetAmountIn : 0n,
+          decimals
+        ),
+        indexAtEntry: position.indexAtEntry,
+        indexAtExit: indexAtExit.toString(),
+        fund,
+        txHash: tx.hash,
+        recalledAt: recalled.recalledAt?.toISOString(),
+      },
+      undefined,
+      "system",
+      db
+    );
   });
 
   return { positionId: position.id, shares, assetAmount, indexAtExit, txHash: tx.hash };
@@ -351,6 +394,9 @@ export async function accrueDaily(
 
   const tx = await mmfOperatorWrite(networkId, "accrue", [newIndex]);
 
+  // No transaction to enlist in: accrual writes no domain row. The index lives on
+  // chain and every position's value is derived from it, so this event has nothing
+  // it could disagree with.
   await audit(TREASURY_ACCRUED, {
     network: networkId,
     fund,

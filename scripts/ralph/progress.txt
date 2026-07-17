@@ -59,6 +59,43 @@ Phase 9 Track A: production hardening per AUDIT.md
   `TreasuryErrorCode` union rather than throwing a bare Error, so US-007's routes can
   map cause -> HTTP status in one place. Tests assert with
   `.rejects.toMatchObject({ code: "..." })`.
+- A domain write and the audit event describing it go in ONE `prisma.$transaction`:
+  `audit(action, detail, paymentId, actor, tx?)` takes the caller's
+  `Prisma.TransactionClient`. Pass it whenever the event describes a row written in
+  that same tx (transitionStatus, treasury park/recall); omit it only for an event
+  that describes no row (exports, quotes, MMF accrual — its index lives on chain).
+- DEADLOCK TRAP: calling `audit()` WITHOUT a tx from inside an open
+  `prisma.$transaction` hangs — a second connection blocks on the outer tx's SQLite
+  write lock until the busy timeout. The symptom is every test in the file timing out
+  at ~5s with no lock error. Same applies to any lib/ helper that opens its own tx.
+- `git checkout <file>` to undo a THROWAWAY experiment wipes uncommitted real work in
+  the same file. `cp` the file to /tmp first and restore from there, or commit before
+  experimenting.
+- A rollback/atomicity test can pass vacuously. Prove it non-vacuous by temporarily
+  rewriting the impl to the non-atomic shape and confirming the new tests fail with a
+  real AssertionError while the neighbours still pass — a failure mode of TIMEOUTS
+  instead means the experiment deadlocked and proved nothing.
+- Fixed-point money math (lib/money.ts, lib/fx.ts): amounts are bigint MINOR units,
+  rates are bigint integers scaled by 10^n. Two rounding rules, and they are not the
+  same rule: a monetary division FLOORS in the platform's favour (fees, effective
+  rates, destination amounts), but a derived CONSTANT (an inverted mid rate) rounds to
+  NEAREST — it is data being represented at the scale's precision, and flooring it
+  silently bills the user a cent. When converting minor units across currencies the
+  10^dec factors are load-bearing (USD counts cents, JPY counts yen); a bare multiply
+  by the rate is off by 100x.
+- Money strings are read back with lib/money's parseScaledUnits (strict, any scale),
+  NOT toBaseUnits (truncates). Truncation is only ever correct on an amount the
+  boundary already accepted; on a stored reservation it under-counts what is promised.
+- "Balance minus RESERVED rows" has exactly ONE implementation: treasury.freeTreasuryBalance.
+  routing.availableLiquidity wraps it for display. Never sum those rows a second time.
+- Anything that CLEARS the audit log must clear AuditCheckpoint first: an anchor
+  pointing at a deleted event id reads as tampering forever after (setup.mjs's reset,
+  and the test files that own the table). And SQLite keeps the autoincrement sequence
+  across a wipe, so audit ids do NOT restart at 1 — never infer "how many events" from
+  an id; count the rows.
+- Widening a verdict/result object breaks `.resolves.toEqual({...})` assertions across
+  files that never changed (7 of them for verifyAuditChain). Prefer toMatchObject for
+  a shape that is expected to grow — the exact-equality ones cost a mechanical sweep.
 - Rows that model financial history (TreasuryPosition, AuditEvent) are append-only:
   update status in place (ACTIVE -> RECALLED), never delete. Derive current value
   (shares x live index) instead of storing a mutable balance.
@@ -86,7 +123,1013 @@ Phase 9 Track A: production hardening per AUDIT.md
   no longer holds.
 - The MMF is backed by mockUSDC only, and the executor reserves the DESTINATION asset.
   So a payment can only exercise MMF liquidity when its destination currency is USD
-  (USD→USD is a legal corridor — `midRate` returns 1 when source == dest). A USD→JPY
+  (USD→USD is a legal corridor — `midRate` returns unity when source == dest; since
+  US-012 that is the scaled bigint RATE_SCALE, not the number 1). A USD→JPY
   payment reserves mockJPY and never touches the fund.
+- Private keys have ONE resolution point: lib/signers.ts (`signerFor(ref, role)` ->
+  `Signer`, passed to `walletFor`). Never call `privateKeyToAccount` or read a key env
+  var anywhere else in lib/ or app/ — the whole point is that custody swaps by adding a
+  Signer implementation, not by auditing call sites.
+- `server-only` modules (lib/chain, lib/signers, lib/treasury, lib/executor) are enforced
+  by the BUNDLER, not tsc: `npm run build` is the only check that catches a client
+  component reaching them, and an UNUSED import is tree-shaken so it passes — reference
+  the symbol when proving the guard. vitest aliases the package to tests/stubs/server-only.ts
+  (it is a bare `throw` outside an RSC bundle), so a new server-only module needs no test
+  change, but keep lib/networks.ts client-safe.
+- `scripts/*.mjs` CANNOT import anything from `lib/` (TS, and there is no TS runner —
+  no tsx/ts-node installed). Any logic a seed/deploy script shares with lib/ must be
+  duplicated inline and kept in sync BY HAND (see setup.mjs's `hashKey`/`generateKey`
+  copy of lib/auth.ts). Note the duplication in AGENTS.md when you add one, and
+  cross-check it for real — a silent drift here breaks every seeded key.
+- On-chain approvals are EXACT and just-in-time, never standing: the executor calls
+  `ensureSenderAllowance` right before it escrows, and the deploy scripts + test fixture
+  grant nothing. The read-first short-circuit (allowance >= amount → no tx) is what keeps
+  already-deployed networks working, and it is the shape to copy for any "ensure X on
+  chain" helper: read, return early if satisfied, otherwise write the minimum.
+- Removing a fixture-wide grant (an approval, a mint, a role) breaks whichever tests
+  drove the contract DIRECTLY rather than through lib/ — those relied on it implicitly.
+  Expect the blast radius in `tests/integration/contract.test.ts` and give the test its
+  own setup step mirroring what production now does.
+- Auth identity lives in `lib/auth.ts`: `authenticate(request)` → `Principal | null`
+  (`x-api-key` header, then `sos_key` cookie). It types its param as `Request`, not
+  `NextRequest`, so route tests can pass a plain `new Request(...)` — NextRequest
+  extends Request, so both work. Security helpers should FAIL CLOSED (return null)
+  on malformed data rather than throw or grant a partial identity.
+- Secrets the app generates (API keys) follow the deployments.json precedent: hash/
+  reference in the DB, raw value only in a gitignored `chain/*.json` + printed once
+  by setup. `.gitignore`'s `chain/deployments*.json` does NOT cover other chain/
+  files — add an explicit line and verify with `git check-ignore -v <path>`.
+- Verifying `npm run setup` without destroying dev state (the documented dance):
+  back up `chain/deployments.json` + `prisma/dev.db` to /tmp, start both chains
+  (`npm run chain`, `npm run chain:polygon`), poll `eth_chainId` on 8545/8546 until
+  both answer, run setup, then `pkill -f "hardhat node"` and restore both files.
+  The restored dev.db predates any schema change you just made — that is expected;
+  `npm run setup` is what re-syncs it.
+- Framework-free lib/ modules stay testable: `lib/auth.ts` takes a plain `Request` and
+  never imports `next/headers`, so route tests can call it directly. The Next-only glue
+  (`cookies()`) lives in a SEPARATE module, `lib/session.ts` (`currentPrincipal()` for
+  server components). Follow that split for anything else that needs request context —
+  putting `next/headers` in a lib/ module makes it uncallable from plain vitest.
+- Route handlers can be tested WITHOUT an HTTP server, including cookies: call the
+  handler and read `res.cookies.get(NAME)` off the returned `NextResponse` — it exposes
+  `value`/`httpOnly`/`sameSite`/`path`, and a `.delete()` shows up as value `""`.
+- ...but anything from `next.config.ts` (security headers) does NOT exist in a
+  direct handler call — those are applied by a running server. Header work is verified
+  with curl against `npm run dev`, not with a route test. Know which layer owns the
+  behaviour before writing the test for it.
+- MODULE-LEVEL STATE IS SHARED BY THE WHOLE SUITE (the rate limiter's Map, and any
+  cache like it). A per-process limit at its real value will 429 whichever file runs
+  after the busy ones — a failure that looks like a bug in the innocent test. Pin it
+  off in FIXTURE_ENV, and have the one test that wants it lower it + reset + restore.
+- Framework-free lib + HTTP glue is now the standard split THREE times over
+  (auth→guard.ts, idempotency→app/api/idempotency.ts, rate-limit/pagination→
+  app/api/limits.ts). New cross-cutting concern: put the decision in lib/ taking plain
+  values, the response in app/api/. Keep the `X | NextResponse` return + `instanceof`
+  narrowing convention — every handler already reads that way.
+- Time-dependent lib code takes `now` as a PARAMETER (consumeRateLimit). No fake
+  timers, and the window boundary becomes an ordinary assertion. Note the boundary is
+  EXCLUSIVE (`t > cutoff`), so a hit at t=1000 with a 60s window is gone at exactly
+  61_000, not 61_001 — a test that guesses this is off by one.
+- Rejecting > repairing applies to pagination too, not just money: `limit=201` is a
+  400, never a clamp to 200 — clamping quietly answers a different question. And the
+  grammar is a regex, because `Number("1e3")` is 1000 (same trap as parseAmount).
+- Cursor pagination needs a TIEBROKEN order (`[{createdAt:"desc"},{id:"desc"}]`):
+  createdAt is not unique, and rows created in one loop share a millisecond, so an
+  untiebroken sort makes a walk skip or repeat. Fetch `limit+1` — the extra row IS the
+  `has_more` evidence, and costs no second count query.
+- Prove a size/limit guard non-vacuous the same way as the atomicity ones: strip the
+  real check out of the impl and confirm the test fails. Did this for the body cap —
+  both 413 tests failed with only the Content-Length check left, proving the streaming
+  counter (not the header) is what enforces it. NextRequest does not set content-length
+  in tests, so a header-only impl would have passed nothing.
+  A no-arg handler (`POST()`) needs no Request at all.
+- EVERY API error body is `{ error_code, message }` (codes in `lib/api-errors.ts`).
+  Split by provenance: a message a route CHOSE is safe to ship (`invalidRequest(...)`,
+  `conflict(...)`, TreasuryError domain text); a message a THROW carried is not
+  (executor/prisma/viem errors name contract addresses, RPC URLs, revert data) — send
+  those through `caughtErrorResponse(e, fallback, context)`, which logs the real error
+  and answers canned. `(e as Error).message` in a handler is always a bug.
+  Clients read `data.message`, never `data.error`.
+- Undoing an on-chain step: decide from the CHAIN, not the DB status. lib/chain's
+  `onchainPaymentState()` reads the escrow's own `getPayment`; the DB only records what
+  an attempt TRIED, and the two disagree exactly when something threw mid-flight (which
+  is the only time a recovery path runs). Refund while the escrow is held, compensate
+  once it is released — a released escrow cannot be refunded (`failAndRefund` reverts
+  "not initiated").
+- Failure paths that no input can provoke on a healthy fixture chain get an exported
+  `executorTestHooks`-style object of optional throw points (lib/executor.ts). Tests
+  assign one and `delete` it in afterEach; nothing in the app ever assigns them. Cheaper
+  and clearer than vi.mock of a whole chain module.
+- A payment's status changes ONLY via `transitionStatus()` (lib/transitions.ts): it
+  asserts the move is legal, then compare-and-swaps on the status the caller observed
+  (`updateMany where {id, status: from}`), and audits only if a row actually changed.
+  A raw `prisma.payment.update({data:{status}})` is a bug — it clobbers whoever won a
+  concurrent race. Corollary: a handler must transition from the row it READ, and the
+  executor's `payment = {...payment, ...(await setStatus(...))}` assignments carry the
+  expected value, so they are load-bearing.
+- A lib error with an obvious client meaning should extend `ApiError` with its code
+  (StaleTransitionError -> "conflict") rather than invent a typed code + a per-route
+  status table (treasury's older shape). The routes' existing `caughtErrorResponse`
+  then renders it — a 409 with no mapping code at all.
+- Route handlers must never `await req.json()` bare: an unparseable body becomes an
+  unhandled throw that Next renders as a 500 (with a stack, in dev). Always
+  `.catch(() => null)` and return a chosen 400.
+- Operator-only detail on a row (e.g. `Payment.failureReason`) is scrubbed at the READ
+  routes per principal (`scrubFailureReason`), not by mutating the row — and it has to
+  be applied in the list view as well as the detail view, or the redaction has a hole.
+- Route authorization goes through `app/api/guard.ts`: `requirePrincipal(req)` /
+  `requireRole(req, ...roles)` return `Principal | NextResponse`, so every handler opens
+  with `const p = await requireX(...); if (p instanceof NextResponse) return p;`. HTTP
+  concerns (status codes, bodies) live under app/api, never in lib/auth.ts.
+- Security responses stay GENERIC and identical: anonymous == invalid key == 401
+  `{error:"unauthorized"}`; another tenant's row == nonexistent row == 404 (never 403,
+  which would confirm the id exists). Assert byte-identical bodies in tests, not just
+  matching statuses.
+- Tenant scoping belongs in the prisma `where` clause
+  (`isPlatformRole(p) ? {} : { OR: [...] }`), not a filter over already-fetched rows —
+  a row that was never loaded cannot leak via a count, an aggregate, or a new field.
+- DELETING A PAYMENT BREAKS THE AUDIT CHAIN. `AuditEvent.payment` is an optional
+  relation → Prisma's default `SetNull` NULLs `paymentId` on its events, and paymentId
+  is INSIDE the event hash, so every later event fails verification and unrelated test
+  files go BROKEN (`verifyAuditChain` → `{valid:false, brokenAtId:N}`). A test that
+  cleans up payments must skip the ones that got audited. Symptom to recognize: a chain
+  break in a file you did not touch, at a low event id.
+- Identity/authz that a route derives from the caller must never be overridable by the
+  request body (the review route took `body.reviewer` — a forgeable audit signature).
+  Audit with `actorOf(principal)` from app/api/guard.ts; leave machine-initiated events
+  (executor, treasury internals) as "system".
+- Concurrency control here is always RESERVE-THEN-ACT, never CHECK-THEN-ACT: let the DB
+  decide the race (a unique index, or a CAS `updateMany` on the value you observed), then
+  do the work you now own. `transitionStatus` (status CAS), the execution lease (CAS on
+  `executionLeaseId IS NULL`), and idempotency (unique `(principalId, key)` create) are
+  all the same shape. A `findFirst` + `if (!exists)` is a bug — two callers both pass it.
+- The `X | NextResponse` return + `if (x instanceof NextResponse) return x` narrowing is
+  the house convention for "do the thing, or hand me the response to send" helpers
+  (`requirePrincipal`, `authorizePaymentWrite`, `beginIdempotency`). Follow it for new
+  route glue rather than inventing a result object or throwing.
+- A route wrapper that must cover EVERY exit (idempotency; later: rate limiting) needs
+  the handler body as its own function returning a NextResponse — extract
+  `POST()` → thin wrapper + `doTheThing(principal, ...)`, rather than threading the
+  wrapper through a dozen early returns. Note `req.json()` is a one-shot stream, so read
+  the body ONCE in the wrapper and pass it down; to store a response you must
+  `res.clone().text()` it.
+- Fields on `Principal` come from `principalForKey` (lib/auth.ts) — the ONLY constructor,
+  so adding one (e.g. `keyId` for per-caller state) is cheap. But `toEqual` assertions on
+  a whole Principal in tests/db/auth.test.ts break on any new field: use
+  `expect.any(String)` for ids.
+- When a write route adds an authz check, its not-found body must match the READ
+  route's byte for byte (both `notFound()` from guard.ts) — a write that says
+  "payment not found" while the guard says "not found" re-opens the existence oracle
+  the read routes closed.
+- Adding auth to a route BREAKS every existing test that calls the handler — they all
+  construct requests without a key. Fix at the test's request-builder helper (add
+  `[API_KEY_HEADER]: API_KEYS.operator` in one place), not call by call.
+- `chain/dev-api-keys.json` maps name -> raw key STRING (`.operator`, not
+  `.operator.key`). Reading it wrong yields a literal "undefined" header and a
+  confusing wall of 401s that looks like an app bug.
+- A dev.db restored by the backup/restore dance predates any schema added since —
+  hitting a new table on it 500s ("The table `main.X` does not exist"). That is the
+  restore, not your code; `npm run setup` (with both chains up) is the fix.
+- To exercise something against the DEV db (not the fixture), write a throwaway
+  vitest file that news up its own `PrismaClient({ datasourceUrl: file:<dev.db> })`
+  — `setup-env.ts` pins DATABASE_URL to the fixture for every worker, so an explicit
+  datasourceUrl is the only way around it. Delete the file afterward.
+- A lib error with an obvious client meaning should extend `ApiError` with its code
+  (StaleTransitionError, ExecutionLeaseError → "conflict"). Routes need NO mapping:
+  the existing `caughtErrorResponse`/`fromThrown` passes an ApiError's code + message
+  straight through. Reserve treasury's typed-code + per-route status table for errors
+  whose HTTP meaning is route-dependent.
+- Guarding a side-effecting operation against concurrency: the status you READ is
+  already stale — the CAS that claims the work is what decides the race, and it must
+  come BEFORE the first irreversible effect (a chain write), not just before the DB
+  write. Anything claimed must have a release path for throws that never reach the
+  code that would normally release it (a `finally`, scoped to the claim's own id so
+  it cannot free a later claim).
+- Naming a relation-included Prisma row at a function boundary (to extract a helper
+  out of a long function) needs `Prisma.PaymentGetPayload<{ include: {...} }>` —
+  findUniqueOrThrow's inline inference does not survive being passed as a param.
 
+---
+
+## 2026-07-16 11:45 - US-001 (API-key identity model)
+- Added the ApiKey identity foundation for Phase 9 authz. Identity ONLY — nothing is
+  enforced yet, every route is still open until US-003/US-004. Commit b7545d3.
+- Files changed:
+  - prisma/schema.prisma — ApiKey model (keyHash @unique, role, entityId? FK, label)
+    + `apiKeys ApiKey[]` back-relation on Entity. Role is a String with a comment,
+    matching the schema's existing enum-by-convention style (SQLite has no enums).
+  - lib/auth.ts (new) — Role/Principal types, authenticate(request), principalForKey(raw),
+    generateKey(), hashKey(), API_KEY_HEADER, API_KEY_COOKIE.
+  - scripts/setup.mjs — seeds 6 keys, prints once, writes chain/dev-api-keys.json;
+    apiKey.deleteMany() added to the reset (before entity.deleteMany, FK order).
+  - .gitignore — chain/dev-api-keys.json
+  - tests/fixture.ts — API_KEYS constant; tests/global-setup.ts — seeds them
+  - tests/db/auth.test.ts (new) — 9 tests. Suite 135 -> 144, tsc + lint green.
+- Verification beyond the suite: ran `npm run setup` for real against both local chains
+  (backup/restore dance, now in Codebase Patterns) and cross-checked all 6 seeded dev
+  keys resolve via lib/auth's hashKey — this is the ONLY thing that catches drift
+  between setup.mjs's duplicated hash and lib/auth's, since the fixture seeds via
+  lib/auth directly and would stay green even if setup.mjs drifted.
+- **Learnings for future iterations:**
+  - `principalForKey(raw)` is deliberately split out of `authenticate(request)` —
+    US-002 needs to resolve a principal from `cookies()` in a server component, where
+    there is no Request object. Use it there.
+  - Principal.entityId is the Entity.id (cuid), NOT externalId. API_KEYS.entities in
+    the fixture is keyed by externalId, so tests must look the entity up to compare.
+  - authenticate() returns null for BOTH anonymous and invalid keys, on purpose: the
+    caller decides the status code (US-003 wants a generic 401 for both, no oracle
+    telling an attacker which keys exist).
+  - Malformed-row fail-closed is tested by INSERTING a bad row (orphaned ENTITY key,
+    unknown role) and asserting null — worth keeping as US-003/4 add role checks.
+  - There is no tsx/ts-node in this repo; don't reach for a quick `tsx script.ts`.
+  - Next up US-002 (login page + cookie). The cookie name/reader already exist here —
+    /api/auth/login just has to validate via principalForKey and set `sos_key`
+    httpOnly. Don't re-derive the cookie parsing; authenticate() already does it.
+---
+
+## 2026-07-16 11:52 - US-002 (login page + principal cookie)
+- The browser demo can now hold an identity, so US-003/US-004 can start enforcing without
+  locking the UI out. Still NO enforcement — every route remains open.
+- Files changed:
+  - lib/session.ts (new) — currentPrincipal() via cookies(), sessionCookieOptions(),
+    SESSION_MAX_AGE_SECONDS. The Next-only half of auth (see Codebase Patterns).
+  - app/api/auth/login/route.ts (new) — POST { api_key } -> principalForKey -> sets
+    httpOnly sos_key; generic 401 for missing/empty/non-string/unknown alike.
+  - app/api/auth/logout/route.ts (new) — POST, clears the cookie, always 200.
+  - app/login/page.tsx + app/login/login-form.tsx (new) — server page + "use client" form.
+  - app/principal-badge.tsx (new) — sidebar badge; label/role or a sign-in link.
+  - app/layout.tsx — now `async`, awaits currentPrincipal(), passes plain props down.
+  - AGENTS.md — lib/session.ts in the architecture map + a sign-in gotcha.
+  - tests/integration/auth-api.test.ts (new) — 5 tests. Suite 144 -> 149, tsc + lint green.
+- Browser-verified for real (backup/restore dance, dev server on :3000): anonymous shell
+  shows the sign-in link; bad key -> 401 + NO Set-Cookie; operator key -> 200 + HttpOnly
+  SameSite=lax cookie; cookie'd shell renders "Platform operator" / OPERATOR / Sign out;
+  ENTITY key -> its own tenant label; logout -> cookie expired to 1970. All 7 pages and
+  /api/networks + /api/payments still 200 under the now-async layout.
+- **Learnings for future iterations:**
+  - The root layout awaits currentPrincipal(), so EVERY page is dynamic now. That is
+    what makes the sidebar correct after sign-in, but it means a page can no longer be
+    statically rendered — don't fight it, and keep the shell working when principal is
+    null (/login renders inside it).
+  - Sign-out must be a BUTTON that POSTs + router.refresh(), not a <Link> — clearing a
+    cookie needs a route handler, and refresh() is what re-runs the server layout so the
+    badge flips. Same server-parent/client-child prop rule as app/liquidity/.
+  - The login route stores the RAW key in the cookie (that is what authenticate() expects
+    to read back and re-hash). So the cookie IS a bearer credential: httpOnly is what
+    keeps it away from JS, and `secure` is env-gated because the demo is plain http.
+  - `npm run setup` reseeds keys and silently invalidates any open browser session —
+    expect to sign in again after a reset; chain/dev-api-keys.json has the new ones.
+  - Next 16: cookies() is ASYNC (`await cookies()`), per node_modules/next/dist/docs.
+    Read the bundled docs — this repo is not the Next you remember.
+  - Next up US-003 (enforce authz + tenant scoping on reads). currentPrincipal() covers
+    server components; authenticate(req) covers routes. Both already fail closed, so
+    US-003 is mostly "null -> generic 401" + an ENTITY sender/recipient filter.
+---
+
+## 2026-07-16 12:05 - US-003 (enforce authz + tenant scoping on reads)
+- Every API route except /api/networks (public registry) and /api/auth/* now requires an
+  authenticated principal; reads are role- and tenant-scoped. Writes get the 401 gate too
+  (AC1 says "any API route"), but their ROLE rules are deliberately still open — that is
+  US-004's job, and each write handler carries a comment saying so.
+- Files changed:
+  - app/api/guard.ts (new) — requirePrincipal / requireRole / isPlatformRole +
+    unauthorized()/forbidden()/notFound(). Returns Principal | NextResponse; handlers
+    narrow with `instanceof NextResponse`.
+  - Reads scoped: payments (list filter by sender/recipient), payments/[id] (404 for a
+    non-party), entities (ENTITY sees only itself), balances + reconciliation + audit +
+    treasury/positions (OPERATOR/REVIEWER only).
+  - Writes gated on identity only: payments POST, quote, execute, cancel, review,
+    treasury park/recall/accrue.
+  - AGENTS.md — guard.ts in the architecture map + two new invariants (no anonymous
+    routes / generic non-leaking errors; tenant scoping as a query filter).
+  - tests/integration/authz.test.ts (new) — 14 tests. Existing api/treasury-api/
+    treasury-guardrails tests updated to send an operator key. Suite 149 -> 163.
+- Verified beyond the suite, against a real dev server + freshly seeded dev DB (the
+  backup/restore dance): anon 401 / operator 200 / entity 200 on payments; entity 403 on
+  audit+balances+reconciliation, reviewer 200; entity /api/entities returns ONLY
+  ent_acme_us while operator sees 4; /api/networks still public 200. Then drove the full
+  demo flow authenticated — create -> quote -> execute -> SETTLED — so the PRD's
+  "never break the demo" constraint holds. Dev state restored afterwards.
+- **Learnings for future iterations:**
+  - The AC deliberately makes ENTITY /api/entities return only itself. app/payments/new
+    fetches that endpoint to fill the sender/recipient dropdowns, so an ENTITY-signed-in
+    browser now sees a one-option recipient list. The demo drives everything with the
+    OPERATOR key so this is not a demo break, but if a future story wants tenant users to
+    address counterparties, it needs a separate, deliberately-narrow counterparty
+    endpoint — do NOT loosen /api/entities to fix it.
+  - Server COMPONENTS (dashboard, liquidity) still read prisma directly and are NOT
+    scoped by this story — only API routes are. Page-level authz is still an open gap;
+    US-010 adds an operator-only view and will have to face it.
+  - execute/review/cancel now resolve a principal they do not yet use (the comment marks
+    it). US-004 should replace the `requirePrincipal` with `requireRole`/sender checks
+    and pass `principal.label` into audit() instead of the body's `reviewer` field.
+  - `verifyAuditChain()` returns `{ valid: boolean; brokenAtId?: number }` — NOT a
+    `{status:"INTACT"}` shape (that string is the UI's rendering of it).
+---
+
+## 2026-07-16 - US-004
+- Enforced role/tenant authorization on every write route and made the audit actor
+  the authenticated principal instead of a request-body field.
+- Rules implemented:
+  - POST /api/payments: OPERATOR, or the ENTITY named as sender_id (403 otherwise).
+    The ownership compare runs BEFORE the sender lookup, so a mismatch cannot reveal
+    whether the named sender exists. REVIEWER 403s — reviewers decide, never originate.
+  - quote/execute/cancel: `authorizePaymentWrite()` — OPERATOR or the payment's sender.
+    Recipient (a party, may read it) → 403; a non-party tenant → 404 identical to a
+    nonexistent id; REVIEWER → 403.
+  - review: requireRole(REVIEWER, OPERATOR); `body.reviewer` REMOVED (it was a
+    forgeable audit signature); actor now `actorOf(principal)`.
+  - treasury park/recall/accrue → OPERATOR only; positions GET already OPERATOR/REVIEWER.
+  - POST /api/entities → OPERATOR only (not in the ACs; onboarding is platform admin,
+    and it was the last write route left open to any authenticated caller).
+  - All 10 audit() call sites under app/api now pass actorOf(principal) =
+    "<label> (<ROLE>)". Executor/treasury internals stay "system" (machine acting).
+- Files: app/api/guard.ts (+actorOf, +authorizePaymentWrite), app/api/payments/route.ts,
+  app/api/payments/[id]/{quote,execute,cancel,review}/route.ts, app/api/entities/route.ts,
+  app/api/reconciliation/route.ts, app/api/treasury/{park,recall,accrue}/route.ts,
+  tests/integration/authz-writes.test.ts (new), AGENTS.md.
+- Suite 163 -> 176, all green; tsc + lint clean.
+- Verified against a real dev server on freshly seeded local chains: operator
+  create→quote→execute settled (audit actors read "Platform operator (OPERATOR)"),
+  an ENTITY drove its OWN payment to SETTLED ("ACME US Inc API key (ENTITY)"),
+  recipient cancel 403, entity-forging-sender 403, entity review 403, reviewer accrue
+  403, audit chain INTACT. Dev chains/DB restored to their pre-verification state.
+- **Learnings for future iterations:**
+  - The 404-vs-403 discipline has to reach the write routes too: quote/execute/cancel
+    each had their own `{error:"payment not found"}` body, which differed from guard's
+    `notFound()` — so a non-party 404 was distinguishable from a nonexistent-id 404.
+    They now all use notFound(). Check this for any new route.
+  - BIG ONE: deleting a Payment NULLs its audit events' paymentId (Prisma SetNull on an
+    optional relation) and paymentId is inside the hash → verifyAuditChain reports
+    BROKEN in *other* test files. My first test run failed 4 tests in 3 files I never
+    touched. Test cleanup must delete only audit-free payments. Documented in AGENTS.md
+    gotchas.
+  - The UI never sent `reviewer` in the review body (app/payments/[id]/page.tsx posts
+    only `{decision}`), so removing it broke nothing — but grep the .tsx callers before
+    changing a route's request contract.
+  - US-005 (safe errors) inherits an inconsistency worth folding in: guard.ts returns
+    `{error:"..."}` while treasury/errors.ts returns `{error, code}`. The new
+    lib/api-errors.ts should reconcile both into `{error_code, message}`.
+  - Still open after this story (scope for later): server components read prisma
+    unscoped (page-level authz), and route ROLE rules exist while lib/ helpers remain
+    callable without a principal.
+---
+
+## 2026-07-16 12:25 - US-005
+- Safe error handling. New `lib/api-errors.ts` (framework-free): the ApiErrorCode
+  union, code -> status + code -> canned-message tables, `ApiError` (for a lib that
+  wants to choose the client's message), `apiError()`, `fromThrown()` (console.errors
+  the real error, returns a safe one), `SAFE_FAILURE_SUMMARY`. NextResponse wrappers
+  added to `app/api/guard.ts`: errorResponse / invalidRequest / conflict /
+  caughtErrorResponse, plus `scrubFailureReason(principal, payment)`.
+- Every app/api handler now returns `{ error_code, message }`. The execute route no
+  longer echoes the executor's thrown message; the quote route no longer echoes
+  assertTransition's; treasury/errors.ts's 500 fallback no longer echoes an unknown
+  throw. `Payment.failureReason` is scrubbed to a fixed summary for ENTITY callers in
+  BOTH the list and detail reads (the row itself is untouched — operators still see it).
+- Files: lib/api-errors.ts (new), app/api/guard.ts, app/api/treasury/errors.ts, all 10
+  route handlers, app/payments/new/page.tsx, app/payments/[id]/page.tsx,
+  app/liquidity/mmf-card.tsx, tests/integration/api-errors.test.ts (new, 8 tests) +
+  5 existing test files re-pointed at the new body shape. AGENTS.md: two new invariants
+  + api-errors/guard rows in the architecture map. Suite 176 -> 184; tsc + lint green.
+- **Learnings for future iterations:**
+  - The ACs said "catch paths", but the stable-code list includes unauthorized/
+    forbidden/not_found, which guard emits — so the honest reading is ONE body shape
+    for the whole API. Unifying renamed the field clients read (`error` -> `message`):
+    3 client components and ~19 test assertions. Worth doing in one pass; a half-
+    migrated error shape would be worse than either end state.
+  - Distinguish a message a route CHOSE (validation text, TreasuryError domain text —
+    safe, keep it) from a message a THROW carried (executor/prisma/viem — leaks
+    addresses, RPC URLs, revert data — never ship it). That distinction is the whole
+    module: `apiError()` for the former, `fromThrown()` for the latter.
+  - `fromThrown` returns `{status, body}` rather than a NextResponse specifically so
+    the execute route can spread `...body` next to its own `payment_id`/`status`
+    fields. A route that needs to merge fields imports lib/api-errors directly;
+    everything else uses guard's wrappers.
+  - Routes that did `await req.json()` with no `.catch` (payments POST, entities POST)
+    turned a malformed body into an unhandled throw — i.e. a Next 500 with a stack in
+    dev. `.catch(() => null)` + a chosen 400 is the fix; grep for bare `req.json()`
+    when auditing a route.
+  - $800k USD->JPY (the amount that overshoots mockJPY liquidity) also trips the
+    compliance MANUAL_REVIEW threshold, so driving an execute FAILURE through the HTTP
+    API needs a reviewer approve first. The test helper `createApprovedPayment()`
+    bypasses compliance, so route tests hit the failure directly.
+  - The dev.db was mid-restore-dance stale again (no ApiKey table -> every
+    authenticated call 500s while anonymous 401s correctly — that asymmetry is the
+    tell). Ran the chains + `npm run setup` and LEFT the freshly seeded DB in place
+    rather than restoring the broken backup.
+  - Tests that force a failure should `vi.spyOn(console, "error").mockImplementation()`
+    — fromThrown logs by design and otherwise floods the suite output.
+---
+
+## 2026-07-16 12:30 - US-006 (Compare-and-swap status transitions)
+- Every payment status change now goes through ONE module, lib/transitions.ts:
+  `transitionStatus(payment, to, {data, detail, action, actor})` = assertTransition,
+  then `updateMany({ where: { id, status: from } })`, then (only if count === 1) the
+  audit event. Commit 5ac370d.
+- Files changed:
+  - lib/transitions.ts (new) — transitionStatus() + StaleTransitionError
+  - lib/executor.ts — setStatus() is now a thin wrapper over transitionStatus; the
+    catch path's three raw updates (FAILED after refund, REFUNDED, FAILED fallback)
+    converted
+  - app/api/payments/[id]/{review,cancel,execute}/route.ts — CAS + 409 on a lost race
+  - AGENTS.md — architecture map row, state-machine invariant rewritten, new
+    "audit only what happened" invariant
+  - tests/db/transitions.test.ts (5) + tests/integration/cas-routes.test.ts (2) new.
+    Suite 184 -> 191; tsc + lint green.
+- **Learnings for future iterations:**
+  - lib/state.ts is PURE (no prisma) and must stay that way — tests/unit imports it.
+    The DB-touching half went in a new module. Import direction: executor/routes ->
+    transitions -> {db, audit, state}.
+  - StaleTransitionError extends ApiError("conflict") instead of copying treasury's
+    typed-code + per-route status table. api-errors.ts is explicitly the place for
+    "a lib that knows what the client should be told", and the payoff is real: the
+    routes' EXISTING caughtErrorResponse turns it into a 409 with zero mapping code.
+    Use this shape for any future lib error with an obvious client meaning.
+  - The executor's `payment = { ...payment, ...(await setStatus(...)) }` assignments
+    are now LOAD-BEARING: the local row carries the CAS's expected status. Dropping
+    one makes the next transition compare against a stale status and 409 itself.
+  - Converting a raw `update` to a CAS can surface previously-silent illegal moves.
+    The executor used to raw-update FAILED -> FAILED when the refund leg threw after
+    the FAILED write landed; assertTransition rejects that, so the catch now returns
+    early if payment.status is already FAILED. Read a catch path's reachable states
+    before converting it.
+  - US-007 (execution lease) builds directly on this: the lease CAS wants to be the
+    same `where: { id, status: 'APPROVED', executionLeaseId: null }` shape, inside the
+    prisma.$transaction that creates the reservation. US-016 (atomic audit) will want
+    transitionStatus to take an optional tx client — the audit() call is already the
+    last thing it does, so that is a localized change.
+
+## 2026-07-16 - US-007 (Per-payment execution lease claimed atomically with liquidity reservation)
+- Payment gains `executionLeaseId` + `leasedAt`. executePayment claims the lease with a CAS
+  (`where { id, status: "APPROVED", executionLeaseId: null }`) as its FIRST write, then runs the
+  existing body via a new `runExecution()` helper wrapped in try/finally. The reservation upsert
+  now sits inside a `prisma.$transaction` that re-asserts the lease before writing it.
+  `transitionStatus` clears the lease on any LEASE_RELEASE_STATES status.
+- Files: prisma/schema.prisma, lib/state.ts (LEASE_RELEASE_STATES), lib/transitions.ts,
+  lib/executor.ts (ExecutionLeaseError, PaymentWithParties, claim + runExecution + finally),
+  tests/integration/execution-lease.test.ts (new, 6 tests), AGENTS.md.
+- Suite 191 -> 197. tsc + lint green.
+- **Learnings for future iterations:**
+  - DECISION (AC tension, worth knowing for US-009/US-010): AC1 says claim the lease "inside the
+    same $transaction that creates the LiquidityReservation", but AC2 says the loser must touch
+    NO chain state — and the reservation is preceded by the auto-recall, which WRITES to chain.
+    Those cannot both hold with a single claim at reservation time. Resolved by splitting: claim
+    first (before recall, so the loser is stopped before any chain call), then RE-assert the lease
+    inside the reservation transaction (so {lease, reservation} is still atomic — a reservation
+    can never exist without the lease). Reserving before recalling was rejected: freeTreasuryBalance
+    is balance minus RESERVED rows, so a reservation written first would make recallForPayment
+    over-redeem from the MMF. The "recall before reserve" invariant in AGENTS.md is load-bearing.
+  - A lease needs a release path for throws that never reach a terminal transition (unquoted
+    payment, wallet lookup failure, RPC down during setup). transitionStatus covers the
+    status-changing paths; the executor's `finally` (scoped to its OWN leaseId, so it can never
+    free a later attempt's lease) covers the rest. Without it a setup-time throw locks the payment
+    out of execution permanently — there is a test for exactly this.
+  - Extracting `runExecution()` out of `executePayment` needs the relation-included payment type:
+    `Prisma.PaymentGetPayload<{ include: {...} }>` is the idiomatic way to name it (the inline
+    findUniqueOrThrow inference does not survive a function boundary). Assign the param to a local
+    `let` rather than reassigning the param itself.
+  - FAILED is deliberately NOT in TERMINAL_STATES (FAILED -> REFUNDED is legal), so the lease set is
+    its own list: `LEASE_RELEASE_STATES = [...TERMINAL_STATES, "FAILED"]`. When US-009 adds
+    COMPENSATED, add it to TERMINAL_STATES and the lease set follows for free.
+  - Lease-clearing is merged into the CAS's `data` but kept OUT of the audit detail (which spreads
+    `...data` separately) — releasing a lease is bookkeeping, not part of the recorded change.
+  - Route-level proof of a 409 works with no new mapping: ExecutionLeaseError extends
+    ApiError("conflict"), so the execute route's existing `fromThrown(e, "execution_failed", ...)`
+    passes the conflict code through. Same payoff US-006 noted for StaleTransitionError.
+  - Testing "exactly one escrow happened" is best asserted ON CHAIN (treasury USDC delta == one
+    payment's amount), not just by counting audit rows — the audit count would pass even if the
+    second attempt had escrowed and been rolled back in the DB.
+
+## 2026-07-16 12:45 - US-008
+- Idempotency keys for POST /api/payments and POST /api/payments/[id]/execute. An
+  `Idempotency-Key` header makes a retry replay the first response instead of creating
+  or executing twice; no header = unchanged behaviour (the browser demo sends none).
+- Files changed:
+  - prisma/schema.prisma — new IdempotencyRecord (principalId, key, route, requestHash,
+    responseStatus?, responseBody?, createdAt; @@unique([principalId, key]))
+  - lib/auth.ts — Principal gains `keyId` (= ApiKey.id), the stable per-caller identity
+  - lib/idempotency.ts (new) — beginIdempotent / completeIdempotent / abandonIdempotent,
+    hashRequest (canonical body fingerprint), IDEMPOTENCY_TTL_MS (24h)
+  - app/api/idempotency.ts (new) — beginIdempotency() → IdempotentScope | NextResponse
+  - lib/api-errors.ts — new `idempotency_conflict` code → 422
+  - app/api/payments/route.ts, app/api/payments/[id]/execute/route.ts — handler bodies
+    extracted to createPayment() / runExecute(), wrapped by the scope
+  - tests/integration/idempotency.test.ts (new, 10 tests), tests/db/auth.test.ts (keyId)
+  - AGENTS.md — architecture map rows + the reserve-then-stamp invariant
+- Suite 197 -> 208. tsc + lint green. No UI change, so no browser pass; the tests drive
+  the real handlers.
+- **Learnings for future iterations:**
+  - RESERVE-THEN-STAMP was the whole design decision. The obvious shape — look the key
+    up, and if it is absent run the handler — is exactly the check-then-act bug the CAS
+    stories (US-006/US-007) already outlawed: two duplicates both find nothing and both
+    run. Creating the record FIRST makes the unique index the arbiter, and the record's
+    own state then answers every duplicate: unstamped -> 409 in-flight, stamped ->
+    replay, different body/route -> 422. This codebase now has three instances of the
+    same pattern (status CAS, execution lease, idempotency) — reach for it by default.
+  - The two ACs pushed in different directions on WHAT to store. Storing only successes
+    would leave a definite failure (a 409 from a bad status, a 500 execution_failed)
+    retryable-but-not-replayable, which contradicts "same key + same body replays the
+    stored response". Resolution: store whatever the handler RETURNED (errors included —
+    a definite answer is an answer), and abandon the key only when the handler THREW,
+    because an unknown outcome is the one case where re-running is the honest move.
+  - `route` must be the CONCRETE path, not the template. `POST /api/payments/[id]/execute`
+    as the stored route would let one key aimed at payment A replay its response for
+    payment B — a silent wrong answer. Storing `POST /api/payments/pay_x/execute` turns
+    that into the 422 it is. Anything a route's identity depends on but the body does not
+    carry (a path param) has to be in `route` or in the hash.
+  - JSON.stringify is NOT a request fingerprint: its key order is insertion order, which
+    a client does not control, so `{a,b}` and `{b,a}` would 422 as "different requests".
+    Canonicalize (recursive key sort) before hashing.
+  - Expiry needed the CAS treatment too: two callers presenting the same aged-out key
+    would otherwise both reclaim it. `updateMany where {id, createdAt: <the value I read>}`
+    makes exactly one the owner. The begin loop is bounded at 2 passes — the row can be
+    abandoned or reclaimed between our failed create and our read, but a second failure
+    means someone holds a live reservation, which IS the in-flight answer.
+  - Extracting the handler body (POST → thin wrapper + createPayment()) was the only way
+    to make the scope cover every exit. Watch the types when you do it: `req.json()`
+    returns `any`, so the destructuring inside the old handler type-checked on nothing;
+    the extracted function needs a real param type (an all-optional interface documents
+    "unverified until validated" honestly — `Record<string, unknown>` will NOT compile
+    against `NETWORKS[source_network]`).
+  - Prisma unique-violation detection: catch and check `e.code === "P2002"` (no import of
+    Prisma.PrismaClientKnownRequestError needed). Rethrow anything else — swallowing it
+    would turn a real DB fault into a silent duplicate run.
+  - `res.clone().text()` to store a response body: the stream is one-shot and the caller
+    still needs it. Same reason the wrapper reads `req.json()` once and passes it down.
+  - Adding a field to Principal broke two `toEqual` assertions in tests/db/auth.test.ts
+    (nothing else — principalForKey is the only constructor). Cheap, but grep for
+    whole-object assertions before assuming a type-level change is free.
+---
+
+## 2026-07-16 - US-009
+- Compensation saga for a destination leg that fails AFTER the source escrow was
+  already released to the treasury. Previously that path called failAndRefund (which
+  reverts — the escrow row is SETTLED) and then marked the payment FAILED, stranding
+  the sender's money on a payment the DB called "failed".
+- Files: lib/state.ts (COMPENSATION_PENDING + COMPENSATED, TERMINAL_STATES),
+  lib/chain.ts (getPayment in SETTLEMENT_ABI, ONCHAIN_PAYMENT_STATES,
+  onchainPaymentState()), lib/executor.ts (executorTestHooks, compensateSender(),
+  chain-reconciled catch), prisma/schema.prisma (compensationTxHash),
+  components/ui.tsx + app/page.tsx + app/payments/[id]/page.tsx +
+  app/api/balances/route.ts (new statuses in the badge map and the
+  pending/failed/terminal filters), tests/unit/state.test.ts (+2),
+  tests/integration/compensation.test.ts (+4). Suite 208 -> 214, tsc + lint green.
+- **Learnings for future iterations:**
+  - The executor's catch now decides refund-vs-compensate by READING THE CHAIN
+    (`onchainPaymentState`), not by the DB status list. That is the AC5 requirement, but
+    it also fixes a real hole: the DB records what an attempt tried, the chain records
+    what landed, and they only disagree when something threw mid-flight — which is
+    precisely when this code runs. The old status list is kept solely as a fallback for
+    when the chain read itself fails (RPC down).
+  - Consequence: COMPENSATION_PENDING had to be reachable from CONFIRMED_ONCHAIN too,
+    not just PAYOUT_PENDING as the AC says. If the settle tx lands but its receipt read
+    times out, the DB sits at CONFIRMED_ONCHAIN while the escrow is SETTLED — with only
+    the AC's edge, transitionStatus would throw "invalid transition" from inside the
+    catch and the sender would never be compensated. The state machine must cover every
+    status at which the escrow MAY be released, and the chain read picks which applies.
+  - Compensation is denominated in the SOURCE asset on the SOURCE network (the exact
+    base units that were escrowed — `amountUnits` is hoisted out of the try for this).
+    The destination amount/asset is what FAILED; paying that back would be a bug. The
+    cross-chain test asserts this specifically.
+  - A compensation transfer that itself fails leaves the payment in COMPENSATION_PENDING
+    and audits `payment.compensation_failed` — it must NOT fall back to FAILED, which
+    would claim the sender was made whole. That is the state US-010's repair endpoint
+    picks up; the executor's `finally` frees the lease, so a repair can re-enter.
+  - COMPENSATED joined TERMINAL_STATES, so LEASE_RELEASE_STATES picked it up for free —
+    exactly as US-007's note predicted.
+  - Test-only failure injection: exported `executorTestHooks` object of optional throw
+    points, assigned by tests and deleted in afterEach. Added `beforeSettlement` as well
+    as the AC's `beforeDestinationPayout` — the on-chain refund branch had ZERO test
+    coverage and this story changed its guard condition, so it needed one.
+  - Adding a lifecycle status means touching the UI status maps too: STATUS_STYLES in
+    components/ui.tsx (unknown statuses fall back to grey, so it silently "works"), the
+    dashboard's pending/failed filters in app/page.tsx, the detail page's isTerminalBad,
+    and the balances route's pending `notIn` list. Those are hardcoded literal lists, not
+    derived from lib/state.ts — grep for a neighbouring status (e.g. "REFUNDED") to find
+    them all.
+  - No browser pass: the only UI surface is a status badge + counters for states that
+    cannot be reached without the test hook. The demo flow is untouched (the happy path
+    and the pre-escrow failure path both still run in the suite).
+---
+
+## 2026-07-16 - US-010
+- Operator repair view for partial settlements: the stuck list, the repair endpoint,
+  and the dashboard "needs attention" entry point.
+- Files changed:
+  - lib/executor.ts — split compensateSender into the transition + runCompensationTransfer,
+    so a repair can re-enter the transfer half; new compensationContextFor() derives
+    amount/network/wallet from the row alone (the executor's own catch now uses it too, so
+    the two paths cannot disagree about what to pay); new exports stuckPayments() and
+    repairCompensation(); walletOn() hoisted to module scope; two new test hooks
+    (beforeCompensationTransfer, beforeRefund).
+  - app/api/payments/route.ts — GET ?stuck=true (OPERATOR only), rows carry escrow_state.
+  - app/api/payments/[id]/repair/route.ts — new, OPERATOR only, wrapped in the idempotency scope.
+  - app/payments/stuck/{page.tsx,repair-list.tsx} — server page + "use client" Repair button.
+  - app/page.tsx — Needs Attention card, counted from the same stuckPayments() the list uses.
+  - tests/integration/repair.test.ts — 9 tests. Suite 214 -> 223.
+  - AGENTS.md — stuck-visibility + repair-is-not-retry invariants, .next-cache gotcha.
+- **Learnings for future iterations:**
+  - DECISION (AC1 says "FAILED-with-escrow states"): which FAILED payments qualify cannot be
+    answered from the DB — FAILED is only really finished if the escrow refunded. So the list
+    reads each candidate's escrow live and filters on the CHAIN's answer, keeping COMPENSATION_PENDING
+    unconditionally and dropping only FAILED-with-escrow-REFUNDED. Candidates are narrowed by
+    `onchainPaymentId != null` first: a payment that failed before escrow (bad quote, no liquidity)
+    holds nothing.
+  - DECISION (graceful degrade, per the AGENTS public-RPC invariant): an unreadable escrow does NOT
+    drop the row — it lists with escrow_state null. Dropping it would let a flaky RPC hide exactly
+    the payment an operator needs to see. Same reason repairCompensation REFUSES on an unreadable
+    escrow: it will not send treasury funds against an escrow it cannot confirm was released, and
+    the transfer would run on that same dead network anyway.
+  - "Idempotently" for something that moves money is three separate guards, not one: the status
+    check (COMPENSATED returns untouched, never pays twice), the lease CAS (two concurrent repairs
+    -> one 200 + one 409), and the Idempotency-Key scope (a retried HTTP request replays the first
+    answer). The test asserts all three ON CHAIN (sender balance) rather than by counting rows.
+  - Test hooks earn their keep: forcing a state by raw prisma status updates fights the state
+    machine and proves less. beforeCompensationTransfer produces a REAL stuck payment (escrow truly
+    SETTLED on-chain, sender truly short); beforeRefund produces the FAILED-with-escrow-INITIATED
+    case, whose cleanup (operatorWrite failAndRefund) then doubles as the assertion that the row
+    leaves the list when the chain facts change — same status, different chain.
+  - A page that shows unscrubbed failureReason and drives a treasury transfer checks
+    currentPrincipal() itself (app/payments/stuck) instead of following the other pages' render-for-
+    anyone habit. The API route enforces the same rule independently — the page gate is UI, not
+    security.
+  - Browser verification without browser tooling: temporarily default the executorTestHooks to
+    throw, drive create->quote->execute over curl (the stuck payment PERSISTS in the dev DB), revert
+    the hook, then fetch the rendered pages and grep the HTML. Server-rendered text is split by JSX
+    into `foo<!-- -->bar` nodes, so grep short fragments, not whole sentences.
+  - GOTCHA (cost ~15 min): a stale .next/ cache 404'd EVERY api route — including untouched ones
+    like /api/networks — while pages rendered fine. rm -rf .next and restart. Now in AGENTS.md.
+---
+
+## 2026-07-16 - US-011
+- Strict canonical decimal validation at the API boundary. New lib/money.ts:
+  parseAmount(amount, currency) -> bigint MINOR units, accepting only
+  ^[0-9]+(\.[0-9]+)?$ at no more than the currency's decimals, <=15 integer
+  digits, > 0; typed MoneyError; formatMinorUnits/canonicalAmount for the stored
+  string; CURRENCY_DECIMALS (USD/SGD 2, JPY 0). POST /api/payments now validates
+  through it and stores the canonical form; the old `Number(amount) <= 0 ||
+  isNaN(...)` gate is gone (it accepted "1e6", "Infinity", "+5", " 100.00").
+- Files: lib/money.ts (new), app/api/payments/route.ts, AGENTS.md (architecture
+  map row + a new invariant), tests/unit/money.test.ts (new, 15),
+  tests/integration/api.test.ts (3 new cases, 1 fixture fix).
+- Suite 223 -> 241, tsc + lint green.
+- **Learnings for future iterations:**
+  - TWO decimal notions now coexist and are NOT interchangeable: CURRENCY_DECIMALS
+    in lib/money.ts is FIAT minor units (USD 2) and is what the boundary validates
+    against; ASSETS[].decimals in lib/assets.ts is TOKEN base units (mockUSDC 6)
+    and is what toBaseUnits uses downstream. Same number only for JPY. Don't merge.
+  - toBaseUnits TRUNCATES by design and stays that way — it converts amounts we
+    already accepted. Rejection belongs at the boundary (parseAmount), conversion
+    downstream. US-012/US-013 should keep that split.
+  - Validating an amount with Number()/isNaN is the bug, not the fix: Number()
+    happily takes "1e6", "Infinity", " 100.00", "0x10". Grep for `Number(` on a
+    monetary value before trusting any remaining gate (US-012 will find more in
+    lib/fx.ts).
+  - Ordering matters when validation is currency-dependent: the currency-support
+    check has to run before the amount check, since the currency is what says how
+    much precision is legal.
+  - A validator's param should be `unknown`, not `string`, when it runs on a
+    request body — the CreatePaymentBody interface is an assumption the validator
+    is supposed to *establish*, and a JSON number sails through a `string` type.
+  - Tightening a shared rule breaks fixtures that encoded the old looseness:
+    api.test.ts's JPY->JPY case sent the USD-shaped "100000.00". Expect one such
+    hit per tightening; check the demo UI's defaults too (app/payments/new is
+    USD->JPY, so it was safe).
+  - lib/treasury.ts still has its OWN private parseAmount (token decimals,
+    truncating, TreasuryError) — deliberately untouched here since it validates an
+    operator's park/recall against token units, not a tenant's fiat amount. Fold it
+    in during US-013 if the bigint work makes them converge.
+---
+
+## 2026-07-16 - US-012 (FX and fee math on bigint minor units)
+- lib/fx.ts rewritten as bigint end to end. Amounts = currency MINOR units; rates =
+  integers scaled by 10^RATE_DECIMALS (18). New/changed surface: midRate() -> scaled
+  bigint, formatRate(scaled, dp=6) -> display string, convert(amountMinor, rateScaled,
+  from, to), applyBps(rateScaled, bps), usdEquivalent(amountMinor, cur) -> USD minor,
+  slippageBps(usdMinor), quoteFx(amountMinor, src, dst) -> FxQuote of bigints.
+  roundCurrency DELETED. Number() no longer appears in fx.ts at all.
+- Files: lib/fx.ts (rewrite), lib/money.ts (+formatScaledUnits, the generic half of
+  formatMinorUnits), lib/routing.ts (parses canonical amount -> minor, formats quote
+  strings from bigints, bridged leg via applyBps/convert), lib/compliance.ts
+  (transactionRiskProvider takes the amount STRING; TX_REVIEW/FAIL_THRESHOLD_USD ->
+  *_MINOR bigints), app/page.tsx (Settled Volume reduces to bigint), AGENTS.md,
+  tests/unit/fx.test.ts (8 -> 16 tests). Suite 241 -> 247. tsc + lint green.
+- **Learnings for future iterations:**
+  - THE bug this story nearly shipped: flooring the DERIVED INVERSE mid rates made
+    157,200 JPY round-trip to $999.99 — a cent lost on every inverted corridor. Three
+    unit tests caught it. Floor the money, round the rate table. The rule is "floor
+    favours the platform" applied to amounts/spreads, NOT to a constant's
+    representation. If you touch the rate table in US-013+, keep the round-to-nearest.
+  - Converting minor units across currencies needs the 10^dec factors on BOTH sides
+    (`amountMinor * rate * 10^destDec / (RATE_SCALE * 10^srcDec)`). I fat-fingered this
+    twice on paper (100x out) before the tests pinned it — write the fixture first.
+  - AC2 anticipated fixture churn from floor-vs-round; there was NONE. Floor agreed
+    with the old Math.round on every existing fixture, so all 241 pre-existing tests
+    passed untouched. Don't pre-emptively "fix" quote fixtures — run them first.
+  - Changing an fx.ts signature has a blast radius outside lib/: routing.ts,
+    compliance.ts (TX_RISK tiering), and app/page.tsx (dashboard volume stat) all
+    consume it. `grep -rn "lib/fx\|quoteFx\|usdEquivalent"` before starting.
+  - routing.ts is still Number-based (liquidityCheck takes a number; I bridged with
+    Number(destAmountString) and marked it) — that is US-013's job, next up.
+  - lib/treasury.ts STILL has its own private parseAmount (token decimals,
+    truncating). US-011's note flagged it for US-013; still open.
+  - chain/dev-api-keys.json shape is {operator, reviewer, entities:{<id>:key}} — not
+    a list. `node -p 'require("./chain/dev-api-keys.json").operator'`.
+  - /api/audit returns {integrity:{valid:true}, events:[...]} — not a `verified` field.
+  - Dev-server verification recipe that worked: npm run chain + chain:polygon (bg),
+    npm run setup, rm -rf .next, npm run dev, then curl create -> quote -> execute with
+    an x-api-key header, and `curl localhost:3000/ -H "Cookie: sos_key=$KEY"` to read a
+    server-rendered stat out of the HTML without a browser.
+---
+
+## 2026-07-16 - US-013 (Liquidity and routing math on bigint)
+- Killed the last float money math in the payment path: reservation sums and the
+  "can the treasury fund this?" comparison.
+- lib/routing.ts: availableLiquidity now WRAPS treasury.freeTreasuryBalance and adds
+  display strings (returns LiquiditySnapshot: bigint units + decimals + the old three
+  strings); liquidityCheck + the new destinationUnits() compare in token base units;
+  parkedLiquidity deleted (it only formatted parkedBalance's bigint back to a string).
+- lib/money.ts: new parseScaledUnits(value, decimals, {what, excessPrecision}) — the
+  strict any-scale parse half of formatScaledUnits. parseAmount delegates to it.
+- lib/treasury.ts: freeTreasuryBalance's reserved sum and the private park parseAmount
+  now use it (both were toBaseUnits, which truncates), re-typed as TreasuryError.
+- lib/executor.ts: the reservation guard compares availableUnits vs destinationUnits().
+- app/liquidity/page.tsx: per-token reserved/available in bigint, unclamped.
+- Tests: tests/db/liquidity.test.ts (4) + 5 parseScaledUnits unit tests. 247 -> 256.
+- **Learnings for future iterations:**
+  - TWO SCALES COEXIST for the same decimal string and mixing them is a 100x bug:
+    a currency's MINOR units (lib/money CURRENCY_DECIMALS: USD 2, JPY 0) and a token's
+    BASE units (lib/assets ASSETS[].decimals: mockUSDC 6, mockJPY 0). Reservation rows
+    and quoted destination amounts are canonical strings in the destination CURRENCY;
+    treasury balances are TOKEN base units. Cross the two through the string
+    (parseScaledUnits at the target scale), never by comparing the raw integers.
+  - Before writing bigint arithmetic, check whether lib/treasury already does it —
+    it has been the bigint module since Phase 8, and duplicating its subtraction is
+    how a park and a payment end up disagreeing about the same liquidity.
+  - freeTreasuryBalance CLAMPS free at 0 (it is a guard). Display surfaces that want
+    the anomaly (over-reserved treasury reading negative) must do their own signed
+    subtraction — and fromBaseUnits mangles a negative bigint, so sign it by hand.
+  - A fail-open catch (liquidityCheck's "chain unreachable -> quote anyway") will
+    happily swallow a parse/programming error too. Rethrow the typed error you did
+    not mean to catch.
+  - Verifying a page whose numbers depend on DB rows: create a payment through the
+    API, then upsert a LiquidityReservation with a throwaway prisma .mjs script AT THE
+    REPO ROOT (node cannot resolve @prisma/client from /tmp), reload, delete.
+---
+
+## 2026-07-16 - US-014
+- Exact per-payment allowances replace unlimited approvals. `lib/chain.ts` gains
+  `ensureSenderAllowance(networkId, entityExternalId, tokenSymbol, amount)`: resolves the
+  sender's AccountRef from `accountsFor(networkId).entityWallets[externalId]`, reads the
+  current allowance, short-circuits (returns null, no tx) when it already covers the
+  amount, otherwise signs an `approve(settlement, amount)` from the entity wallet and
+  returns the TxResult. The executor calls it inside its try, immediately before
+  `initiatePayment`, and audits `payment.allowance_granted` only when a tx actually ran.
+  MAX approvals removed from scripts/setup.mjs, scripts/deploy-testnet.mjs, AND
+  tests/helpers/deploy.ts.
+- Files: lib/chain.ts, lib/executor.ts, scripts/setup.mjs, scripts/deploy-testnet.mjs,
+  tests/helpers/deploy.ts, tests/integration/contract.test.ts,
+  tests/integration/allowance.test.ts (new), AGENTS.md.
+- **Learnings for future iterations:**
+  - DECISION — the test fixture stops pre-approving too, though AC1 only names the two
+    deploy scripts. Had the fixture kept its MAX grants, every existing E2E test would have
+    taken the short-circuit branch and the new approve path would only ever have run in the
+    one new test. Removing it means the whole suite settles through exact allowances, which
+    is what production now does. Cost: 4 pre-existing failures in contract.test.ts, which
+    drives `initiatePayment` directly with viem and silently depended on the fixture grant.
+    Fixed by giving its `initiate()` helper an `approveAmount()` step mirroring the executor.
+  - `operatorWrite`'s replica-lag guard needed extending, not just reusing: it retried only
+    on "not initiated" and gated that on `functionName !== "initiatePayment"`. initiatePayment
+    NOW depends on a prior tx (the approve), so it got its own transient predicate —
+    "insufficient allowance", which on a load-balanced public RPC means a replica that hasn't
+    seen the approval block yet. Renamed the flag `dependsOnEscrowRow` since "depends on a
+    prior tx" is no longer what distinguishes the two cases. This is unreproducible on the
+    local single-node chains (AGENTS gotcha) — it only shows up live.
+  - The executor now needs an entity's SIGNING KEY at runtime, which it never did before
+    (it only read `payment.sender.wallets` for addresses). Keys live in deployments under
+    `entityWallets`, keyed by `Entity.externalId` — so the DB wallet row gives the address
+    and the deployments file gives the key, and an entity with no deployments entry now
+    fails execution where it used to work off a pre-granted allowance. On real testnets the
+    entity dust wallets also now spend gas per payment; deploy-testnet's dust targets were
+    left as-is (they no longer spend 3 approvals up front, so the budget is comparable).
+  - MockERC20 leaves a MAX allowance undecremented on transferFrom (`if (allowed != max)`),
+    which is why the short-circuit test can assert MAX survives a settlement — that is
+    exactly the already-deployed base-sepolia/polygon-amoy case, still working untouched.
+  - Verified on a real dev server (backup/restore dance): allowance 0 after `npm run setup`,
+    25k USD→JPY SETTLED from a zero allowance with allowance back to 0 afterwards, audit
+    trail `liquidity_reserved → allowance_granted → submitted_onchain → ... → settled` and
+    chain valid:true, plus a bridged base-local→polygon-local payment SETTLED.
+  - Suite 256 → 264 (5 new in allowance.test.ts incl. an on-chain assertion that no other
+    spender — treasury, MMF — is ever granted anything; 1 new in contract.test.ts proving the
+    escrow cannot pull more than approved). tsc + lint green.
+  - Not in scope, deliberately: `ensureTreasuryAllowance` still approves the MMF for MAX.
+    The treasury is the platform's own account, not a customer wallet, and AC1 names entity
+    wallets only. If a later story tightens it, note that `subscribe` pulls per park, so it
+    would need the same just-in-time exact approval.
+---
+
+## 2026-07-16 - US-015
+- Signer abstraction + server-only chain modules. Key resolution moved out of lib/chain.ts
+  into a new lib/signers.ts; chain/signers/treasury/executor marked `server-only`.
+- Files: NEW lib/signers.ts, tests/unit/signers.test.ts, tests/stubs/server-only.ts;
+  lib/chain.ts (walletFor now takes a Signer and is async; AccountRef + resolveKey moved
+  out and re-exported for compatibility), lib/treasury.ts + lib/executor.ts (marker only),
+  vitest.config.ts (alias), tests/integration/allowance.test.ts (walletFor signature),
+  package.json (server-only dep), AGENTS.md.
+- **Learnings for future iterations:**
+  - DECISION — `Signer.account()` is ASYNC while `address` stays sync. A KMS fetch is a
+    network call, so a sync `account()` would have made KmsSigner unimplementable and the
+    "extension point" a lie; keeping `address` sync matters because callers check balances
+    and allowances BEFORE deciding to sign (ensureSenderAllowance's short-circuit reads the
+    address and never signs). That made walletFor async — 5 internal call sites + 1 test.
+  - DECISION — dispatch on the AccountRef (`kmsKeyId` -> KmsSigner, else LocalKeySigner)
+    rather than a global env switch, so custody is per-account: a live network's treasury
+    can move to a KMS while the local dev chains keep mnemonic keys. `kmsKeyId` is a new
+    optional AccountRef field, so the stub is a real branch and not dead code. KMS WINS over
+    an inline key when a ref carries both (asserted) — a ref migrated to KMS must not
+    silently keep hot-signing.
+  - AC3 ("deployment credentials separated from runtime") is satisfied STRUCTURALLY, and the
+    limit is worth knowing: deploy scripts read DEPLOYER_PRIVATE_KEY directly and cannot
+    import the signer layer (.mjs + server-only), but on live testnets the operator ref still
+    POINTS AT DEPLOYER_PRIVATE_KEY, because the deployer is the on-chain operator those
+    contracts were deployed with — re-keying needs an on-chain grant, not a config edit.
+    Deliberately not done: it would strand the live base-sepolia/polygon-amoy deployments.
+    Documented in AGENTS.md "Key custody" instead.
+  - GOTCHA (cost a false-negative verification): `server-only` is enforced by the bundler and
+    an UNUSED import is TREE-SHAKEN — my first check imported loadDeployments into a client
+    component and the build passed. Only once the symbol was actually referenced did the
+    build fail (exit 1). Prove the guard by CALLING the thing.
+  - GOTCHA: `server-only` resolves to a bare `throw` outside an RSC bundle (its react-server
+    export condition swaps in the empty module), so vitest needs the alias to
+    tests/stubs/server-only.ts or the whole suite dies at import. tsc is indifferent either
+    way — neither typecheck nor lint catches a marker violation, only `npm run build` does.
+  - The package is optional per the Next docs (Next aliases it internally) but installed
+    anyway, so tsc/vitest can resolve it and lint won't flag an extraneous dep.
+  - Verified: `npm run build` green with the markers; deliberately broken (client component
+    calling loadDeployments) -> build exit 1 with "You're importing a module that depends on
+    server-only", then restored (git diff clean). No UI/runtime change, so no browser pass —
+    the executor E2E tests drive the new async walletFor on the fixture chains.
+  - Suite 264 -> 271 (7 new in tests/unit/signers.test.ts: LocalKeySigner builds the matching
+    account, env key read at SIGNING time not construction, KmsSigner refuses but still
+    exposes its address, KMS-over-inline precedence, and resolveKey's three error paths).
+    tsc + lint green.
+---
+
+## 2026-07-16 - US-016
+- Atomic domain-change + audit-event writes. `audit()` now takes an optional
+  `Prisma.TransactionClient` (5th arg) and enlists in the caller's transaction;
+  `transitionStatus` and treasury `park`/`recall` write their domain row and their
+  audit event in one `prisma.$transaction`.
+- Files: lib/audit.ts (AuditTx type, appendEvent extracted, optional tx param),
+  lib/transitions.ts (CAS + row read + audit inside one tx; new `transitionTestHooks`),
+  lib/treasury.ts (park create + audit in one tx, recall update + audit in one tx,
+  accrue commented as deliberately tx-free), tests/db/transitions.test.ts (+2),
+  AGENTS.md.
+- **Learnings for future iterations:**
+  - Review + cancel needed NO changes: both already go through `transitionStatus`, so
+    making that atomic covered them. The AC listing them separately is about behaviour,
+    not call sites — check what already funnels through the chokepoint before editing
+    routes.
+  - `accrueDaily` is the deliberate exception and stays tx-free: it writes no domain
+    row at all (the index lives on chain, every position's value is derived from it),
+    so its event has nothing it could disagree with. Documented in the code + AGENTS.
+  - DEADLOCK, cost a confusing run: calling `audit()` without a tx from inside an open
+    `prisma.$transaction` opens a second connection that blocks on the outer tx's SQLite
+    write lock until the busy timeout. Symptom is EVERY test in the file timing out at
+    ~5s — no error naming a lock. This is now a real hazard for any future code that
+    audits from inside a tx, so it is in AGENTS gotchas.
+  - The hash-chain serialization argument is now a comment in `appendEvent`: the tip
+    findFirst and the create MUST stay in one tx, because SQLite admits one writer at a
+    time — that is what stops two appenders building on the same prevHash. Passing an
+    outer tx preserves this (the append is still inside a single transaction); reading
+    the tip outside a tx would fork the chain.
+  - Vacuity check that is worth repeating: I rewrote transitionStatus to the non-atomic
+    shape and confirmed the 2 new tests fail with `expected 'QUOTED' to be 'DRAFT'` while
+    the other 5 passed. A first attempt at this instead produced 6 TIMEOUTS (the deadlock
+    above) — a timeout failure proves nothing, so re-run the experiment until it fails
+    with an assertion.
+  - GOTCHA that cost the file: `git checkout lib/transitions.ts` to undo the experiment
+    also wiped the story's real edits. `cp` to /tmp before an experiment.
+  - `transitionTestHooks.beforeCommit` follows the `executorTestHooks` precedent and
+    fires INSIDE the tx after both writes — the only point where a non-atomic impl would
+    strand an event. Tests `delete` it in afterEach.
+  - No UI/runtime surface changed (same behaviour, narrower failure window), so no
+    browser pass; the executor E2E tests drive the new transactional transitionStatus
+    on the fixture chains.
+  - Suite 271 -> 273. tsc + lint green.
+---
+
+## 2026-07-16 14:30 - US-017
+- Signed audit checkpoints + incremental verification. The hash chain alone only
+  catches an EDIT: anyone with DB write access can re-hash the log from the tampered
+  event forward and it verifies clean. AuditCheckpoint signs the tip hash with
+  AUDIT_ANCHOR_KEY (HMAC-SHA256, key in env, never in the DB), so a re-hashed history
+  moves the tip to a value the attacker cannot sign. Automatic every
+  AUDIT_CHECKPOINT_INTERVAL events (default 100), on demand via
+  POST /api/audit/checkpoint (OPERATOR only).
+- Files: prisma/schema.prisma (AuditCheckpoint), lib/audit.ts (createCheckpoint,
+  maybeCheckpoint, AuditIntegrity, AuditAnchorError, anchor-first verifyAuditChain),
+  app/api/audit/checkpoint/route.ts (new), app/api/audit/route.ts (coverage in the
+  response, snake_case), app/compliance/page.tsx (badge), scripts/setup.mjs (reset),
+  tests/fixture.ts (+AUDIT_ANCHOR_KEY), tests/db/audit-checkpoint.test.ts (new, 12),
+  tests/integration/audit-checkpoint-api.test.ts (new, 3), + 5 files' assertions.
+- **Learnings for future iterations:**
+  - DECISION (deviates from AC1's letter): the signature covers `${lastEventId}|${chainHash}`,
+    not chainHash alone. With only the hash signed, the one signature an attacker HAS can
+    be replayed at another position: truncate the log, paste the signed hash into an
+    earlier event's `hash` column, re-chain forward. Binding the position kills that, and
+    costs nothing. Verification also re-derives the anchor event's own hash from its
+    stored content, so the signed value cannot simply be pasted in.
+  - Verification is anchor-first: signature -> anchor event exists -> its hash IS the
+    signed chainHash -> its content still hashes to that -> re-hash only events after it.
+    Four distinct `reason` codes, so a break says WHICH thing failed.
+  - No key = no checkpoints written at all (an unsigned anchor anchors nothing while
+    making verification look anchored) + a `mode:"full", anchored:false` verdict. The UI
+    badge says "INTACT (unanchored)" — that INTACT is a weaker claim and should say so.
+  - RESIDUAL LIMIT, documented not papered over: an attacker who DELETES the checkpoint
+    rows drops verification back to full over a chain they re-hashed. Closing that needs
+    the anchor published where we do not control it (counterparty, public chain). AC3 is
+    about the signature-mismatch path, which is closed.
+  - The interval counts ROWS (`count where id > lastEventId`), not an id delta. Found out
+    why the hard way on the dev DB: SQLite keeps the autoincrement sequence across
+    `npm run setup`, so a freshly-seeded DB started at event id 190 — an id-delta check
+    would have fired a checkpoint on the FIRST event of an empty log.
+  - REAL BUG the browser pass caught (tests could not): `npm run setup` wiped AuditEvent
+    but not AuditCheckpoint, so the demo's reset button left a dangling anchor and every
+    page read BROKEN (checkpoint_anchor_missing). Same hazard in the two test files that
+    own the table. Now in AGENTS.md gotchas.
+  - Auto-checkpointing runs INSIDE the appender's tx (US-016's), so a rolled-back event
+    cannot leave an anchor pointing at an id that never committed.
+  - The on-demand checkpoint deliberately writes NO audit event of its own: it would
+    extend the chain past the tip just signed, leaving the anchor stale the instant it
+    was made. The row is the record.
+  - Widening verifyAuditChain's return broke 7 pre-existing `toEqual({valid:true})`
+    assertions in 4 untouched files -> toMatchObject.
+  - Verified live: forged a real payment's history on the dev DB and re-hashed the whole
+    chain — chain-only verification says valid, the anchor says
+    checkpoint_chain_hash_mismatch and the compliance badge goes BROKEN at #201. Reset,
+    re-ran 25k USD->JPY to SETTLED, checkpoint signed tip #225, INTACT/incremental.
+  - Suite 271 -> 289. tsc + lint + build green.
+---
+
+## 2026-07-16 14:45 - US-018
+- Baseline web hardening, the last of the Phase 9 Track A stories: security headers on
+  every response, write rate limits + a body size cap, cursor pagination on the two
+  unbounded list reads, and a date-bounded reconciliation export.
+- Files: next.config.ts (CSP + 4 headers via headers()), lib/rate-limit.ts (new),
+  lib/pagination.ts (new), app/api/limits.ts (new), lib/api-errors.ts (+rate_limited 429,
+  +payload_too_large 413), app/api/payments/route.ts (paginated GET + beginWrite),
+  app/api/audit/route.ts (paginated), app/api/reconciliation/route.ts (from/to range),
+  the 9 other write routes (beginWrite / enforceWriteRateLimit), app/payments/page.tsx
+  (paging params + Older/Newest links), tests/fixture.ts (+RATE_LIMIT_WRITES_PER_MINUTE),
+  tests/unit/rate-limit.test.ts (new, 7), tests/unit/pagination.test.ts (new, 11),
+  tests/integration/limits.test.ts (new, 20), AGENTS.md (map + 3 invariants + 2 gotchas).
+- **Learnings for future iterations:**
+  - ORDER IS THE DESIGN, twice: beginWrite goes AFTER the auth guard (so the limiter
+    counts against the keyId, not a spoofable x-forwarded-for) and BEFORE the body is
+    read or a row touched (so a refused write reaches no DB and no chain — asserted:
+    the 429'd payment leaves no row and no audit event).
+  - A refused hit is deliberately NOT recorded. Record it and a caller hammering the
+    limit pushes its own window forward forever and never recovers — has its own test
+    that hammers every second across the whole window and checks recovery.
+  - Content-Length is a hint, never the enforcement (a client sets it). The stream is
+    measured as it arrives and cancelled at the cap. Proven non-vacuous by stripping
+    the streaming counter: BOTH 413 tests then failed, i.e. NextRequest never sets
+    content-length in tests and a header-trusting impl enforces nothing.
+  - The window boundary is EXCLUSIVE (`t > cutoff`): a hit at t=1000 in a 60s window is
+    gone at exactly 61_000. First test draft was off by one and failed — the impl was
+    right.
+  - `limit=201` is a 400, not a clamp (reject-never-repair, same rule as money), and the
+    grammar is a regex because `Number("1e3")` is 1000.
+  - Cursor order must be tiebroken by id — createdAt is not unique and the walk test
+    creates 5 payments in one loop, which is exactly the colliding-millisecond case.
+  - Audit pagination pages the EVENTS but still verifies the WHOLE chain: integrity is a
+    property of the log, not of the rows a caller asked for.
+  - `to=YYYY-MM-DD` means the whole day, not its midnight — read as a bare instant, an
+    export "through today" silently drops everything made today. Date-only upper bound
+    extends +1 day and the query uses `lt`.
+  - Reconciliation already audited one summary event (not per-row) before this story;
+    the change was adding the range to the detail. AC was already half-met — read the
+    code before assuming an AC describes work.
+  - Named the export's error class ExportRangeError: `class RangeError` shadows the
+    global one.
+  - THE SUITE SHARES ONE RATE LIMITER (module-level Map). Pinned effectively off in
+    FIXTURE_ENV or it would 429 whichever file ran after the busy ones; limits.test.ts
+    lowers it with withWriteLimit() and restores.
+  - Security headers do NOT exist in a direct handler call — next.config.ts's headers()
+    is applied by a running server. Verified live with curl instead: all 5 headers on
+    both pages and API routes, the real 30/min default allows exactly 30 then 429s with
+    Retry-After: 60, a 70KB body 413s while an ordinary one still 400s, the audit cursor
+    walk covers 12 events in 3 pages with no repeats and INTACT/incremental integrity,
+    and bad from=/limit= are 400s. All 7 pages 200 with no external script/style origins
+    (so default-src 'self' breaks nothing).
+  - RESIDUAL, documented in next.config.ts not papered over: CSP keeps
+    script-src 'unsafe-inline' because the App Router bootstraps hydration with inline
+    scripts; removing it needs a per-request nonce from middleware. 'unsafe-eval' is
+    dev-only (react-refresh) and never ships.
+  - No browser MCP tools in this environment, so the browser AC was met by curl against
+    a live dev server. A human should still click through once to confirm hydration and
+    Tailwind under CSP — the one thing curl cannot see.
+  - Suite 289 -> 327. tsc + lint + build green.
 ---

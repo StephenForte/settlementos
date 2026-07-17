@@ -1,12 +1,35 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
-import { verifyAuditChain } from "@/lib/audit";
+import { verifyAuditChain, type AuditIntegrity } from "@/lib/audit";
 import { formatAmount } from "@/lib/assets";
+import { isPlatformRole } from "@/lib/auth";
+import { currentPrincipal } from "@/lib/session";
+import { AuthRequired } from "@/components/auth-required";
 import { Card, StatusBadge } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Not every break has an event id to point at: a checkpoint whose signature does
+ * not verify condemns the whole log before it, not one row. And an unanchored
+ * chain is only self-consistent — worth saying out loud, since INTACT there is a
+ * weaker claim than INTACT under a signature.
+ */
+function auditChainLabel(integrity: AuditIntegrity): string {
+  if (!integrity.valid) {
+    return integrity.brokenAtId ? `BROKEN at #${integrity.brokenAtId}` : `BROKEN (${integrity.reason})`;
+  }
+  return integrity.anchored ? "INTACT" : "INTACT (unanchored)";
+}
+
 export default async function CompliancePage() {
+  // The review queue, screening results, and the audit log span every tenant —
+  // platform roles only.
+  const principal = await currentPrincipal();
+  if (!principal || !isPlatformRole(principal)) {
+    return <AuthRequired message="Operator or reviewer access is required to view the compliance queue." />;
+  }
+
   const [queue, recentChecks, auditEvents, integrity] = await Promise.all([
     prisma.payment.findMany({
       where: { status: "MANUAL_REVIEW" },
@@ -34,7 +57,7 @@ export default async function CompliancePage() {
               : "border-rose-500/40 bg-rose-500/10 text-rose-300"
           }`}
         >
-          Audit chain: {integrity.valid ? "INTACT" : `BROKEN at #${integrity.brokenAtId}`}
+          Audit chain: {auditChainLabel(integrity)}
         </span>
       </header>
 

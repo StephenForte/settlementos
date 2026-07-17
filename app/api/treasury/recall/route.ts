@@ -3,14 +3,40 @@ import { ASSETS, fromBaseUnits, type AssetSymbol } from "@/lib/assets";
 import { prisma } from "@/lib/db";
 import { recall } from "@/lib/treasury";
 import { treasuryErrorResponse } from "../errors";
+import { invalidRequest, requireRole } from "../../guard";
+import { beginIdempotency } from "../../idempotency";
+import { beginWrite } from "../../limits";
 
-/** Recall a parked position T+0 — principal plus accrued yield back to the treasury. */
+/**
+ * Recall a parked position T+0 — principal plus accrued yield back to the
+ * treasury. Platform treasury funds, so OPERATOR only. Wrapped in the
+ * Idempotency-Key scope so a retried recall replays rather than redeeming twice
+ * (recall itself flips the position to RECALLED, so a same-position retry already
+ * errors, but the wrapper keeps every treasury write uniform).
+ */
 export async function POST(req: NextRequest) {
-  const body = await req.json().catch(() => ({}));
+  const principal = await requireRole(req, "OPERATOR");
+  if (principal instanceof NextResponse) return principal;
+
+  const gate = await beginWrite(req, principal);
+  if (gate instanceof NextResponse) return gate;
+  const body = (gate.body ?? {}) as Record<string, unknown>;
+
+  const idem = await beginIdempotency(req, principal, "POST /api/treasury/recall", body);
+  if (idem instanceof NextResponse) return idem;
+  try {
+    return await idem.complete(await runRecall(body));
+  } catch (e) {
+    await idem.abandon();
+    throw e;
+  }
+}
+
+async function runRecall(body: Record<string, unknown>): Promise<NextResponse> {
   const { position_id } = body;
 
   if (!position_id) {
-    return NextResponse.json({ error: "position_id is required" }, { status: 400 });
+    return invalidRequest("position_id is required");
   }
 
   try {

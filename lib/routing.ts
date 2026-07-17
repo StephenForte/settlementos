@@ -3,11 +3,12 @@
 // payments get a simulated-bridge route with destination-chain payout plus a
 // single-chain fallback that settles on the source network with a ledger credit.
 
-import { quoteFx, roundCurrency } from "./fx";
+import { applyBps, convert, formatRate, quoteFx, FX_SPREAD_BPS } from "./fx";
+import { formatMinorUnits, parseAmount, parseScaledUnits, MoneyError } from "./money";
 import { assetForCurrency, fromBaseUnits, toBaseUnits, type AssetSymbol } from "./assets";
-import { accountsFor, isChainReady, loadDeployments, tokenBalance } from "./chain";
+import { isChainReady, loadDeployments } from "./chain";
 import { networkInfo } from "./networks";
-import { parkedBalance } from "./treasury";
+import { freeTreasuryBalance, parkedBalance, TreasuryError } from "./treasury";
 import { prisma } from "./db";
 
 export const BRIDGE_FEE_BPS = 5; // simulated bridge/liquidity-network fee
@@ -38,36 +39,55 @@ export interface RouteOption {
   recommended: boolean;
 }
 
+export interface LiquiditySnapshot {
+  /** Treasury's on-chain balance, token base units. */
+  onchainUnits: bigint;
+  /** Base units promised to in-flight payments. */
+  reservedUnits: bigint;
+  /** Balance minus reservations — what a new payment may draw on. */
+  availableUnits: bigint;
+  /** Base-unit precision of this token on this network. */
+  decimals: number;
+  /** Display/API forms of the three figures above. */
+  onchain: string;
+  reserved: string;
+  available: string;
+}
+
 /** Destination-asset liquidity held by the treasury on a network, minus active reservations. */
-export async function availableLiquidity(
-  assetSymbol: string,
-  networkId: string
-): Promise<{ onchain: string; reserved: string; available: string }> {
-  const dep = loadDeployments();
-  const net = dep.networks[networkId];
+export async function availableLiquidity(assetSymbol: string, networkId: string): Promise<LiquiditySnapshot> {
+  const net = loadDeployments().networks[networkId];
   if (!net) throw new Error(`Unknown network ${networkId}`);
   const token = net.contracts.tokens[assetSymbol];
   if (!token) throw new Error(`Token ${assetSymbol} not deployed on ${networkId}`);
-  const balance = await tokenBalance(networkId, token.address, accountsFor(networkId).treasury.address);
-  const onchain = fromBaseUnits(balance, token.decimals);
 
-  const reservations = await prisma.liquidityReservation.findMany({
-    where: { asset: assetSymbol, network: networkId, status: "RESERVED" },
-  });
-  const reserved = reservations.reduce((sum, r) => sum + Number(r.amount), 0);
-  const available = Number(onchain) - reserved;
-  return { onchain, reserved: reserved.toString(), available: available.toString() };
+  // The arithmetic lives in lib/treasury, which already does it in bigint — this
+  // is the display wrapper, not a second opinion. Import direction is
+  // routing → treasury (AGENTS.md); never the reverse.
+  const { balance, reserved, free } = await freeTreasuryBalance(networkId, assetSymbol as AssetSymbol);
+  return {
+    onchainUnits: balance,
+    reservedUnits: reserved,
+    availableUnits: free,
+    decimals: token.decimals,
+    onchain: fromBaseUnits(balance, token.decimals),
+    reserved: fromBaseUnits(reserved, token.decimals),
+    available: fromBaseUnits(free, token.decimals),
+  };
 }
 
-/** Treasury liquidity parked in the network's tokenized MMF — recallable T+0. */
-export async function parkedLiquidity(assetSymbol: string, networkId: string): Promise<string> {
-  const token = loadDeployments().networks[networkId]?.contracts.tokens[assetSymbol];
-  if (!token) return "0";
-  const units = await parkedBalance(networkId, assetSymbol as AssetSymbol);
-  return fromBaseUnits(units, token.decimals);
+/**
+ * A destination amount (a canonical decimal string in the destination
+ * *currency*) as base units of the *token* that settles it.
+ *
+ * The string is the exact bridge between the two scales, and they are not the
+ * same number: USD counts cents (2dp) while mockUSDC counts millionths (6dp).
+ */
+export function destinationUnits(amount: string, decimals: number): bigint {
+  return parseScaledUnits(amount, decimals, { what: "destination amount" });
 }
 
-interface LiquidityCheck {
+export interface LiquidityCheck {
   /** The payment can be funded — possibly only after recalling from the MMF. */
   ok: boolean;
   /** Free liquidity alone falls short; parked liquidity has to be recalled first. */
@@ -75,56 +95,68 @@ interface LiquidityCheck {
 }
 
 /**
- * Can the treasury fund `needed` of an asset on a network? Parked MMF liquidity
- * counts: it redeems T+0, so the quote is still offered — flagged so the
- * executor knows to recall before it reserves and escrows.
+ * Can the treasury fund `needed` (a canonical destination-currency amount) of an
+ * asset on a network? Parked MMF liquidity counts: it redeems T+0, so the quote
+ * is still offered — flagged so the executor knows to recall before it reserves
+ * and escrows.
  */
-async function liquidityCheck(
+export async function liquidityCheck(
   assetSymbol: string,
   networkId: string,
-  needed: number
+  needed: string
 ): Promise<LiquidityCheck> {
   if (!isChainReady()) return { ok: true, recallRequired: false };
   try {
     const liq = await availableLiquidity(assetSymbol, networkId);
-    if (Number(liq.available) >= needed) return { ok: true, recallRequired: false };
+    const neededUnits = destinationUnits(needed, liq.decimals);
+    if (liq.availableUnits >= neededUnits) return { ok: true, recallRequired: false };
 
-    const parked = await parkedLiquidity(assetSymbol, networkId);
-    if (Number(liq.available) + Number(parked) >= needed) return { ok: true, recallRequired: true };
+    const parked = await parkedBalance(networkId, assetSymbol as AssetSymbol);
+    if (liq.availableUnits + parked >= neededUnits) return { ok: true, recallRequired: true };
     return { ok: false, recallRequired: false };
-  } catch {
+  } catch (e) {
+    // An unreadable amount is our own bug, not a flaky endpoint — quoting a
+    // route as fundable because we could not parse what it needs is how a
+    // payment gets to the executor with nothing behind it. A bad reservation
+    // string surfaces from freeTreasuryBalance as TreasuryError("INVALID_AMOUNT")
+    // (it re-types the MoneyError), so catch that too — otherwise the parse
+    // failure the MoneyError branch is meant to stop slips through as ok:true.
+    if (e instanceof MoneyError) throw e;
+    if (e instanceof TreasuryError && e.code === "INVALID_AMOUNT") throw e;
     return { ok: true, recallRequired: false }; // chain unreachable while quoting → execution re-checks
   }
 }
 
 export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
   const payment = await prisma.payment.findUniqueOrThrow({ where: { id: paymentId } });
-  const amount = Number(payment.amount);
   const src = payment.sourceCurrency;
   const dst = payment.destinationCurrency;
+  // Payment.amount is canonical (lib/money.ts gates the create route), so this
+  // re-parse is exact — quoting works in the same minor units the row stores.
+  const amountMinor = parseAmount(payment.amount, src);
   const sourceNet = payment.sourceNetwork;
   const destNet = payment.destinationNetwork;
   const sourceAsset = assetForCurrency(src);
   const destAsset = assetForCurrency(dst);
-  const fx = quoteFx(amount, src, dst);
+  const fx = quoteFx(amountMinor, src, dst);
 
   const common = {
     source_asset: sourceAsset.symbol,
     destination_asset: destAsset.symbol,
-    mid_market_rate: fx.midRate.toFixed(6),
+    mid_market_rate: formatRate(fx.midRate),
     fx_spread_bps: fx.spreadBps,
     slippage_bps: fx.slippageBps,
     platform_fee_bps: fx.platformFeeBps,
-    platform_fee: roundCurrency(fx.platformFee, src),
+    platform_fee: formatMinorUnits(fx.platformFee, src),
     liquidity_available: true,
     recall_required: false,
     compliance_required: true,
   };
 
   if (sourceNet === destNet) {
-    const effective = fx.effectiveRate;
-    const destAmount = roundCurrency(fx.destinationAmount, dst);
-    const liq = await liquidityCheck(destAsset.symbol, destNet, fx.destinationAmount);
+    const effective = formatRate(fx.effectiveRate);
+    const destAmount = formatMinorUnits(fx.destinationAmount, dst);
+    const liq = await liquidityCheck(destAsset.symbol, destNet, destAmount);
     const net = networkInfo(sourceNet).label;
     return [
       {
@@ -137,7 +169,7 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
         destination_network: destNet,
         estimated_gas_usd: "0.11",
         estimated_time_seconds: 15,
-        estimated_fx_rate: effective.toFixed(6),
+        estimated_fx_rate: effective,
         bridge_fee_bps: 0,
         estimated_destination_amount: destAmount,
         liquidity_available: liq.ok,
@@ -154,7 +186,7 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
         destination_network: destNet,
         estimated_gas_usd: "0.03",
         estimated_time_seconds: 14_400,
-        estimated_fx_rate: effective.toFixed(6),
+        estimated_fx_rate: effective,
         bridge_fee_bps: 0,
         estimated_destination_amount: destAmount,
         liquidity_available: liq.ok,
@@ -168,12 +200,17 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
   const srcLabel = networkInfo(sourceNet).label;
   const dstLabel = networkInfo(destNet).label;
 
-  const bridgedEffective = fx.midRate * (1 - (fx.spreadBps + fx.slippageBps + BRIDGE_FEE_BPS) / 10_000);
-  const bridgedDestAmount = (amount - fx.platformFee) * bridgedEffective;
+  // The bridge leg costs the corridor an extra fee, so it re-quotes off mid
+  // rather than compounding the instant route's already-worsened rate.
+  const bridgedEffective = applyBps(fx.midRate, FX_SPREAD_BPS + fx.slippageBps + BRIDGE_FEE_BPS);
+  const bridgedDestAmount = formatMinorUnits(
+    convert(amountMinor - fx.platformFee, bridgedEffective, src, dst),
+    dst
+  );
   const bridgedLiq = await liquidityCheck(destAsset.symbol, destNet, bridgedDestAmount);
 
-  const fallbackDestAmount = roundCurrency(fx.destinationAmount, dst);
-  const fallbackLiq = await liquidityCheck(destAsset.symbol, sourceNet, fx.destinationAmount);
+  const fallbackDestAmount = formatMinorUnits(fx.destinationAmount, dst);
+  const fallbackLiq = await liquidityCheck(destAsset.symbol, sourceNet, fallbackDestAmount);
 
   return [
     {
@@ -191,9 +228,9 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
       destination_network: destNet,
       estimated_gas_usd: "0.26",
       estimated_time_seconds: 90,
-      estimated_fx_rate: bridgedEffective.toFixed(6),
+      estimated_fx_rate: formatRate(bridgedEffective),
       bridge_fee_bps: BRIDGE_FEE_BPS,
-      estimated_destination_amount: roundCurrency(bridgedDestAmount, dst),
+      estimated_destination_amount: bridgedDestAmount,
       liquidity_available: bridgedLiq.ok,
       recall_required: bridgedLiq.recallRequired,
       recommended: true,
@@ -208,7 +245,7 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
       destination_network: sourceNet,
       estimated_gas_usd: "0.11",
       estimated_time_seconds: 15,
-      estimated_fx_rate: fx.effectiveRate.toFixed(6),
+      estimated_fx_rate: formatRate(fx.effectiveRate),
       bridge_fee_bps: 0,
       estimated_destination_amount: fallbackDestAmount,
       liquidity_available: fallbackLiq.ok,

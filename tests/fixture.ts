@@ -25,7 +25,30 @@ export const FIXTURE_ENV = {
   CHAINALYSIS_ORACLE_RPC_URL: "",
   CHAINALYSIS_ORACLE_ADDRESS: "",
   COMPLIANCE_PROVIDER_TIMEOUT_MS: "",
+  // Audit anchoring is on for the suite (so the whole run verifies through the
+  // checkpoint path), pinned to a fixed key rather than the dev .env's.
+  AUDIT_ANCHOR_KEY: "test_anchor_key_not_for_any_real_deployment",
+  // The write rate limiter is per-process and the whole suite shares one, so at
+  // the real 30/min the operator key would start 429ing whichever test file
+  // happened to run after the busy ones. Pinned effectively off; the limiter's
+  // own test lowers it and resets the windows itself.
+  RATE_LIMIT_WRITES_PER_MINUTE: "1000000",
 };
+
+// Raw API keys seeded into the fixture DB by global-setup. Fixed rather than
+// generated so tests can import them as constants (the dev-mnemonic pattern
+// below) — the app only ever stores their sha256 hashes. Test-only, never on a
+// public network. `entities` is keyed by Entity.externalId.
+export const API_KEYS = {
+  operator: "sos_test_00000000000000000000000000000000operator",
+  reviewer: "sos_test_00000000000000000000000000000000reviewer",
+  entities: {
+    ent_acme_us: "sos_test_000000000000000000000000000000000000acme",
+    ent_tokyo_supplier: "sos_test_00000000000000000000000000000000tokyo",
+    ent_sg_supplier: "sos_test_0000000000000000000000000000000000sgp",
+    ent_osaka_parts: "sos_test_0000000000000000000000000000000000osk",
+  },
+} as const;
 
 // Standard Hardhat dev-mnemonic accounts — same roles as scripts/setup.mjs.
 export const ACCOUNTS = {
