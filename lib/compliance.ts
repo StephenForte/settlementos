@@ -19,6 +19,7 @@ import { parseAmount } from "./money";
 import { providerResult, type ComplianceStatus, type ProviderResult } from "./providers/types";
 import { openSanctionsScreen } from "./providers/opensanctions";
 import { chainalysisOracleScreen } from "./providers/chainalysis";
+import { walletOnNetwork } from "./wallets";
 
 export type { ComplianceStatus, ProviderResult };
 
@@ -125,10 +126,9 @@ export async function runComplianceChecks(paymentId: string): Promise<Compliance
 
   // Screen the wallet actually used on each leg's network (entities can have
   // different addresses per network on real testnets).
-  const walletOn = (wallets: Wallet[], network: string) =>
-    wallets.find((w) => w.network === network) ?? wallets[0] ?? null;
-  const senderWallet = walletOn(payment.sender.wallets, payment.sourceNetwork);
-  const recipientWallet = walletOn(payment.recipient.wallets, payment.destinationNetwork);
+  const senderWallet = walletOnNetwork(payment.sender.wallets, payment.sourceNetwork) ?? null;
+  const recipientWallet =
+    walletOnNetwork(payment.recipient.wallets, payment.destinationNetwork) ?? null;
 
   const [sanctions, senderWalletRisk, recipientWalletRisk] = await Promise.all([
     sanctionsCheck(payment.sender, payment.recipient),

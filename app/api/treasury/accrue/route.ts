@@ -3,8 +3,7 @@ import { NETWORKS } from "@/lib/networks";
 import { accrueDaily } from "@/lib/treasury";
 import { treasuryErrorResponse } from "../errors";
 import { invalidRequest, requireRole } from "../../guard";
-import { beginIdempotency } from "../../idempotency";
-import { beginWrite } from "../../limits";
+import { withIdempotentWrite } from "../../idempotency";
 
 /**
  * Demo control: advance the network's fund by one day of simulated yield.
@@ -16,18 +15,9 @@ export async function POST(req: NextRequest) {
   const principal = await requireRole(req, "OPERATOR");
   if (principal instanceof NextResponse) return principal;
 
-  const gate = await beginWrite(req, principal);
-  if (gate instanceof NextResponse) return gate;
-  const body = (gate.body ?? {}) as Record<string, unknown>;
-
-  const idem = await beginIdempotency(req, principal, "POST /api/treasury/accrue", body);
-  if (idem instanceof NextResponse) return idem;
-  try {
-    return await idem.complete(await runAccrue(body));
-  } catch (e) {
-    await idem.abandon();
-    throw e;
-  }
+  return withIdempotentWrite(req, principal, "POST /api/treasury/accrue", async (raw) =>
+    runAccrue((raw ?? {}) as Record<string, unknown>)
+  );
 }
 
 async function runAccrue(body: Record<string, unknown>): Promise<NextResponse> {

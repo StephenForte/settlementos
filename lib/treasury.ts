@@ -109,7 +109,8 @@ function parseAssetUnits(amount: unknown, decimals: number, what: string): bigin
   }
 }
 
-function parseAmount(amount: string, decimals: number): bigint {
+/** Positive asset base units — distinct from lib/money.parseAmount (fiat minor units). */
+function parsePositiveAssetUnits(amount: string, decimals: number): bigint {
   const units = parseAssetUnits(amount, decimals, "amount");
   if (units <= 0n) {
     throw new TreasuryError("INVALID_AMOUNT", `Amount must be greater than zero, got "${amount}"`);
@@ -190,7 +191,7 @@ export async function park({ networkId, asset, amount, entityId }: ParkArgs): Pr
   if (entityId) await assertEligible(entityId);
 
   const { fund, symbol, decimals } = await fundAssetFor(networkId, asset);
-  const assetAmount = parseAmount(amount, decimals);
+  const assetAmount = parsePositiveAssetUnits(amount, decimals);
 
   const { balance, reserved, free } = await freeTreasuryBalance(networkId, symbol);
   if (assetAmount > free) {
@@ -362,6 +363,27 @@ export function valueOfShares(shares: bigint, index: bigint): bigint {
   return (shares * index) / MMF_INDEX_SCALE;
 }
 
+export interface PositionDerivedValue {
+  /** shares × index, or null when no live index is available. */
+  value: bigint | null;
+  /** max(value − principal, 0), or null when value is null. */
+  accruedYield: bigint | null;
+}
+
+/**
+ * Live value and accrued yield for a parked position. API + liquidity page both
+ * derive these the same way — a yield-floor change must not disagree silently.
+ */
+export function positionDerivedValue(
+  shares: bigint,
+  principal: bigint,
+  index: bigint | null
+): PositionDerivedValue {
+  if (index === null) return { value: null, accruedYield: null };
+  const value = valueOfShares(shares, index);
+  return { value, accruedYield: value > principal ? value - principal : 0n };
+}
+
 /** Live share index of the network's fund (1e18 = par). */
 export async function currentIndexOf(networkId: string): Promise<bigint> {
   return publicClientFor(networkId).readContract({
@@ -454,7 +476,7 @@ export async function recallForPayment({
   paymentId,
 }: RecallForPaymentArgs): Promise<RecallForPaymentResult> {
   const { symbol, decimals } = await fundAssetFor(networkId, asset);
-  const needed = parseAmount(amount, decimals);
+  const needed = parsePositiveAssetUnits(amount, decimals);
 
   const { free } = await freeTreasuryBalance(networkId, symbol);
   if (free >= needed) return { recalled: [], assetAmount: 0n };

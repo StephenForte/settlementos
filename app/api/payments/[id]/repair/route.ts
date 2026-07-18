@@ -3,8 +3,7 @@ import { prisma } from "@/lib/db";
 import { repairCompensation } from "@/lib/executor";
 import { apiError } from "@/lib/api-errors";
 import { caughtErrorResponse, notFound, requireRole } from "../../../guard";
-import { beginIdempotency } from "../../../idempotency";
-import { beginWrite } from "../../../limits";
+import { withIdempotentWrite } from "../../../idempotency";
 
 /**
  * Finish a compensation an execution attempt could not: the payment sits in
@@ -20,19 +19,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const principal = await requireRole(req, "OPERATOR");
   if (principal instanceof NextResponse) return principal;
 
-  const gate = await beginWrite(req, principal);
-  if (gate instanceof NextResponse) return gate;
-  const body = gate.body ?? {};
-
   const { id } = await params;
-  const idem = await beginIdempotency(req, principal, `POST /api/payments/${id}/repair`, body);
-  if (idem instanceof NextResponse) return idem;
-  try {
-    return await idem.complete(await runRepair(id));
-  } catch (e) {
-    await idem.abandon();
-    throw e;
-  }
+  return withIdempotentWrite(req, principal, `POST /api/payments/${id}/repair`, () => runRepair(id));
 }
 
 async function runRepair(id: string): Promise<NextResponse> {

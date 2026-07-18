@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ASSETS, fromBaseUnits, type AssetSymbol } from "@/lib/assets";
 import { prisma } from "@/lib/db";
-import { PaginationError, parsePageRequest, toPage } from "@/lib/pagination";
-import { currentIndexOf, valueOfShares } from "@/lib/treasury";
-import { invalidRequest, requireRole } from "../../guard";
+import { toPage } from "@/lib/pagination";
+import { currentIndexOf, positionDerivedValue } from "@/lib/treasury";
+import { requireRole } from "../../guard";
+import { parsePageOr400 } from "../../pagination";
 
 /**
  * Parked MMF positions, newest first. A position's value is always derived
@@ -15,13 +16,8 @@ export async function GET(req: NextRequest) {
   const principal = await requireRole(req, "OPERATOR", "REVIEWER");
   if (principal instanceof NextResponse) return principal;
 
-  let page;
-  try {
-    page = parsePageRequest(req.nextUrl.searchParams);
-  } catch (e) {
-    if (e instanceof PaginationError) return invalidRequest(e.message);
-    throw e;
-  }
+  const page = parsePageOr400(req.nextUrl.searchParams);
+  if (page instanceof NextResponse) return page;
 
   // Bounded: the table is append-only history (recall flips status in place, rows
   // are never deleted), so it only grows — and each ACTIVE row costs a live index
@@ -35,31 +31,35 @@ export async function GET(req: NextRequest) {
 
   // One index read per network rather than per row, and a network whose fund is
   // gone or whose RPC is unreachable simply reports no live value — the page
-  // must never 500 on a flaky endpoint.
-  const indexes = new Map<string, bigint | null>();
-  for (const network of new Set(positions.filter((p) => p.status === "ACTIVE").map((p) => p.network))) {
-    indexes.set(network, await currentIndexOf(network).catch(() => null));
-  }
+  // must never 500 on a flaky endpoint. Independent networks run in parallel.
+  const networks = [...new Set(positions.filter((p) => p.status === "ACTIVE").map((p) => p.network))];
+  const indexes = new Map(
+    await Promise.all(
+      networks.map(
+        async (network) =>
+          [network, await currentIndexOf(network).catch(() => null)] as const
+      )
+    )
+  );
 
   return NextResponse.json({
     positions: positions.map((p) => {
       const decimals = ASSETS[p.asset as AssetSymbol]?.decimals ?? 0;
       const shares = BigInt(p.shares);
-      const principal = BigInt(p.assetAmountIn);
+      const principalAmount = BigInt(p.assetAmountIn);
       const index = p.status === "ACTIVE" ? (indexes.get(p.network) ?? null) : null;
-      const value = index === null ? null : valueOfShares(shares, index);
+      const { value, accruedYield } = positionDerivedValue(shares, principalAmount, index);
       return {
         position_id: p.id,
         network: p.network,
         asset: p.asset,
         status: p.status,
         shares: p.shares,
-        amount_in: fromBaseUnits(principal, decimals),
+        amount_in: fromBaseUnits(principalAmount, decimals),
         index_at_entry: p.indexAtEntry,
         current_index: index === null ? null : index.toString(),
         current_value: value === null ? null : fromBaseUnits(value, decimals),
-        accrued_yield:
-          value === null ? null : fromBaseUnits(value > principal ? value - principal : 0n, decimals),
+        accrued_yield: accruedYield === null ? null : fromBaseUnits(accruedYield, decimals),
         tx_hash_park: p.txHashPark,
         tx_hash_recall: p.txHashRecall,
         created_at: p.createdAt.toISOString(),

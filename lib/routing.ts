@@ -5,7 +5,7 @@
 
 import { applyBps, convert, formatRate, quoteFx, FX_SPREAD_BPS } from "./fx";
 import { formatMinorUnits, parseAmount, parseScaledUnits, MoneyError } from "./money";
-import { assetForCurrency, fromBaseUnits, toBaseUnits, type AssetSymbol } from "./assets";
+import { assetForCurrency, fromBaseUnits, type AssetSymbol } from "./assets";
 import { isChainReady, loadDeployments } from "./chain";
 import { networkInfo } from "./networks";
 import { freeTreasuryBalance, parkedBalance, TreasuryError } from "./treasury";
@@ -207,10 +207,13 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
     convert(amountMinor - fx.platformFee, bridgedEffective, src, dst),
     dst
   );
-  const bridgedLiq = await liquidityCheck(destAsset.symbol, destNet, bridgedDestAmount);
-
   const fallbackDestAmount = formatMinorUnits(fx.destinationAmount, dst);
-  const fallbackLiq = await liquidityCheck(destAsset.symbol, sourceNet, fallbackDestAmount);
+  // Independent RPC/DB reads — run together so a flaky destination does not
+  // serialise behind a healthy source (and vice versa).
+  const [bridgedLiq, fallbackLiq] = await Promise.all([
+    liquidityCheck(destAsset.symbol, destNet, bridgedDestAmount),
+    liquidityCheck(destAsset.symbol, sourceNet, fallbackDestAmount),
+  ]);
 
   return [
     {
@@ -254,5 +257,3 @@ export async function quoteRoutes(paymentId: string): Promise<RouteOption[]> {
     },
   ];
 }
-
-export { toBaseUnits };

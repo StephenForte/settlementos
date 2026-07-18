@@ -2,21 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { randomBytes } from "node:crypto";
 import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
-import { PaginationError, parsePageRequest, toPage } from "@/lib/pagination";
+import { NETWORKS } from "@/lib/networks";
+import { toPage } from "@/lib/pagination";
 import { actorOf, invalidRequest, isPlatformRole, requirePrincipal, requireRole } from "../guard";
 import { beginWrite } from "../limits";
+import { parsePageOr400 } from "../pagination";
 
 export async function GET(req: NextRequest) {
   const principal = await requirePrincipal(req);
   if (principal instanceof NextResponse) return principal;
 
-  let page;
-  try {
-    page = parsePageRequest(req.nextUrl.searchParams);
-  } catch (e) {
-    if (e instanceof PaginationError) return invalidRequest(e.message);
-    throw e;
-  }
+  const page = parsePageOr400(req.nextUrl.searchParams);
+  if (page instanceof NextResponse) return page;
 
   // Bounded like every other list read — an unbounded findMany with wallet and
   // ledger includes is the same self-DoS pagination closes elsewhere. Tiebroken
@@ -46,16 +43,21 @@ export async function POST(req: NextRequest) {
     country,
     role = "RECIPIENT",
     wallet_address,
+    network = "base-local",
     approved_corridors = [],
   } = body as {
     name?: string;
     country?: string;
     role?: string;
     wallet_address?: string;
+    network?: string;
     approved_corridors?: string[];
   };
   if (!name || !country) {
     return invalidRequest("name and country are required");
+  }
+  if (wallet_address && (typeof network !== "string" || !NETWORKS[network])) {
+    return invalidRequest(`unknown network — supported: ${Object.keys(NETWORKS).join(", ")}`);
   }
   const externalId = `ent_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 24)}_${randomBytes(2).toString("hex")}`;
   // Create and audit in one transaction: the row and the record of it commit or
@@ -70,7 +72,7 @@ export async function POST(req: NextRequest) {
         kybStatus: "PENDING", // new entities always start unverified
         approvedCorridors: JSON.stringify(approved_corridors),
         wallets: wallet_address
-          ? { create: { address: wallet_address, network: "local-anvil", allowlisted: false, riskScore: 50 } }
+          ? { create: { address: wallet_address, network, allowlisted: false, riskScore: 50 } }
           : undefined,
       },
       include: { wallets: true },

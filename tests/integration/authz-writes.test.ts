@@ -266,3 +266,44 @@ describe("POST /api/entities is OPERATOR only", () => {
     expect(await prisma.entity.findFirst({ where: { name: "Rogue Co" } })).toBeNull();
   });
 });
+
+describe("POST /api/entities wallet network", () => {
+  it("rejects a wallet on an unknown network instead of writing local-anvil", async () => {
+    const res = await entitiesPOST(
+      post(
+        "/api/entities",
+        {
+          name: "Anvil Ghost",
+          country: "US",
+          wallet_address: "0x00000000000000000000000000000000000000aa",
+          network: "local-anvil",
+        },
+        API_KEYS.operator
+      )
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error_code: "invalid_request" });
+    expect(await prisma.entity.findFirst({ where: { name: "Anvil Ghost" } })).toBeNull();
+  });
+
+  it("defaults a wallet to base-local when network is omitted", async () => {
+    const res = await entitiesPOST(
+      post(
+        "/api/entities",
+        {
+          name: "Base Default Co",
+          country: "US",
+          wallet_address: "0x00000000000000000000000000000000000000bb",
+        },
+        API_KEYS.operator
+      )
+    );
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.entity.wallets[0].network).toBe("base-local");
+    // entity.created has no paymentId, so removing this row cannot break the
+    // payment hash chain the way a Payment delete can.
+    await prisma.wallet.deleteMany({ where: { entityId: body.entity.id } });
+    await prisma.entity.delete({ where: { id: body.entity.id } });
+  });
+});
