@@ -87,8 +87,10 @@ export async function beginIdempotency(
  * throw abandons the key — an unknown outcome must stay retryable.
  *
  * `route` must identify the *target* (see beginIdempotency). `handle` receives
- * the parsed body (`null` when absent/unparseable); hash the same value the
- * scope fingerprints so a retry with a different body is a 422.
+ * the parsed body (`null` when absent/unparseable). The fingerprint uses
+ * `body ?? {}` so routes that treat a missing body as empty (execute/repair)
+ * still dedupe; a *rejected* null/non-object body is not stamped under that
+ * fingerprint, or a later valid body with the same key would conflict.
  */
 export async function withIdempotentWrite(
   req: Request,
@@ -99,14 +101,21 @@ export async function withIdempotentWrite(
   const gate = await beginWrite(req, principal);
   if (gate instanceof NextResponse) return gate;
 
-  // Fingerprint the body the handler sees. Absent/unparseable becomes `{}` so
-  // an empty park/accrue and a missing JSON object hash the same — matching the
-  // previous per-route `(gate.body ?? {})` convention.
-  const body = gate.body ?? {};
-  const idem = await beginIdempotency(req, principal, route, body);
+  // Absent/unparseable becomes `{}` so an empty execute/repair and a missing
+  // body hash alike when the handler accepts both.
+  const fingerprint = gate.body ?? {};
+  const idem = await beginIdempotency(req, principal, route, fingerprint);
   if (idem instanceof NextResponse) return idem;
   try {
-    return await idem.complete(await handle(gate.body));
+    const res = await handle(gate.body);
+    // A missing/unparseable (or primitive) body that the handler rejected is
+    // not a request worth locking the key to. Stamping it under `{}` made a
+    // valid retry hit idempotency_conflict instead of creating/executing.
+    if (!res.ok && (gate.body === null || typeof gate.body !== "object")) {
+      await idem.abandon();
+      return res;
+    }
+    return await idem.complete(res);
   } catch (e) {
     await idem.abandon();
     throw e;

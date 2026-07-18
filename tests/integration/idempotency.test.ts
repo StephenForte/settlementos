@@ -169,6 +169,39 @@ describe("POST /api/payments idempotency", () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error_code: "invalid_request" });
   });
+
+  it.each([
+    { label: "unparseable", body: "{not json" },
+    { label: "missing", body: undefined },
+  ])("does not lock the key to {} when the first body is $label", async ({ body: badBody }) => {
+    const idKey = freshKey();
+    const body = createBody(`RECOVER-${idKey}`);
+
+    const malformed = await paymentsPOST(
+      new NextRequest("http://test.local/api/payments", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          [API_KEY_HEADER]: API_KEYS.operator,
+          [IDEMPOTENCY_HEADER]: idKey,
+        },
+        ...(badBody !== undefined ? { body: badBody } : {}),
+        ...({ duplex: "half" } as object),
+      })
+    );
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toMatchObject({
+      error_code: "invalid_request",
+      message: "body must be a JSON object",
+    });
+
+    // A valid retry with the same key must create — not 422 because the bad
+    // attempt was fingerprinted as {}.
+    const retry = await createPayment(body, idKey);
+    expect(retry.status).toBe(201);
+    expect(retry.headers.get("idempotent-replay")).toBeNull();
+    expect(await prisma.payment.findMany({ where: { referenceId: `RECOVER-${idKey}` } })).toHaveLength(1);
+  });
 });
 
 describe("POST /api/payments/[id]/execute idempotency", () => {
