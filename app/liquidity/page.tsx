@@ -15,7 +15,7 @@ import {
   MMF_ANNUAL_RATE_BPS,
   currentIndexOf,
   freeTreasuryBalance,
-  valueOfShares,
+  positionDerivedValue,
 } from "@/lib/treasury";
 import { isPlatformRole } from "@/lib/auth";
 import { currentPrincipal } from "@/lib/session";
@@ -79,10 +79,11 @@ async function mmfCardProps(
     const principal = BigInt(p.assetAmountIn);
     const positionDecimals = ASSETS[p.asset as AssetSymbol]?.decimals ?? decimals;
     // Value is always DERIVED (shares x live index), never read off the row.
-    const value = p.status === "ACTIVE" && index !== null ? valueOfShares(shares, index) : null;
-    if (value !== null) {
+    const liveIndex = p.status === "ACTIVE" ? index : null;
+    const { value, accruedYield } = positionDerivedValue(shares, principal, liveIndex);
+    if (value !== null && accruedYield !== null) {
       parked += value;
-      accrued += value > principal ? value - principal : 0n;
+      accrued += accruedYield;
     }
     return {
       positionId: p.id,
@@ -91,10 +92,7 @@ async function mmfCardProps(
       shares: p.shares,
       amountIn: fromBaseUnits(principal, positionDecimals),
       currentValue: value === null ? null : fromBaseUnits(value, positionDecimals),
-      accruedYield:
-        value === null
-          ? null
-          : fromBaseUnits(value > principal ? value - principal : 0n, positionDecimals),
+      accruedYield: accruedYield === null ? null : fromBaseUnits(accruedYield, positionDecimals),
       indexAtEntry: p.indexAtEntry,
       createdAt: p.createdAt.toISOString(),
       txHashPark: p.txHashPark,

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { accountsFor, isChainReady, loadDeployments, tokenBalance } from "@/lib/chain";
 import { fromBaseUnits } from "@/lib/assets";
+import { walletOnNetwork } from "@/lib/wallets";
 import { requireRole } from "../guard";
 
 /** Treasury + entity balances by network and asset, reservations, and ledger credits. */
@@ -37,7 +38,7 @@ export async function GET(req: NextRequest) {
     const holders: { label: string; kind: string; address: string }[] = [
       { label: "Settlement Treasury", kind: "treasury", address: accountsFor(networkId).treasury.address },
       ...entities.flatMap((e) => {
-        const w = e.wallets.find((x) => x.network === networkId) ?? e.wallets[0];
+        const w = walletOnNetwork(e.wallets, networkId);
         return w ? [{ label: e.name, kind: "entity", address: w.address }] : [];
       }),
     ];

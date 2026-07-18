@@ -29,6 +29,7 @@ import {
 } from "./chain";
 import { availableLiquidity, destinationUnits, type RouteOption } from "./routing";
 import { recallForPayment } from "./treasury";
+import { walletOnNetwork } from "./wallets";
 import { keccak256, toHex, type Address } from "viem";
 
 /**
@@ -127,7 +128,7 @@ async function setStatus(
 
 /** An entity's wallet on `networkId` — addresses differ per network. */
 function walletOn(wallets: { network: string; address: string }[], networkId: string) {
-  return wallets.find((w) => w.network === networkId) ?? wallets[0];
+  return walletOnNetwork(wallets, networkId)!;
 }
 
 function selectedRoute(payment: Payment): RouteOption {

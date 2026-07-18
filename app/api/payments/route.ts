@@ -8,7 +8,7 @@ import { supportedCorridors, corridorCode } from "@/lib/fx";
 import { NETWORKS } from "@/lib/networks";
 import { isChainReady, loadDeployments } from "@/lib/chain";
 import { stuckPayments } from "@/lib/executor";
-import { PaginationError, parsePageRequest, toPage } from "@/lib/pagination";
+import { toPage } from "@/lib/pagination";
 import {
   actorOf,
   forbidden,
@@ -19,8 +19,8 @@ import {
   requireRole,
   scrubFailureReason,
 } from "../guard";
-import { beginIdempotency } from "../idempotency";
-import { beginWrite } from "../limits";
+import { withIdempotentWrite } from "../idempotency";
+import { parsePageOr400 } from "../pagination";
 import type { Principal } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
@@ -35,13 +35,8 @@ export async function GET(req: NextRequest) {
   const principal = await requirePrincipal(req);
   if (principal instanceof NextResponse) return principal;
 
-  let page;
-  try {
-    page = parsePageRequest(req.nextUrl.searchParams);
-  } catch (e) {
-    if (e instanceof PaginationError) return invalidRequest(e.message);
-    throw e;
-  }
+  const page = parsePageOr400(req.nextUrl.searchParams);
+  if (page instanceof NextResponse) return page;
 
   const scope = isPlatformRole(principal)
     ? {}
@@ -101,24 +96,12 @@ export async function POST(req: NextRequest) {
   const principal = await requirePrincipal(req);
   if (principal instanceof NextResponse) return principal;
 
-  // Rate-limits and caps the body before anything reads it. An unparseable body
-  // must be a 400 we chose, not an unhandled throw that Next renders as a 500
-  // (with a stack, in dev).
-  const gate = await beginWrite(req, principal);
-  if (gate instanceof NextResponse) return gate;
-  const body = gate.body;
-  if (!body || typeof body !== "object") return invalidRequest("body must be a JSON object");
-
-  // Wraps the whole handler, not just the create: a retried request must replay
-  // the answer the first one gave, whatever it was.
-  const idem = await beginIdempotency(req, principal, "POST /api/payments", body);
-  if (idem instanceof NextResponse) return idem;
-  try {
-    return await idem.complete(await createPayment(principal, body as CreatePaymentBody));
-  } catch (e) {
-    await idem.abandon();
-    throw e;
-  }
+  // Rate-limit + Idempotency-Key wrap the whole handler: a retried request must
+  // replay the answer the first one gave, whatever it was (including 4xx).
+  return withIdempotentWrite(req, principal, "POST /api/payments", async (body) => {
+    if (!body || typeof body !== "object") return invalidRequest("body must be a JSON object");
+    return createPayment(principal, body as CreatePaymentBody);
+  });
 }
 
 /**

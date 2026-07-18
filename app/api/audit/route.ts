@@ -1,21 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { verifyAuditChain } from "@/lib/audit";
-import { PaginationError, parsePageRequest, toPage } from "@/lib/pagination";
+import { toPage } from "@/lib/pagination";
 import { invalidRequest, requireRole } from "../guard";
+import { parsePageOr400 } from "../pagination";
 
 export async function GET(req: NextRequest) {
   // The log spans every tenant, so it is platform-roles only.
   const principal = await requireRole(req, "OPERATOR", "REVIEWER");
   if (principal instanceof NextResponse) return principal;
 
-  let page;
-  try {
-    page = parsePageRequest(req.nextUrl.searchParams);
-  } catch (e) {
-    if (e instanceof PaginationError) return invalidRequest(e.message);
-    throw e;
-  }
+  const page = parsePageOr400(req.nextUrl.searchParams);
+  if (page instanceof NextResponse) return page;
 
   // The cursor is an AuditEvent id, which is an autoincrement 32-bit Int. A cursor
   // that is not one is a client bug, not a lookup that returns nothing — including

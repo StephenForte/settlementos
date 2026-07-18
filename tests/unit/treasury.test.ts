@@ -3,7 +3,13 @@
 
 import { describe, it, expect } from "vitest";
 import { MMF_INDEX_SCALE } from "@/lib/chain";
-import { dailyIndex, valueOfShares, MMF_ANNUAL_RATE_BPS, TreasuryError } from "@/lib/treasury";
+import {
+  dailyIndex,
+  valueOfShares,
+  positionDerivedValue,
+  MMF_ANNUAL_RATE_BPS,
+  TreasuryError,
+} from "@/lib/treasury";
 
 const PAR = MMF_INDEX_SCALE; // 1e18
 
@@ -53,5 +59,31 @@ describe("valueOfShares", () => {
     expect(accrued).toBeGreaterThan(shares);
     // 3.5% APY on 100k for one day ≈ 9.58 mockUSDC (6 decimals).
     expect(accrued - shares).toBe(9_589_041n);
+  });
+});
+
+describe("positionDerivedValue", () => {
+  const shares = 100_000n * 10n ** 6n;
+  const principal = shares; // entered at par
+
+  it("returns nulls when no live index is available", () => {
+    expect(positionDerivedValue(shares, principal, null)).toEqual({
+      value: null,
+      accruedYield: null,
+    });
+  });
+
+  it("floors accrued yield at zero when the index has not moved", () => {
+    expect(positionDerivedValue(shares, principal, PAR)).toEqual({
+      value: shares,
+      accruedYield: 0n,
+    });
+  });
+
+  it("reports value and yield after accrual — same math the API and liquidity page share", () => {
+    const index = dailyIndex(PAR);
+    const { value, accruedYield } = positionDerivedValue(shares, principal, index);
+    expect(value).toBe(valueOfShares(shares, index));
+    expect(accruedYield).toBe(9_589_041n);
   });
 });

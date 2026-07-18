@@ -4,8 +4,7 @@ import { prisma } from "@/lib/db";
 import { recall } from "@/lib/treasury";
 import { treasuryErrorResponse } from "../errors";
 import { invalidRequest, requireRole } from "../../guard";
-import { beginIdempotency } from "../../idempotency";
-import { beginWrite } from "../../limits";
+import { withIdempotentWrite } from "../../idempotency";
 
 /**
  * Recall a parked position T+0 — principal plus accrued yield back to the
@@ -18,18 +17,9 @@ export async function POST(req: NextRequest) {
   const principal = await requireRole(req, "OPERATOR");
   if (principal instanceof NextResponse) return principal;
 
-  const gate = await beginWrite(req, principal);
-  if (gate instanceof NextResponse) return gate;
-  const body = (gate.body ?? {}) as Record<string, unknown>;
-
-  const idem = await beginIdempotency(req, principal, "POST /api/treasury/recall", body);
-  if (idem instanceof NextResponse) return idem;
-  try {
-    return await idem.complete(await runRecall(body));
-  } catch (e) {
-    await idem.abandon();
-    throw e;
-  }
+  return withIdempotentWrite(req, principal, "POST /api/treasury/recall", async (raw) =>
+    runRecall((raw ?? {}) as Record<string, unknown>)
+  );
 }
 
 async function runRecall(body: Record<string, unknown>): Promise<NextResponse> {

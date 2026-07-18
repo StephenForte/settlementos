@@ -3,8 +3,7 @@ import { NETWORKS } from "@/lib/networks";
 import { park } from "@/lib/treasury";
 import { treasuryErrorResponse } from "../errors";
 import { invalidRequest, requireRole } from "../../guard";
-import { beginIdempotency } from "../../idempotency";
-import { beginWrite } from "../../limits";
+import { withIdempotentWrite } from "../../idempotency";
 
 /**
  * Park idle treasury liquidity into the network's tokenized MMF. Platform
@@ -20,18 +19,9 @@ export async function POST(req: NextRequest) {
   const principal = await requireRole(req, "OPERATOR");
   if (principal instanceof NextResponse) return principal;
 
-  const gate = await beginWrite(req, principal);
-  if (gate instanceof NextResponse) return gate;
-  const body = (gate.body ?? {}) as Record<string, unknown>;
-
-  const idem = await beginIdempotency(req, principal, "POST /api/treasury/park", body);
-  if (idem instanceof NextResponse) return idem;
-  try {
-    return await idem.complete(await runPark(body));
-  } catch (e) {
-    await idem.abandon();
-    throw e;
-  }
+  return withIdempotentWrite(req, principal, "POST /api/treasury/park", async (raw) =>
+    runPark((raw ?? {}) as Record<string, unknown>)
+  );
 }
 
 async function runPark(body: Record<string, unknown>): Promise<NextResponse> {
