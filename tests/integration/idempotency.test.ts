@@ -169,7 +169,55 @@ describe("POST /api/payments idempotency", () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error_code: "invalid_request" });
   });
+
+  it.each([
+    { label: "unparseable", body: "{not json" },
+    { label: "missing", body: undefined },
+  ])("does not lock the key to {} when the first body is $label", async ({ body: badBody }) => {
+    const idKey = freshKey();
+    const body = createBody(`RECOVER-${idKey}`);
+
+    const malformed = await paymentsPOST(
+      new NextRequest("http://test.local/api/payments", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          [API_KEY_HEADER]: API_KEYS.operator,
+          [IDEMPOTENCY_HEADER]: idKey,
+        },
+        ...(badBody !== undefined ? { body: badBody } : {}),
+        ...({ duplex: "half" } as object),
+      })
+    );
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toMatchObject({
+      error_code: "invalid_request",
+      message: "body must be a JSON object",
+    });
+
+    // A valid retry with the same key must create — not 422 because the bad
+    // attempt was fingerprinted as {}.
+    const retry = await createPayment(body, idKey);
+    expect(retry.status).toBe(201);
+    expect(retry.headers.get("idempotent-replay")).toBeNull();
+    expect(await prisma.payment.findMany({ where: { referenceId: `RECOVER-${idKey}` } })).toHaveLength(1);
+  });
 });
+
+/** Execute with no body at all — the route accepts missing via `(raw ?? {})`. */
+function executeEmpty(paymentId: string, key: string, idempotencyKey: string) {
+  return executePOST(
+    new NextRequest(`http://test.local/api/payments/${paymentId}/execute`, {
+      method: "POST",
+      headers: {
+        [API_KEY_HEADER]: key,
+        [IDEMPOTENCY_HEADER]: idempotencyKey,
+      },
+      ...({ duplex: "half" } as object),
+    }),
+    routeParams(paymentId)
+  );
+}
 
 describe("POST /api/payments/[id]/execute idempotency", () => {
   it("replays the first attempt's response without re-running the handler", async () => {
@@ -186,6 +234,21 @@ describe("POST /api/payments/[id]/execute idempotency", () => {
       post(`/api/payments/${payment.id}/execute`, {}, API_KEYS.operator, idKey),
       routeParams(payment.id)
     );
+
+    expect(first.status).toBe(409);
+    expect(second.status).toBe(409);
+    expect(await second.json()).toEqual(await first.json());
+    expect(second.headers.get("idempotent-replay")).toBe("true");
+  });
+
+  it("stamps a 409 from a missing body so a retry replays", async () => {
+    // execute accepts `(raw ?? {})`; a missing body that answers 409 must still
+    // lock the key — abandoning it would re-run the handler on retry.
+    const payment = await createDraftPayment();
+    const idKey = freshKey();
+
+    const first = await executeEmpty(payment.id, API_KEYS.operator, idKey);
+    const second = await executeEmpty(payment.id, API_KEYS.operator, idKey);
 
     expect(first.status).toBe(409);
     expect(second.status).toBe(409);

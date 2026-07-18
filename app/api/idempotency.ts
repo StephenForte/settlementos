@@ -81,32 +81,57 @@ export async function beginIdempotency(
   }
 }
 
+export interface IdempotentWriteOptions {
+  /**
+   * When true, a null/non-object body that the handler rejects (!ok) abandons
+   * the key instead of stamping under the coerced `{}` fingerprint — otherwise
+   * a later well-formed body with the same key would 422 as a conflict (create).
+   * Leave false for routes that accept a missing body as empty (execute/repair/
+   * treasury): their 409/404/5xx must still stamp so a retry replays.
+   */
+  requireObjectBody?: boolean;
+}
+
 /**
  * Rate-limit + claim the Idempotency-Key + run `handle`, stamping whatever it
  * answers (including 4xx) so a retry replays rather than re-doing the work. A
  * throw abandons the key — an unknown outcome must stay retryable.
  *
  * `route` must identify the *target* (see beginIdempotency). `handle` receives
- * the parsed body (`null` when absent/unparseable); hash the same value the
- * scope fingerprints so a retry with a different body is a 422.
+ * the parsed body (`null` when absent/unparseable). The fingerprint uses
+ * `body ?? {}` so routes that treat a missing body as empty (execute/repair)
+ * still dedupe. Pass `requireObjectBody: true` when the handler rejects a
+ * null/non-object body — those rejections are not stamped under `{}`.
  */
 export async function withIdempotentWrite(
   req: Request,
   principal: Principal,
   route: string,
-  handle: (body: unknown) => Promise<NextResponse>
+  handle: (body: unknown) => Promise<NextResponse>,
+  options: IdempotentWriteOptions = {}
 ): Promise<NextResponse> {
   const gate = await beginWrite(req, principal);
   if (gate instanceof NextResponse) return gate;
 
-  // Fingerprint the body the handler sees. Absent/unparseable becomes `{}` so
-  // an empty park/accrue and a missing JSON object hash the same — matching the
-  // previous per-route `(gate.body ?? {})` convention.
-  const body = gate.body ?? {};
-  const idem = await beginIdempotency(req, principal, route, body);
+  // Absent/unparseable becomes `{}` so an empty execute/repair and a missing
+  // body hash alike when the handler accepts both.
+  const fingerprint = gate.body ?? {};
+  const idem = await beginIdempotency(req, principal, route, fingerprint);
   if (idem instanceof NextResponse) return idem;
   try {
-    return await idem.complete(await handle(gate.body));
+    const res = await handle(gate.body);
+    // Only abandon a body-shape rejection on routes that require an object.
+    // Execute/repair accept `(raw ?? {})` and can answer 409/404/5xx with a
+    // missing body — those must stamp, or a retry re-runs instead of replaying.
+    if (
+      options.requireObjectBody &&
+      !res.ok &&
+      (gate.body === null || typeof gate.body !== "object")
+    ) {
+      await idem.abandon();
+      return res;
+    }
+    return await idem.complete(res);
   } catch (e) {
     await idem.abandon();
     throw e;
