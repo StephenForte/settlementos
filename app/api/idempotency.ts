@@ -81,6 +81,17 @@ export async function beginIdempotency(
   }
 }
 
+export interface IdempotentWriteOptions {
+  /**
+   * When true, a null/non-object body that the handler rejects (!ok) abandons
+   * the key instead of stamping under the coerced `{}` fingerprint — otherwise
+   * a later well-formed body with the same key would 422 as a conflict (create).
+   * Leave false for routes that accept a missing body as empty (execute/repair/
+   * treasury): their 409/404/5xx must still stamp so a retry replays.
+   */
+  requireObjectBody?: boolean;
+}
+
 /**
  * Rate-limit + claim the Idempotency-Key + run `handle`, stamping whatever it
  * answers (including 4xx) so a retry replays rather than re-doing the work. A
@@ -89,14 +100,15 @@ export async function beginIdempotency(
  * `route` must identify the *target* (see beginIdempotency). `handle` receives
  * the parsed body (`null` when absent/unparseable). The fingerprint uses
  * `body ?? {}` so routes that treat a missing body as empty (execute/repair)
- * still dedupe; a *rejected* null/non-object body is not stamped under that
- * fingerprint, or a later valid body with the same key would conflict.
+ * still dedupe. Pass `requireObjectBody: true` when the handler rejects a
+ * null/non-object body — those rejections are not stamped under `{}`.
  */
 export async function withIdempotentWrite(
   req: Request,
   principal: Principal,
   route: string,
-  handle: (body: unknown) => Promise<NextResponse>
+  handle: (body: unknown) => Promise<NextResponse>,
+  options: IdempotentWriteOptions = {}
 ): Promise<NextResponse> {
   const gate = await beginWrite(req, principal);
   if (gate instanceof NextResponse) return gate;
@@ -108,10 +120,14 @@ export async function withIdempotentWrite(
   if (idem instanceof NextResponse) return idem;
   try {
     const res = await handle(gate.body);
-    // A missing/unparseable (or primitive) body that the handler rejected is
-    // not a request worth locking the key to. Stamping it under `{}` made a
-    // valid retry hit idempotency_conflict instead of creating/executing.
-    if (!res.ok && (gate.body === null || typeof gate.body !== "object")) {
+    // Only abandon a body-shape rejection on routes that require an object.
+    // Execute/repair accept `(raw ?? {})` and can answer 409/404/5xx with a
+    // missing body — those must stamp, or a retry re-runs instead of replaying.
+    if (
+      options.requireObjectBody &&
+      !res.ok &&
+      (gate.body === null || typeof gate.body !== "object")
+    ) {
       await idem.abandon();
       return res;
     }

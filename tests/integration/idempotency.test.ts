@@ -204,6 +204,21 @@ describe("POST /api/payments idempotency", () => {
   });
 });
 
+/** Execute with no body at all — the route accepts missing via `(raw ?? {})`. */
+function executeEmpty(paymentId: string, key: string, idempotencyKey: string) {
+  return executePOST(
+    new NextRequest(`http://test.local/api/payments/${paymentId}/execute`, {
+      method: "POST",
+      headers: {
+        [API_KEY_HEADER]: key,
+        [IDEMPOTENCY_HEADER]: idempotencyKey,
+      },
+      ...({ duplex: "half" } as object),
+    }),
+    routeParams(paymentId)
+  );
+}
+
 describe("POST /api/payments/[id]/execute idempotency", () => {
   it("replays the first attempt's response without re-running the handler", async () => {
     // DRAFT is not executable, so the handler answers 409 without touching a
@@ -219,6 +234,21 @@ describe("POST /api/payments/[id]/execute idempotency", () => {
       post(`/api/payments/${payment.id}/execute`, {}, API_KEYS.operator, idKey),
       routeParams(payment.id)
     );
+
+    expect(first.status).toBe(409);
+    expect(second.status).toBe(409);
+    expect(await second.json()).toEqual(await first.json());
+    expect(second.headers.get("idempotent-replay")).toBe("true");
+  });
+
+  it("stamps a 409 from a missing body so a retry replays", async () => {
+    // execute accepts `(raw ?? {})`; a missing body that answers 409 must still
+    // lock the key — abandoning it would re-run the handler on retry.
+    const payment = await createDraftPayment();
+    const idKey = freshKey();
+
+    const first = await executeEmpty(payment.id, API_KEYS.operator, idKey);
+    const second = await executeEmpty(payment.id, API_KEYS.operator, idKey);
 
     expect(first.status).toBe(409);
     expect(second.status).toBe(409);

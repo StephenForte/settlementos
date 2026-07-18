@@ -98,10 +98,18 @@ export async function POST(req: NextRequest) {
 
   // Rate-limit + Idempotency-Key wrap the whole handler: a retried request must
   // replay the answer the first one gave, whatever it was (including 4xx).
-  return withIdempotentWrite(req, principal, "POST /api/payments", async (body) => {
-    if (!body || typeof body !== "object") return invalidRequest("body must be a JSON object");
-    return createPayment(principal, body as CreatePaymentBody);
-  });
+  // requireObjectBody: a rejected missing/unparseable body must not stamp under
+  // the coerced `{}` fingerprint, or a valid retry with the same key 422s.
+  return withIdempotentWrite(
+    req,
+    principal,
+    "POST /api/payments",
+    async (body) => {
+      if (!body || typeof body !== "object") return invalidRequest("body must be a JSON object");
+      return createPayment(principal, body as CreatePaymentBody);
+    },
+    { requireObjectBody: true }
+  );
 }
 
 /**
