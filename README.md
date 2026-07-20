@@ -1,12 +1,35 @@
 # SettlementOS
 
-**EVM stablecoin settlement infrastructure — testnet MVP demo.**
+An experiment in stablecoin settlement for cross-border payments — testing whether a chain-agnostic settlement layer can move value from country A to country B fast and cheap, without carrying the rest of crypto along for the ride.
+
+Most general-purpose chains optimize for everything: NFTs, meme coins, web3 social, DeFi composability. SettlementOS starts from the opposite premise — **what does the stack look like if transfers and payments are the *only* workload?** Strip the use case down to settlement and a lot of complexity (and cost) falls away.
+
+## Current state
+
+This is the experimentation phase. The system is deployed to two testnets — **Base Sepolia** and **Polygon Amoy** — deliberately, to prove that the settlement layer can connect to multiple chains rather than marrying one. A purpose-built [independent explorer](https://github.com/StephenForte/settlementos-explorer) shows only what a payments system needs: transfers, settlement state, and nothing Etherscan-shaped.
+
+The long-term destination is [ForteL2](https://github.com/StephenForte/ForteL2), a personal OP Stack L2 being built in parallel — SettlementOS as the application layer, ForteL2 as the settlement infrastructure underneath it. Together they're a full-stack test of the payments-only thesis.
+
+## Roadmap (directional)
+
+1. **Now:** multi-chain deployment and settlement mechanics on testnets (Base Sepolia, Polygon Amoy)
+2. **Next:** migrate settlement to [ForteL2](https://github.com/StephenForte/ForteL2) as it reaches Sepolia-backed operation
+3. **Eventually:** a true settlement platform for cross-border transactions — acknowledged to be far away; everything before that point is learning in public
+
+## Why
+
+Cross-border settlement through correspondent banking is slow and expensive by construction. Stablecoins on general-purpose chains fix the speed but inherit congestion, fee volatility, and complexity from workloads payments never asked for. The open question this project pokes at: is a purpose-narrowed stack meaningfully better, or does generality win anyway? Building it is the only honest way to find out.
+
+---
+
+# The system
 
 SettlementOS is a payment orchestration layer for cross-border B2B settlement over
 EVM stablecoin rails. A business initiates a payment, the system quotes routes,
 runs a compliance gate, escrows stablecoin on a settlement contract, simulates the
 FX leg, credits the recipient's local-currency ledger, and produces a hash-chained
-audit trail plus a reconciliation export.
+audit trail plus a reconciliation export. Idle treasury liquidity can be parked
+overnight in a tokenized money-market fund and recalled T+0 when a payment needs it.
 
 > Testnet demo only. Mock assets, simulated FX, simulated payout. No real funds,
 > no native token, no consumer flows.
@@ -16,12 +39,13 @@ audit trail plus a reconciliation export.
 | Layer | Implementation |
 |---|---|
 | Frontend + API | Next.js (App Router) + Tailwind, REST route handlers |
-| Database | SQLite via Prisma (entities, payments, compliance checks, audit log, liquidity reservations, ledger credits) |
+| Database | SQLite via Prisma (entities, payments, compliance checks, audit log + signed checkpoints, liquidity reservations, treasury positions, ledger credits, API keys, idempotency records) |
 | Chains | Two local Hardhat nodes: `base-local` (31337, simulates Base Sepolia) and `polygon-local` (31338, simulates Polygon Amoy), plus real `base-sepolia` (84532) and `polygon-amoy` (80002) with public explorer links — see [Real public testnets](#real-public-testnets-base-sepolia--polygon-amoy) |
-| Contracts | Solidity 0.8.24 — `MockERC20` (mockUSDC/mockJPY/mockSGD) + `PaymentSettlement` escrow, deployed to both networks |
-| Chain client | viem, via a network-registry chain adapter ([lib/chain.ts](lib/chain.ts), [lib/networks.ts](lib/networks.ts)) |
+| Contracts | Solidity 0.8.24 — `MockERC20` (mockUSDC/mockJPY/mockSGD), `PaymentSettlement` escrow, `TokenizedMMF` (operator-gated share fund for parked treasury liquidity) |
+| Chain client | viem, via a network-registry chain adapter ([lib/chain.ts](lib/chain.ts), [lib/networks.ts](lib/networks.ts)) with a pluggable signer/custody seam ([lib/signers.ts](lib/signers.ts)) |
 | Bridge | Simulated: source-chain escrow + FX, then treasury pays out destination-asset tokens to the recipient wallet on the destination chain (real ERC-20 tx on chain 2) |
 | Compliance | KYB, sanctions, wallet risk, transaction risk, corridor risk with PASS / FAIL / MANUAL_REVIEW outcomes. Sanctions + wallet screening run against real vendor sandboxes (OpenSanctions, Chainalysis) when env keys are set; mocks otherwise |
+| Hardening | API-key auth with role-based authorization and tenant scoping, compare-and-swap state transitions + execution leases, idempotency keys, a compensation saga with an operator repair view, bigint money math validated at the boundary, rate limits + body caps + cursor pagination, CSP/security headers |
 
 ### Payment lifecycle
 
@@ -31,8 +55,12 @@ DRAFT → QUOTED → COMPLIANCE_PENDING → APPROVED → LIQUIDITY_RESERVED
       → PAYOUT_PENDING → SETTLED
 ```
 
-Exception states: `MANUAL_REVIEW`, `REJECTED`, `FAILED`, `CANCELLED`, `REFUNDED`, `EXPIRED`.
-Transitions are enforced by a state machine ([lib/state.ts](lib/state.ts)).
+Exception states: `MANUAL_REVIEW`, `REJECTED`, `FAILED`, `CANCELLED`, `REFUNDED`,
+`EXPIRED`, and the compensation path `COMPENSATION_PENDING → COMPENSATED` (a
+failure after the escrow is released repays the sender from treasury rather than
+refunding a contract that no longer holds the funds).
+Transitions are enforced by a state machine ([lib/state.ts](lib/state.ts)) and
+applied with compare-and-swap so concurrent writers can't clobber each other.
 
 ## Quick start
 
@@ -50,11 +78,26 @@ npm run setup
 npm run dev
 ```
 
-Open http://localhost:3000.
+Open http://localhost:3000 and sign in at `/login` with the OPERATOR key that
+`npm run setup` printed (also written to gitignored `chain/dev-api-keys.json`).
 
 ```bash
 npm test   # self-contained: builds its own chains + DB under tests/.tmp
 ```
+
+## Authentication
+
+Every API route (except `/api/networks` and the login exchange) requires an API
+key — the `x-api-key` header, or the httpOnly cookie set by signing in at
+`/login`. `npm run setup` seeds one OPERATOR key, one REVIEWER key, and one
+ENTITY key per demo entity; only sha256 hashes are stored, so a lost key is
+regenerated by re-running setup. Roles gate what a caller can do: OPERATOR
+drives payments and treasury, REVIEWER decides manual reviews, ENTITY callers
+see and act only on their own payments (tenant-scoped queries, scrubbed failure
+detail, 404 — never 403 — for rows outside their scope).
+
+Writes accept an optional `Idempotency-Key` header: a retry with the same key
+and body replays the original response instead of double-executing.
 
 ## Demo script (~5 minutes)
 
@@ -76,10 +119,13 @@ npm test   # self-contained: builds its own chains + DB under tests/.tmp
    wallet not allowlisted, amount above the $250k threshold). The payment parks in
    the **Compliance Queue**; approve it as a reviewer, then execute.
 7. **Liquidity & Treasury** — live on-chain treasury balances per network,
-   reservations, and the tokenized T-bill placeholder (disabled, per PRD).
-8. **Export reconciliation CSV** from the dashboard (now includes per-network tx
+   reservations, and the tokenized MMF card: park unreserved liquidity into the
+   fund, accrue a day of simulated yield (3.5% APY), recall T+0 with the yield.
+   Routes quoted against parked liquidity are flagged `recall_required` and the
+   executor auto-recalls before escrowing.
+8. **Export reconciliation CSV** from the dashboard (includes per-network tx
    hashes); show the audit chain "INTACT" badge on the Compliance page
-   (hash-chained, tamper-evident).
+   (hash-chained, tamper-evident, tip signed via audit checkpoints).
 
 Demo entities seeded by `npm run setup`:
 
@@ -93,18 +139,27 @@ Demo entities seeded by `npm run setup`:
 ## API
 
 ```
+POST /api/auth/login                  exchange an API key for a session cookie
+POST /api/auth/logout                 clear the session cookie
 POST /api/payments                    create payment (DRAFT)
-GET  /api/payments                    list payments
+GET  /api/payments                    list payments (cursor-paginated)
 GET  /api/payments/{id}               payment detail + checks + audit log
 POST /api/payments/{id}/quote         generate route quote
 POST /api/payments/{id}/execute       compliance gate + on-chain settlement
 POST /api/payments/{id}/review        reviewer approve/reject (MANUAL_REVIEW)
 POST /api/payments/{id}/cancel        cancel before execution
-GET  /api/entities                    list entities
+POST /api/payments/{id}/repair        operator retry of a stuck compensation
+GET  /api/entities                    list entities (cursor-paginated)
 POST /api/entities                    create entity (starts KYB PENDING)
 GET  /api/balances                    on-chain balances + reservations + ledgers
-GET  /api/reconciliation              CSV export
-GET  /api/audit                       audit log + chain integrity check
+POST /api/treasury/park               park unreserved liquidity into the MMF
+POST /api/treasury/recall             redeem a parked position (T+0)
+GET  /api/treasury/positions          parked positions + derived value (paginated)
+POST /api/treasury/accrue             advance the fund index one day (demo)
+GET  /api/reconciliation              CSV export (date-bounded, default last 30 days)
+GET  /api/audit                       audit log + chain integrity check (paginated)
+POST /api/audit/checkpoint            sign an audit checkpoint on demand
+GET  /api/networks                    network registry (anonymous)
 ```
 
 Example:
@@ -112,6 +167,7 @@ Example:
 ```bash
 curl -X POST http://localhost:3000/api/payments \
   -H 'Content-Type: application/json' \
+  -H 'x-api-key: <OPERATOR key from npm run setup>' \
   -d '{
     "sender_id": "ent_acme_us",
     "recipient_id": "ent_tokyo_supplier",
@@ -159,7 +215,9 @@ Every execution runs the full provider set and persists results:
 - **Corridor risk** — corridor must be pre-approved for both entities (mock)
 
 Any FAIL → `REJECTED`. Any MANUAL_REVIEW → parked for a reviewer decision.
-The audit log is append-only and hash-chained; `GET /api/audit` verifies the chain.
+The audit log is append-only and hash-chained; `GET /api/audit` verifies the
+chain from genesis, and signed checkpoints (`AUDIT_ANCHOR_KEY`) anchor the tip
+so a re-hashed history can't pass as intact.
 
 ### Real provider sandboxes (optional)
 
@@ -237,6 +295,18 @@ wallet). Local chains and the real testnets coexist: `npm run setup` re-register
 the testnet entity wallets after every DB reset, and cross-chain routes can
 bridge between any pair (simulated bridge, real transactions on both networks).
 
+## Documentation
+
+- [AGENTS.md](AGENTS.md) — engineering guide: architecture map, invariants, gotchas
+- [DEMO.md](DEMO.md) — demo run-of-show
+- [PRD.md](PRD.md) — product requirements + phase roadmap (canonical)
+- [docs/regulatory/](docs/regulatory/) — regulatory design, legal classification,
+  partner integration, corridor strategy, and pilot memos (drafts)
+- [settlementos-explorer](https://github.com/StephenForte/settlementos-explorer) —
+  the purpose-built payments explorer
+- [ForteL2](https://github.com/StephenForte/ForteL2) — the OP Stack L2 this
+  system will eventually settle on
+
 ## Out of scope (by design, per PRD)
 
 Real funds, fiat on/off ramps, custody, native token, consumer remittance, DeFi
@@ -244,4 +314,5 @@ yield, real bridges, Solana. KYB, transaction-risk, and corridor compliance
 providers are mocks (sanctions and wallet screening can use real vendor
 sandboxes — see "Real provider sandboxes"); FX, payout, and the cross-chain
 bridge are simulated (the bridge leg is a treasury-funded payout on the
-destination chain, not a lock-and-mint bridge).
+destination chain, not a lock-and-mint bridge). The tokenized MMF pays simulated
+yield from a pre-funded buffer, not a real T-bill fund.
