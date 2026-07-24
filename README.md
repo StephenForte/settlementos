@@ -124,8 +124,11 @@ and body replays the original response instead of double-executing.
    Routes quoted against parked liquidity are flagged `recall_required` and the
    executor auto-recalls before escrowing.
 8. **Export reconciliation CSV** from the dashboard (includes per-network tx
-   hashes); show the audit chain "INTACT" badge on the Compliance page
-   (hash-chained, tamper-evident, tip signed via audit checkpoints).
+   hashes); show the audit chain badge on the Compliance page (hash-chained,
+   tamper-evident). Out of the box it reads **INTACT (unanchored)** — the chain
+   is self-consistent but nothing signs its tip. Set `AUDIT_ANCHOR_KEY` in
+   `.env` and create a checkpoint (`POST /api/audit/checkpoint`, or wait for
+   the automatic one every 100 events) to upgrade it to a signed **INTACT**.
 
 Demo entities seeded by `npm run setup`:
 
