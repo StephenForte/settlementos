@@ -298,6 +298,32 @@ wallet). Local chains and the real testnets coexist: `npm run setup` re-register
 the testnet entity wallets after every DB reset, and cross-chain routes can
 bridge between any pair (simulated bridge, real transactions on both networks).
 
+## ForteL2 (in progress)
+
+[ForteL2](https://github.com/StephenForte/ForteL2) — the OP Stack L2 that is the
+long-term home settlement rail — is in the network registry as `fortel2-sepolia`
+(chain ID 852, Sepolia-backed), plus an optional offline `fortel2-local` (901).
+The chain is operated **outside this repo**: the sequencer runs on the
+operator's Mac (so the write RPC is usually loopback), with an optional Render
+read replica. Canonical chain facts (chain IDs, RPCs, bridge addresses, reset
+policy) live in ForteL2's `deployments/rail-interface.json`.
+
+```bash
+# Write/sequencer RPC (default: the Mac sequencer loopback)
+FORTEL2_SEPOLIA_RPC_URL=http://127.0.0.1:9545
+# Optional read-only replica RPC (Render). Balance/display reads only — writes
+# and tx confirmation always use the sequencer RPC above.
+FORTEL2_SEPOLIA_READ_RPC_URL=
+# Optional offline ForteL2 devnet (resets freely; experiments only)
+FORTEL2_LOCAL_RPC_URL=http://127.0.0.1:9545
+```
+
+Registry-only so far (phase F1 of
+[tasks/prd-fortel2-integration.md](tasks/prd-fortel2-integration.md)): contracts
+are not deployed there yet, so ForteL2 doesn't show as *available* in
+create-payment until the F2 deploy lands. ForteL2 has no block explorer yet —
+payments there will show raw tx hashes without links.
+
 ## Documentation
 
 - [AGENTS.md](AGENTS.md) — engineering guide: architecture map, invariants, gotchas

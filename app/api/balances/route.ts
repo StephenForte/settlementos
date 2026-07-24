@@ -47,7 +47,9 @@ export async function GET(req: NextRequest) {
         holders.map(async (h) => {
           const perToken: Record<string, string> = {};
           for (const [symbol, token] of Object.entries(net.contracts.tokens)) {
-            const raw = await tokenBalance(networkId, token.address, h.address as `0x${string}`);
+            const raw = await tokenBalance(networkId, token.address, h.address as `0x${string}`, {
+              viaReadRpc: true,
+            });
             perToken[symbol] = fromBaseUnits(raw, token.decimals);
           }
           return { ...h, tokens: perToken };

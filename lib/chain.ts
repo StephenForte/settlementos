@@ -133,6 +133,29 @@ export function publicClientFor(networkId: string): PublicClient {
   return publicClients[networkId];
 }
 
+const readClients: Record<string, PublicClient> = {};
+
+/**
+ * Public client for balance/display reads. A network may declare a dedicated
+ * read RPC (ForteL2's Render replica via FORTEL2_SEPOLIA_READ_RPC_URL); when it
+ * does, these reads go there, otherwise this is exactly publicClientFor. Write
+ * flows never use it: a replica can lag the sequencer by a block, so anything
+ * that gates or measures a write — confirm(), an allowance check about to be
+ * consumed, onchainPaymentState deciding refund-vs-compensate, the treasury's
+ * balance deltas around a redeem — must read the node that executed the tx.
+ */
+export function readClientFor(networkId: string): PublicClient {
+  const info = networkInfo(networkId);
+  if (!info.readRpcUrl) return publicClientFor(networkId);
+  if (!readClients[networkId]) {
+    readClients[networkId] = createPublicClient({
+      chain: viemChain(networkId),
+      transport: http(info.readRpcUrl),
+    });
+  }
+  return readClients[networkId];
+}
+
 /** A wallet client that signs as `signer`. Key material (if there is any) is the
  *  signer's business — see lib/signers.ts. */
 export async function walletFor(networkId: string, signer: Signer) {
@@ -197,12 +220,20 @@ export async function onchainPaymentState(
   return ONCHAIN_PAYMENT_STATES[p.state] ?? "NONE";
 }
 
+/**
+ * ERC-20 balance read. `viaReadRpc: true` routes through the network's read
+ * replica when one is configured (display paths: balances API, liquidity page);
+ * the default stays on the write RPC because lib/treasury measures balance
+ * deltas around its own transactions.
+ */
 export async function tokenBalance(
   networkId: string,
   token: Address,
-  owner: Address
+  owner: Address,
+  opts: { viaReadRpc?: boolean } = {}
 ): Promise<bigint> {
-  return publicClientFor(networkId).readContract({
+  const client = opts.viaReadRpc ? readClientFor(networkId) : publicClientFor(networkId);
+  return client.readContract({
     address: token,
     abi: ERC20_ABI,
     functionName: "balanceOf",
