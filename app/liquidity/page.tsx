@@ -178,7 +178,7 @@ export default async function LiquidityPage() {
       try {
         section.tokens = await Promise.all(
           Object.entries(net.contracts.tokens).map(async ([symbol, t]) => {
-            const raw = await tokenBalance(networkId, t.address, treasury);
+            const raw = await tokenBalance(networkId, t.address, treasury, { viaReadRpc: true });
             const reserved = reservedBy[`${networkId}:${symbol}`] ?? 0n;
             return {
               symbol,
