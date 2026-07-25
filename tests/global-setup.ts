@@ -1,5 +1,5 @@
 // Vitest global setup: builds a fully isolated fixture under tests/.tmp —
-// fresh SQLite DB, two Hardhat nodes on test-only ports (9545/9546), contracts
+// fresh SQLite DB, two Hardhat nodes on test-only ports (19545/19546), contracts
 // deployed, deployments.json written, demo entities seeded. Torn down after.
 
 import { execSync, spawn, type ChildProcess } from "node:child_process";
@@ -56,8 +56,8 @@ export default async function setup() {
   });
 
   const nodes = [
-    startNode("hardhat.config.cjs", 9545),
-    startNode("hardhat.config.polygon.cjs", 9546),
+    startNode("hardhat.config.cjs", 19545),
+    startNode("hardhat.config.polygon.cjs", 19546),
   ];
 
   try {

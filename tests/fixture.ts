@@ -10,8 +10,8 @@ export const TMP_DIR = path.join(ROOT, "tests", ".tmp");
 export const CHAIN_DIR = path.join(TMP_DIR, "chain");
 export const DB_PATH = path.join(TMP_DIR, "test.db");
 
-export const BASE_RPC = "http://127.0.0.1:9545";
-export const POLYGON_RPC = "http://127.0.0.1:9546";
+export const BASE_RPC = "http://127.0.0.1:19545";
+export const POLYGON_RPC = "http://127.0.0.1:19546";
 
 /** Env applied in setup-env.ts (per worker) and global-setup.ts (fixture build). */
 export const FIXTURE_ENV = {
@@ -29,11 +29,12 @@ export const FIXTURE_ENV = {
   SETTLEMENTOS_CHAIN_DIR: CHAIN_DIR,
   BASE_LOCAL_RPC_URL: BASE_RPC,
   POLYGON_LOCAL_RPC_URL: POLYGON_RPC,
-  // ForteL2's default sequencer RPC is 127.0.0.1:9545 — the SAME port the test
-  // base chain listens on. Pin both fortel2 RPCs to a dead port so a test that
-  // accidentally dials ForteL2 fails fast instead of silently reading the
-  // Hardhat fixture chain; pin the replica read RPC off so the read/write
-  // split stays inert (its own test stubs env and re-imports).
+  // ForteL2's default sequencer RPC is 127.0.0.1:9545 — which is why the test
+  // chains live up on 19545/19546, clear of the ForteL2 stack's 954x ports.
+  // Pin both fortel2 RPCs to a dead port so a test that accidentally dials
+  // ForteL2 fails fast instead of silently reading the Hardhat fixture chain;
+  // pin the replica read RPC off so the read/write split stays inert (its own
+  // test stubs env and re-imports).
   FORTEL2_SEPOLIA_RPC_URL: "http://127.0.0.1:9599",
   FORTEL2_SEPOLIA_READ_RPC_URL: "",
   FORTEL2_LOCAL_RPC_URL: "http://127.0.0.1:9599",
