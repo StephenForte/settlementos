@@ -222,7 +222,7 @@ async function main() {
 
   // If real testnets have been deployed, re-register their entity wallets too
   // (the DB reset above wiped them; keys/addresses persist in the JSON files).
-  const LIVE_NETWORK_IDS = ["base-sepolia", "polygon-amoy"];
+  const LIVE_NETWORK_IDS = ["base-sepolia", "polygon-amoy", "fortel2-sepolia"];
   const liveWallets = {}; // networkId → { externalId → { address } }
   for (const id of LIVE_NETWORK_IDS) {
     const p = path.join(root, "chain", `deployments.${id}.json`);
