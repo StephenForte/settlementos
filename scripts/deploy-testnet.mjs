@@ -1,5 +1,5 @@
-// Deploy SettlementOS contracts to a REAL public testnet (Base Sepolia or
-// Polygon Amoy — pick via argv, both wired up as npm scripts).
+// Deploy SettlementOS contracts to a REAL live network (Base Sepolia, Polygon
+// Amoy, or ForteL2 Sepolia — pick via argv, each wired up as an npm script).
 //
 //   1. Deploys MockERC20 tokens + PaymentSettlement using DEPLOYER_PRIVATE_KEY
 //      (the deployer doubles as the settlement operator).
@@ -12,8 +12,8 @@
 //      generated dust-wallet keys; the funded deployer key stays in .env only).
 //   5. Registers the entity wallets in the app database (if entities are seeded).
 //
-// Run: npm run deploy:base-sepolia | npm run deploy:polygon-amoy
-//      (both load .env via node --env-file)
+// Run: npm run deploy:base-sepolia | deploy:polygon-amoy | deploy:fortel2-sepolia
+//      (all load .env via node --env-file)
 // Requires: DEPLOYER_PRIVATE_KEY in .env, funded with the network's native gas
 //           token (same key works on every EVM chain).
 // Optional: <NETWORK>_RPC_URL override, TREASURY_PRIVATE_KEY (default:
@@ -43,7 +43,7 @@ const NETWORK_CONFIGS = {
     entityGasTarget: parseEther("0.0002"),
     treasuryGasTarget: parseEther("0.001"),
     minDeployerBalance: parseEther("0.005"),
-    faucets: [
+    funding: [
       "  https://portal.cdp.coinbase.com/products/faucet  (Coinbase, free)",
       "  https://www.alchemy.com/faucets/base-sepolia",
     ],
@@ -58,9 +58,29 @@ const NETWORK_CONFIGS = {
     entityGasTarget: parseEther("0.02"),
     treasuryGasTarget: parseEther("0.05"),
     minDeployerBalance: parseEther("0.4"),
-    faucets: [
+    funding: [
       "  https://faucet.polygon.technology  (official)",
       "  https://www.alchemy.com/faucets/polygon-amoy",
+    ],
+  },
+  // ForteL2 has no faucet and no explorer: L2 ETH arrives via an L1→L2 deposit
+  // through the Sepolia Standard Bridge, and tx logs print raw hashes. Gas is
+  // sub-gwei (quiet OP Stack chain), so dust targets mirror Base Sepolia.
+  "fortel2-sepolia": {
+    chainId: 852,
+    name: "ForteL2 Sepolia",
+    currency: "ETH",
+    rpcEnv: "FORTEL2_SEPOLIA_RPC_URL",
+    defaultRpc: "http://127.0.0.1:9545",
+    explorer: null,
+    entityGasTarget: parseEther("0.0002"),
+    treasuryGasTarget: parseEther("0.001"),
+    minDeployerBalance: parseEther("0.005"),
+    funding: [
+      "  No faucet — bridge from Sepolia L1: send ETH from the deployer to the",
+      "  OptimismPortalProxy (0xb4679b1c65e5c07bac95988583c2d7a65108c624); the same",
+      "  amount mints to the deployer on L2 852 once derivation catches up",
+      "  (see ForteL2 deposit-eth-sepolia.sh / deployments/rail-interface.json).",
     ],
   },
 };
@@ -75,6 +95,8 @@ if (!CFG) {
 }
 const RPC_URL = process.env[CFG.rpcEnv] || CFG.defaultRpc;
 const EXPLORER = CFG.explorer;
+const txLink = (hash) => (EXPLORER ? `${EXPLORER}/tx/${hash}` : hash);
+const addressLink = (addr) => (EXPLORER ? `${EXPLORER}/address/${addr}` : addr);
 const OUT_PATH = path.join(root, "chain", `deployments.${NETWORK_ID}.json`);
 
 const TOKENS = [
@@ -110,7 +132,7 @@ async function main() {
         `Generate a fresh key (never reuse a mainnet key) and fund it with ~${formatEther(
           CFG.minDeployerBalance
         )} ${CFG.currency} on ${CFG.name}:\n` +
-        CFG.faucets.join("\n")
+        CFG.funding.join("\n")
     );
   }
 
@@ -135,8 +157,8 @@ async function main() {
   if (balance < CFG.minDeployerBalance) {
     fail(
       `Deployer balance too low (need ≥ ${formatEther(CFG.minDeployerBalance)} ${CFG.currency} for deploy + wallet funding).\n` +
-        `Fund ${deployerAddr} from a faucet:\n` +
-        CFG.faucets.join("\n")
+        `Fund ${deployerAddr}:\n` +
+        CFG.funding.join("\n")
     );
   }
 
@@ -158,8 +180,8 @@ async function main() {
   async function send(fn, label) {
     const hash = await fn();
     const receipt = await publicClient.waitForTransactionReceipt({ hash });
-    if (receipt.status !== "success") fail(`${label} reverted: ${EXPLORER}/tx/${hash}`);
-    console.log(`  ${label} → ${EXPLORER}/tx/${hash}`);
+    if (receipt.status !== "success") fail(`${label} reverted: ${txLink(hash)}`);
+    console.log(`  ${label} → ${txLink(hash)}`);
     return receipt;
   }
 
@@ -191,8 +213,8 @@ async function main() {
     const art = artifact(name);
     const hash = await deployer.deployContract({ abi: art.abi, bytecode: art.bytecode, args });
     const receipt = await publicClient.waitForTransactionReceipt({ hash });
-    if (receipt.status !== "success") fail(`${name} deploy reverted: ${EXPLORER}/tx/${hash}`);
-    console.log(`  ${name}${args[1] ? ` (${args[1]})` : ""} → ${EXPLORER}/address/${receipt.contractAddress}`);
+    if (receipt.status !== "success") fail(`${name} deploy reverted: ${txLink(hash)}`);
+    console.log(`  ${name}${args[1] ? ` (${args[1]})` : ""} → ${addressLink(receipt.contractAddress)}`);
     return { address: receipt.contractAddress, abi: art.abi };
   }
 
@@ -250,7 +272,7 @@ async function main() {
       [NETWORK_ID]: {
         chainId: CFG.chainId,
         rpcUrl: RPC_URL,
-        explorerUrl: EXPLORER,
+        ...(EXPLORER ? { explorerUrl: EXPLORER } : {}),
         contracts: {
           PaymentSettlement: settlement.address,
           tokens: Object.fromEntries(
@@ -307,7 +329,7 @@ async function main() {
 
   const remaining = await publicClient.getBalance({ address: deployerAddr });
   console.log(`\nDone. Deployer gas remaining: ${formatEther(remaining)} ${CFG.currency}`);
-  console.log(`PaymentSettlement: ${EXPLORER}/address/${settlement.address}`);
+  console.log(`PaymentSettlement: ${addressLink(settlement.address)}`);
   console.log(`Start the app (npm run dev) and pick ${CFG.name} as source and/or destination chain.`);
 }
 

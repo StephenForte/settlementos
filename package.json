@@ -13,6 +13,7 @@
     "setup": "npm run compile && prisma generate && prisma db push && node scripts/setup.mjs",
     "deploy:base-sepolia": "npm run compile && node --env-file=.env scripts/deploy-testnet.mjs base-sepolia",
     "deploy:polygon-amoy": "npm run compile && node --env-file=.env scripts/deploy-testnet.mjs polygon-amoy",
+    "deploy:fortel2-sepolia": "npm run compile && node --env-file=.env scripts/deploy-testnet.mjs fortel2-sepolia",
     "test": "vitest run",
     "test:watch": "vitest"
   },
