@@ -69,11 +69,11 @@ Canonical file: ForteL2 `deployments/rail-interface.json` + `tasks/prd-money-rai
 
 | Phase | Scope | Status |
 |---|---|---|
-| **F1** | Network registry + chain adapter for **`fortel2-sepolia` (852)** (and optional local 901) | Ready to start |
-| **F2** | Deploy existing contracts + seed wallets on ForteL2 852 | Ready to start |
-| **F3** | Single-chain payment demo (ACME → Tokyo) on ForteL2 | After F2 |
+| **F1** | Network registry + chain adapter for **`fortel2-sepolia` (852)** (and optional local 901) | ✅ Done (PR #21) |
+| **F2** | Deploy existing contracts + seed wallets on ForteL2 852 | ✅ Done (PR #24) — deployed 2026-07-24 |
+| **F3** | Single-chain payment demo (ACME → Tokyo) on ForteL2 | ✅ Done — first settle 2026-07-24 (`pay_8c318fcae804`) |
 | **F4** | Treasury MMF park/recall against ForteL2 balances | After F2 |
-| **F5** | Docs/demo/README: ForteL2 as destination rail | With F3 |
+| **F5** | Docs/demo/README: ForteL2 as destination rail | ✅ Done (with F3) |
 | **F6** | Explorer address book + optional replica read URL | After F3 |
 | **F7** | Optional: simulated bridge legs involving ForteL2 | After F3 |
 | **F8** | Later: canonical USDC adapter cutover | Joint with ForteL2 MR-4 |
@@ -84,40 +84,44 @@ Canonical file: ForteL2 `deployments/rail-interface.json` + `tasks/prd-money-rai
 **Description:** As an operator, I want to select ForteL2 as source/destination network in the UI and API.
 
 **Acceptance Criteria:**
-- [ ] Primary entry `fortel2-sepolia`: chainId **852**, RPC from env (e.g. `FORTEL2_SEPOLIA_RPC_URL`, defaulting to Mac sequencer URL from rail-interface)
-- [ ] Optional entry `fortel2-local`: chainId **901** for offline experiments
-- [ ] Optional `FORTEL2_SEPOLIA_READ_RPC_URL` (replica) used for balance/read paths when set; writes still use sequencer RPC
-- [ ] `networkInfo`, explorer helpers, and route engine accept the new ids without special-case payment logic
-- [ ] Missing RPC fails closed with a clear error (do not silently fall back to another chain)
-- [ ] Unit/registry tests updated; README notes env vars and that the chain is operated outside this repo
+- [x] Primary entry `fortel2-sepolia`: chainId **852**, RPC from env (e.g. `FORTEL2_SEPOLIA_RPC_URL`, defaulting to Mac sequencer URL from rail-interface)
+- [x] Optional entry `fortel2-local`: chainId **901** for offline experiments
+- [x] Optional `FORTEL2_SEPOLIA_READ_RPC_URL` (replica) used for balance/read paths when set; writes still use sequencer RPC
+- [x] `networkInfo`, explorer helpers, and route engine accept the new ids without special-case payment logic
+- [x] Missing RPC fails closed with a clear error (do not silently fall back to another chain)
+- [x] Unit/registry tests updated; README notes env vars and that the chain is operated outside this repo
 
 ### US-F002: Parameterize deploy for ForteL2
 **Description:** As an operator, I want `deploy-testnet`-style scripting to deploy mocks + `PaymentSettlement` + `TokenizedMMF` to ForteL2.
 
 **Acceptance Criteria:**
-- [ ] Deploy path reuses existing contracts; no ForteL2-only Solidity in this phase
-- [ ] Writes `chain/deployments.fortel2-sepolia.json` (gitignored if it contains keys; public addresses documentable)
-- [ ] Operator / treasury / entity dust funding follows existing testnet patterns; L2 ETH via ForteL2 deposit bridge (not genesis)
-- [ ] Idempotent re-run behavior matches Base Sepolia / Amoy scripts where practical
-- [ ] Documented npm script (e.g. `deploy:fortel2-sepolia`)
+- [x] Deploy path reuses existing contracts; no ForteL2-only Solidity in this phase
+- [x] Writes `chain/deployments.fortel2-sepolia.json` (gitignored if it contains keys; public addresses documentable)
+- [x] Operator / treasury / entity dust funding follows existing testnet patterns; L2 ETH via ForteL2 deposit bridge (not genesis)
+- [x] Idempotent re-run behavior matches Base Sepolia / Amoy scripts where practical
+- [x] Documented npm script (e.g. `deploy:fortel2-sepolia`)
+
+> Note: `TokenizedMMF` is intentionally **not** deployed yet — parity with Base
+> Sepolia / Amoy (no live network carries the fund today). It ships with F4
+> (US-F005), which needs it.
 
 ### US-F003: Wire DB registration after deploy
 **Description:** As the demo, I need entities and wallets registered for ForteL2 so execute/compliance paths work.
 
 **Acceptance Criteria:**
-- [ ] Setup/deploy registration creates per-network wallets for ForteL2 like other live networks
-- [ ] `npm run setup` (or documented variant) can re-bind ForteL2 addresses after DB reset without breaking local Hardhat networks
-- [ ] Balances API shows ForteL2 treasury/entity balances when that network is deployed
+- [x] Setup/deploy registration creates per-network wallets for ForteL2 like other live networks
+- [x] `npm run setup` (or documented variant) can re-bind ForteL2 addresses after DB reset without breaking local Hardhat networks
+- [x] Balances API shows ForteL2 treasury/entity balances when that network is deployed
 
 ### US-F004: Single-chain settle on ForteL2
 **Description:** As a demo operator, I want the ACME → Tokyo $100k USD→JPY path to escrow and settle on ForteL2.
 
 **Acceptance Criteria:**
-- [ ] Create payment with `source_network` = `destination_network` = ForteL2 id
-- [ ] Quote → compliance → execute completes to `SETTLED` (or existing success terminal state)
-- [ ] Payment detail shows ForteL2 tx hash(es); link via explorer helper if an explorer URL exists, else raw hash + RPC note
-- [ ] Audit log entries reference those hashes
-- [ ] No changes to compliance provider semantics
+- [x] Create payment with `source_network` = `destination_network` = ForteL2 id
+- [x] Quote → compliance → execute completes to `SETTLED` (or existing success terminal state)
+- [x] Payment detail shows ForteL2 tx hash(es); link via explorer helper if an explorer URL exists, else raw hash + RPC note
+- [x] Audit log entries reference those hashes
+- [x] No changes to compliance provider semantics
 
 ### US-F005: MMF park/recall on ForteL2
 **Description:** As a treasury operator, I want overnight parking to work against ForteL2 liquidity.
@@ -131,10 +135,10 @@ Canonical file: ForteL2 `deployments/rail-interface.json` + `tasks/prd-money-rai
 **Description:** As a partner viewer, I want README/DEMO to show ForteL2 as the destination rail without implying SOS runs the sequencer.
 
 **Acceptance Criteria:**
-- [ ] README “long-term destination ForteL2” section updated with concrete local integrate steps
-- [ ] DEMO.md (or equivalent) has a ForteL2 single-chain beat
-- [ ] Explicit statement: payments product = SettlementOS; rail = ForteL2; no duplicate primitives
-- [ ] Link to ForteL2 coordination + money-rail docs for infra questions
+- [x] README “long-term destination ForteL2” section updated with concrete local integrate steps
+- [x] DEMO.md (or equivalent) has a ForteL2 single-chain beat
+- [x] Explicit statement: payments product = SettlementOS; rail = ForteL2; no duplicate primitives
+- [x] Link to ForteL2 coordination + money-rail docs for infra questions
 
 ### US-F007: Sepolia-backed ForteL2 overlay (optional, later)
 **Description:** As a public demo, I want `fortel2-sepolia` analogous to `base-sepolia`.

@@ -12,8 +12,8 @@ The long-term destination is [ForteL2](https://github.com/StephenForte/ForteL2),
 
 ## Roadmap (directional)
 
-1. **Now:** multi-chain deployment and settlement mechanics on testnets (Base Sepolia, Polygon Amoy)
-2. **Next:** migrate settlement to [ForteL2](https://github.com/StephenForte/ForteL2) as it reaches Sepolia-backed operation
+1. **Now:** multi-chain deployment and settlement mechanics on testnets (Base Sepolia, Polygon Amoy, and [ForteL2](https://github.com/StephenForte/ForteL2) Sepolia — the first payment settled on the home rail 2026-07-24)
+2. **Next:** deepen the ForteL2 rail (treasury parking, simulated bridge legs, replica reads) as it hardens toward public operation
 3. **Eventually:** a true settlement platform for cross-border transactions — acknowledged to be far away; everything before that point is learning in public
 
 ## Why
@@ -318,11 +318,37 @@ FORTEL2_SEPOLIA_READ_RPC_URL=
 FORTEL2_LOCAL_RPC_URL=http://127.0.0.1:9545
 ```
 
-Registry-only so far (phase F1 of
-[tasks/prd-fortel2-integration.md](tasks/prd-fortel2-integration.md)): contracts
-are not deployed there yet, so ForteL2 doesn't show as *available* in
-create-payment until the F2 deploy lands. ForteL2 has no block explorer yet —
-payments there will show raw tx hashes without links.
+**Live as a settlement rail** (phases F1–F3 of
+[tasks/prd-fortel2-integration.md](tasks/prd-fortel2-integration.md)):
+SettlementOS contracts are deployed on chain 852 and the ACME → Tokyo
+USD→JPY demo settles there end to end. The division of labor is deliberate:
+**SettlementOS is the payments product; ForteL2 is the rail.** SettlementOS
+deploys its own escrow/token contracts onto ForteL2 exactly as it does onto
+Base Sepolia — no ForteL2-side primitives are duplicated here, and nothing in
+this repo runs the chain (sequencer, batcher, bridge, and L1 contracts are
+ForteL2's; see ForteL2's `tasks/coordination-settlementos.md` and
+`tasks/prd-money-rail.md` for infra questions).
+
+To integrate locally (on the machine where the ForteL2 sequencer runs):
+
+```bash
+# 1. Preflight — expect chain id 852 and an advancing block number
+cast chain-id --rpc-url http://127.0.0.1:9545
+# 2. Fund the deployer on L2 (no faucet): send ETH on Sepolia L1 to the
+#    OptimismPortalProxy (address in ForteL2 deployments/rail-interface.json);
+#    the same amount mints to the deployer on 852. ~0.05 ETH is ample.
+# 3. Deploy contracts + dust-fund wallets, then register entities
+npm run deploy:fortel2-sepolia
+npm run setup
+```
+
+The deploy writes `chain/deployments.fortel2-sepolia.json` (gitignored — holds
+generated dust-wallet keys) and is idempotent: re-runs reuse existing wallets
+and top up dust only when below target. ForteL2 has no block explorer yet, so
+payments there show raw tx hashes without links; verify with
+`cast receipt <hash> --rpc-url http://127.0.0.1:9545`. The Sepolia deployment
+is pinned through ForteL2's learning Phase 6 — a Phase 7 re-genesis requires a
+coordinated redeploy of the SettlementOS contracts.
 
 ## Documentation
 

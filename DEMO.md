@@ -3,8 +3,9 @@
 A complete, from-scratch walkthrough of everything built through Phase 6:
 environment setup, the 5-minute core demo on the local chains (Phases 1–3),
 real compliance screening against OpenSanctions and the Chainalysis oracle
-(Phase 6), and the Base Sepolia finale with public Basescan links (Phase 4).
-Timings assume a warm machine; the full script runs comfortably in ~18 minutes.
+(Phase 6), the Base Sepolia finale with public Basescan links (Phase 4), and
+the ForteL2 closer — the same payment settling on our own L2 (Part E).
+Timings assume a warm machine; the full script runs comfortably in ~20 minutes.
 
 > Testnet demo only. Mock assets, simulated FX, simulated payout. No real funds.
 > Sanctions and wallet screening optionally run against **real** services (Part C).
@@ -250,6 +251,57 @@ Optional `.env` settings: `BASE_SEPOLIA_RPC_URL` (defaults to the public
 
 ---
 
+## Part E — ForteL2 (the home rail)
+
+The closing statement: the same payment, settling on **our own L2**.
+[ForteL2](https://github.com/StephenForte/ForteL2) (OP Stack, Sepolia-backed,
+chain ID 852) is operated outside this repo — **SettlementOS is the payments
+product; ForteL2 is the rail.** No primitives are duplicated: the exact same
+escrow and token contracts deploy onto ForteL2 as onto Base Sepolia, and
+nothing here touches the sequencer. For infra questions see ForteL2's
+`tasks/coordination-settlementos.md` and `tasks/prd-money-rail.md`.
+
+### One-time setup (on the machine running the ForteL2 sequencer)
+
+1. **Preflight** — `cast chain-id --rpc-url http://127.0.0.1:9545` must print
+   `852` (the write RPC is the sequencer's loopback; no public exposure).
+2. **Fund the deployer on L2** — no faucet exists: send ~0.05 Sepolia L1 ETH
+   from the deployer to ForteL2's `OptimismPortalProxy` (address in ForteL2
+   `deployments/rail-interface.json`); the deposit mints the same amount on 852.
+3. **Deploy + register:**
+
+   ```bash
+   npm run deploy:fortel2-sepolia
+   npm run setup
+   ```
+
+   Same script family as Base Sepolia — idempotent, reuses generated wallets,
+   writes `chain/deployments.fortel2-sepolia.json` (gitignored).
+
+### The beat (90 s)
+
+1. **New Payment**: ACME US Inc → Tokyo Trading KK, `100000.00` USD → JPY,
+   **ForteL2 Sepolia → ForteL2 Sepolia**.
+2. Quote → Execute — the full lifecycle to **SETTLED**: escrow + settlement
+   transactions in real ~2 s L2 blocks, ¥ ledger credit to the recipient.
+3. **The point to land:** there is no block explorer yet, so the payment detail
+   page shows **raw tx hashes** — prove them from the chain itself:
+
+   ```bash
+   cast receipt <escrow_tx_hash> --rpc-url http://127.0.0.1:9545
+   ```
+
+   `status 1 (success)`, addressed to the `PaymentSettlement` the deploy just
+   put there. A payment product settling on its own rail, verified at the RPC.
+4. Audit Trail + reconciliation export both reference the ForteL2 hashes —
+   same evidence chain as every other network, no special-casing.
+
+> Reset caveat: the ForteL2 Sepolia deployment is pinned through ForteL2's
+> learning Phase 6. A Phase 7 re-genesis wipes the L2 state — redeploy with the
+> two commands above, coordinated with the ForteL2 operator.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -259,6 +311,8 @@ Optional `.env` settings: `BASE_SEPOLIA_RPC_URL` (defaults to the public
 | Deploy script says balance too low | Fund the printed deployer address from a faucet (needs ≥ 0.01 ETH) |
 | `not operator` revert on execute | `DEPLOYER_PRIVATE_KEY` in `.env` differs from the key that deployed — redeploy or restore the key |
 | Base Sepolia RPC flaky / rate-limited | Set `BASE_SEPOLIA_RPC_URL` to an Alchemy/Infura endpoint; balances pages degrade gracefully in the meantime |
+| Deploy aborts: `Expected chainId 852 … found 901` | The ForteL2 stack is running its offline devnet, not the Sepolia deployment — bring up the Sepolia stack and re-run (the guard stops anything from being signed against the wrong chain) |
+| `fortel2-sepolia` missing from dropdowns | `npm run deploy:fortel2-sepolia` hasn't run on this machine (or its overlay JSON was deleted); the sequencer must be up at `127.0.0.1:9545` |
 | Compliance rows show `provider_error` / payment parks in MANUAL_REVIEW | A provider or RPC hiccup — the fail-safe parked it (never fail-open). Approve in the Compliance Queue and continue, or comment out the provider lines in `.env` + restart for mock mode |
 | Sanctions check PASSes for a "Sanctioned …"-named entity | You're in real mode — the name hook is mock-only. Use a genuinely listed name instead (Part C step 2) |
 | Weird state mid-demo | `npm run setup` resets DB + local chains; Base Sepolia contracts/wallets survive (and `.env` compliance config is untouched) |
