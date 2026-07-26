@@ -47,6 +47,11 @@ chain/cache
 chain/deployments*.json
 chain/dev-api-keys.json
 prisma/dev.db
+/dev.db
 
 # test fixtures
 tests/.tmp
+
+# per-machine agent settings (.claude/launch.json is shared and stays tracked)
+.claude/settings.local.json
+.claude/worktrees/
