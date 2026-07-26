@@ -39,6 +39,7 @@
     "vitest": "^4.1.10"
   },
   "overrides": {
-    "postcss": "8.5.18"
+    "postcss": "8.5.18",
+    "undici": "^6.28.0"
   }
 }
