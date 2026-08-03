@@ -1,16 +1,23 @@
 // Deploy SettlementOS contracts to a REAL live network (Base Sepolia, Polygon
 // Amoy, or ForteL2 Sepolia — pick via argv, each wired up as an npm script).
 //
-//   1. Deploys MockERC20 tokens + PaymentSettlement using DEPLOYER_PRIVATE_KEY
-//      (the deployer doubles as the settlement operator).
+//   1. Deploys MockERC20 tokens + PaymentSettlement + TokenizedMMF using
+//      DEPLOYER_PRIVATE_KEY (the deployer doubles as the settlement operator).
 //   2. Generates local entity wallets + a treasury wallet (reused across re-runs)
 //      and funds them with dust gas from the deployer. Entity wallets are NOT
 //      pre-approved: the executor approves each payment's exact amount before
 //      escrowing it, so their gas dust must cover an approve per payment.
-//   3. Mints demo token balances (same distribution as the local chains).
+//   3. Mints demo token balances (same distribution as the local chains) and the
+//      MMF yield buffer, then has the treasury approve the fund (see step below).
 //   4. Writes chain/deployments.<network>.json (gitignored — contains the
 //      generated dust-wallet keys; the funded deployer key stays in .env only).
 //   5. Registers the entity wallets in the app database (if entities are seeded).
+//
+// The TokenizedMMF (overnight liquidity parking, PRD §24) deploys on live
+// networks the same way it always has on the local chains — mint its mockUSDC
+// yield buffer to the fund AND have the treasury approve the fund, or parking
+// reverts (AGENTS.md gotcha). mmfAddress() returns undefined for any network
+// whose overlay predates this, so older deploys keep settling untouched.
 //
 // Run: npm run deploy:base-sepolia | deploy:polygon-amoy | deploy:fortel2-sepolia
 //      (all load .env via node --env-file)
@@ -104,6 +111,14 @@ const TOKENS = [
   ["Mock JPY Token", "mockJPY", 0],
   ["Mock SGD Token", "mockSGD", 6],
 ];
+
+// Pre-funded mockUSDC held by the MMF to pay simulated yield on redemption —
+// accrual raises the redemption value without minting asset, so the yield is
+// paid out of this buffer (mirrors scripts/setup.mjs + the test fixture).
+const MMF_YIELD_BUFFER = 50_000n * 10n ** 6n;
+// The treasury is the platform's own parking account, so its approval to the
+// fund stays MAX (unlike entity → escrow allowances, which are exact per payment).
+const MAX_UINT256 = 2n ** 256n - 1n;
 
 // externalId → demo profile (mirrors scripts/setup.mjs; wallet risk attributes
 // drive the compliance demo the same way they do on the local chains).
@@ -224,6 +239,9 @@ async function main() {
     tokens[symbol] = { ...t, decimals };
   }
   const settlement = await deploy("PaymentSettlement", []);
+  // Tokenized MMF for parked treasury liquidity — backed by mockUSDC (the
+  // settlement asset). Segregated from escrow: the two contracts never cross-call.
+  const mmf = await deploy("TokenizedMMF", [tokens.mockUSDC.address]);
 
   console.log("\nApproving assets on PaymentSettlement:");
   for (const [symbol, t] of Object.entries(tokens)) {
@@ -248,6 +266,9 @@ async function main() {
     ["mockSGD", treasuryAddr, 1_000_000n * 10n ** 6n, "treasury 1,000,000 mockSGD"],
     ["mockSGD", entityWallets.ent_sg_supplier.address, 200_000n * 10n ** 6n, "SG Imports 200,000 mockSGD"],
     ["mockJPY", entityWallets.ent_tokyo_supplier.address, 10_000_000n, "Tokyo 10,000,000 mockJPY"],
+    // MMF yield buffer: accrual raises redemption value without adding asset to
+    // the fund, so simulated yield is paid out of this pre-funded balance.
+    ["mockUSDC", mmf.address, MMF_YIELD_BUFFER, "MMF yield buffer 50,000 mockUSDC"],
   ];
   for (const [symbol, to, amount, label] of mints) {
     await send(
@@ -267,6 +288,24 @@ async function main() {
   // exact amount per payment instead (lib/chain.ts ensureSenderAllowance), which
   // costs one extra tx of the wallet's dust per settlement.
 
+  // The treasury parks into the MMF, which pulls the asset via transferFrom, so
+  // it must approve the fund. This is the platform's own account (not a
+  // customer's), so a MAX approval is fine — park() also self-heals a missing
+  // allowance (ensureTreasuryAllowance), but approving here mirrors the local
+  // setup so the very first park needs no extra tx.
+  console.log("\nApproving the MMF as treasury:");
+  const treasuryWallet = walletFor(treasuryKey);
+  await send(
+    () =>
+      treasuryWallet.writeContract({
+        address: tokens.mockUSDC.address,
+        abi: tokens.mockUSDC.abi,
+        functionName: "approve",
+        args: [mmf.address, MAX_UINT256],
+      }),
+    "treasury approve mockUSDC → TokenizedMMF"
+  );
+
   const deployments = {
     networks: {
       [NETWORK_ID]: {
@@ -275,6 +314,7 @@ async function main() {
         ...(EXPLORER ? { explorerUrl: EXPLORER } : {}),
         contracts: {
           PaymentSettlement: settlement.address,
+          TokenizedMMF: mmf.address,
           tokens: Object.fromEntries(
             Object.entries(tokens).map(([k, v]) => [k, { address: v.address, decimals: v.decimals }])
           ),
@@ -330,6 +370,7 @@ async function main() {
   const remaining = await publicClient.getBalance({ address: deployerAddr });
   console.log(`\nDone. Deployer gas remaining: ${formatEther(remaining)} ${CFG.currency}`);
   console.log(`PaymentSettlement: ${addressLink(settlement.address)}`);
+  console.log(`TokenizedMMF: ${addressLink(mmf.address)}`);
   console.log(`Start the app (npm run dev) and pick ${CFG.name} as source and/or destination chain.`);
 }
 
