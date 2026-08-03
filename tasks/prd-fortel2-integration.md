@@ -100,10 +100,9 @@ Canonical file: ForteL2 `deployments/rail-interface.json` + `tasks/prd-money-rai
 - [x] Operator / treasury / entity dust funding follows existing testnet patterns; L2 ETH via ForteL2 deposit bridge (not genesis)
 - [x] Idempotent re-run behavior matches Base Sepolia / Amoy scripts where practical
 - [x] Documented npm script (e.g. `deploy:fortel2-sepolia`)
-
-> Note: `TokenizedMMF` is intentionally **not** deployed yet — parity with Base
-> Sepolia / Amoy (no live network carries the fund today). It ships with F4
-> (US-F005), which needs it.
+- [x] `TokenizedMMF` deployed on live networks (F4 / US-F005, PR #29) — same
+  script path as escrow + mocks; yield buffer + treasury approval included.
+  Older overlays without a fund keep settling (`mmfAddress()` → `undefined`).
 
 ### US-F003: Wire DB registration after deploy
 **Description:** As the demo, I need entities and wallets registered for ForteL2 so execute/compliance paths work.
@@ -139,6 +138,9 @@ Canonical file: ForteL2 `deployments/rail-interface.json` + `tasks/prd-money-rai
 - [x] DEMO.md (or equivalent) has a ForteL2 single-chain beat
 - [x] Explicit statement: payments product = SettlementOS; rail = ForteL2; no duplicate primitives
 - [x] Link to ForteL2 coordination + money-rail docs for infra questions
+- [x] F4 treasury beat documented: README + DEMO cover TokenizedMMF deploy on
+  live networks and the ForteL2 park→accrue→recall path (live-sequencer run
+  still pending a reachable RPC)
 
 ### US-F007: Sepolia-backed ForteL2 overlay (optional, later)
 **Description:** As a public demo, I want `fortel2-sepolia` analogous to `base-sepolia`.

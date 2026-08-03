@@ -7,7 +7,7 @@ AGENTS.md above. README.md has full docs, DEMO.md the demo script, PRD.md the
 product requirements + phase roadmap (canonical; updated 2026-07-08 with
 implementation status and the JLTXX-inspired tokenized-MMF phase).
 
-## State (2026-07-15)
+## State (2026-08-03)
 - Phases 1–4 complete: single-chain settlement; FX/routing/compliance/liquidity;
   multi-chain demo (base-local 31337 + polygon-local 31338, simulated bridge);
   real Base Sepolia (84532) with public Basescan links.
@@ -85,7 +85,20 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
   classification (framed as questions for counsel), partner integration, corridor
   strategy, and pilot options memos. Decisions: markdown memos, US-first, no legal
   conclusions. DRAFTS for Stephen's review; the legal memo is for actual counsel.
-- NEXT: Stephen's review of the Track B drafts; optionally a regulator demo deck.
+- ForteL2 integration F1–F5 (see `tasks/prd-fortel2-integration.md`):
+  - F1 registry (`fortel2-sepolia` 852 + optional local 901) — PR #21.
+  - F2 deploy to 852 — PR #24 (2026-07-24).
+  - F3 first single-chain settle on the home rail — 2026-07-24
+    (`pay_8c318fcae804`); F5 docs/demo beat landed with it (PR #26).
+  - F4 TokenizedMMF on live networks — PR #29 (2026-08-03):
+    `deploy-testnet.mjs` provisions `TokenizedMMF` + 50k mockUSDC yield
+    buffer + treasury approval on every live network (base-sepolia /
+    polygon-amoy / fortel2-sepolia); hermetic overlay wiring test added;
+    park→accrue→recall verified on a local chainId-852 node. Live-sequencer
+    run pending a reachable ForteL2 RPC. Suite 398 tests.
+- NEXT: live ForteL2 park→accrue→recall once the sequencer RPC is reachable;
+  optional F6 explorer address book / replica reads; F7 simulated
+  Base↔ForteL2 bridge; Stephen's review of the Track B regulatory drafts.
 
 ## Base Sepolia (live)
 - Deployed 2026-07-07, verified with a real settled payment.

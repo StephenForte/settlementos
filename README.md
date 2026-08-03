@@ -6,14 +6,14 @@ Most general-purpose chains optimize for everything: NFTs, meme coins, web3 soci
 
 ## Current state
 
-This is the experimentation phase. The system is deployed to two testnets — **Base Sepolia** and **Polygon Amoy** — deliberately, to prove that the settlement layer can connect to multiple chains rather than marrying one. A purpose-built [independent explorer](https://github.com/StephenForte/settlementos-explorer) shows only what a payments system needs: transfers, settlement state, and nothing Etherscan-shaped.
+This is the experimentation phase. The system is deployed to **Base Sepolia**, **Polygon Amoy**, and [ForteL2](https://github.com/StephenForte/ForteL2) Sepolia — deliberately multi-chain, to prove the settlement layer can connect to several rails rather than marrying one. A purpose-built [independent explorer](https://github.com/StephenForte/settlementos-explorer) shows only what a payments system needs: transfers, settlement state, and nothing Etherscan-shaped.
 
-The long-term destination is [ForteL2](https://github.com/StephenForte/ForteL2), a personal OP Stack L2 being built in parallel — SettlementOS as the application layer, ForteL2 as the settlement infrastructure underneath it. Together they're a full-stack test of the payments-only thesis.
+ForteL2 is the long-term home rail: SettlementOS as the application layer, ForteL2 as the settlement infrastructure underneath it. Together they're a full-stack test of the payments-only thesis.
 
 ## Roadmap (directional)
 
-1. **Now:** multi-chain deployment and settlement mechanics on testnets (Base Sepolia, Polygon Amoy, and [ForteL2](https://github.com/StephenForte/ForteL2) Sepolia — the first payment settled on the home rail 2026-07-24)
-2. **Next:** deepen the ForteL2 rail (treasury parking, simulated bridge legs, replica reads) as it hardens toward public operation
+1. **Now:** multi-chain deployment and settlement mechanics on testnets (Base Sepolia, Polygon Amoy, and [ForteL2](https://github.com/StephenForte/ForteL2) Sepolia — first settle 2026-07-24; TokenizedMMF park/recall wiring shipped 2026-08-03)
+2. **Next:** live ForteL2 sequencer park→accrue→recall, simulated bridge legs involving ForteL2, and explorer/replica polish as the rail hardens toward public operation
 3. **Eventually:** a true settlement platform for cross-border transactions — acknowledged to be far away; everything before that point is learning in public
 
 ## Why
@@ -40,7 +40,7 @@ overnight in a tokenized money-market fund and recalled T+0 when a payment needs
 |---|---|
 | Frontend + API | Next.js (App Router) + Tailwind, REST route handlers |
 | Database | SQLite via Prisma (entities, payments, compliance checks, audit log + signed checkpoints, liquidity reservations, treasury positions, ledger credits, API keys, idempotency records) |
-| Chains | Two local Hardhat nodes: `base-local` (31337, simulates Base Sepolia) and `polygon-local` (31338, simulates Polygon Amoy), plus real `base-sepolia` (84532) and `polygon-amoy` (80002) with public explorer links — see [Real public testnets](#real-public-testnets-base-sepolia--polygon-amoy) |
+| Chains | Two local Hardhat nodes: `base-local` (31337, simulates Base Sepolia) and `polygon-local` (31338, simulates Polygon Amoy), plus real `base-sepolia` (84532), `polygon-amoy` (80002), and `fortel2-sepolia` (852) — see [Real public testnets](#real-public-testnets-base-sepolia--polygon-amoy) and [ForteL2](#fortel2) |
 | Contracts | Solidity 0.8.24 — `MockERC20` (mockUSDC/mockJPY/mockSGD), `PaymentSettlement` escrow, `TokenizedMMF` (operator-gated share fund for parked treasury liquidity) |
 | Chain client | viem, via a network-registry chain adapter ([lib/chain.ts](lib/chain.ts), [lib/networks.ts](lib/networks.ts)) with a pluggable signer/custody seam ([lib/signers.ts](lib/signers.ts)) |
 | Bridge | Simulated: source-chain escrow + FX, then treasury pays out destination-asset tokens to the recipient wallet on the destination chain (real ERC-20 tx on chain 2) |
@@ -282,10 +282,13 @@ Setup (per network):
      than Base Sepolia — the deploy script's dust targets account for this.
 3. **Deploy** — `npm run deploy:base-sepolia` or `npm run deploy:polygon-amoy`
    (both call `scripts/deploy-testnet.mjs`). The script deploys the tokens +
-   `PaymentSettlement`, generates local treasury/entity wallets (funding each with
-   dust gas for approvals), mints demo balances, registers the wallets in the DB,
-   and writes `chain/deployments.<network>.json` (gitignored — it holds the
-   generated dust-wallet keys; the funded deployer key stays in `.env` only).
+   `PaymentSettlement` + `TokenizedMMF` (yield buffer + treasury approval),
+   generates local treasury/entity wallets (funding each with dust gas —
+   entities approve the exact payment amount at execute time), mints demo
+   balances, registers the wallets in the DB, and writes
+   `chain/deployments.<network>.json` (gitignored — it holds the generated
+   dust-wallet keys; the funded deployer key stays in `.env` only). Overlays
+   from before F4 omit the fund; re-run the deploy to provision it.
    Re-runs reuse the generated wallets.
 
 Then `npm run dev` and pick **Base Sepolia** or **Polygon Amoy** as source and/or
@@ -298,7 +301,7 @@ wallet). Local chains and the real testnets coexist: `npm run setup` re-register
 the testnet entity wallets after every DB reset, and cross-chain routes can
 bridge between any pair (simulated bridge, real transactions on both networks).
 
-## ForteL2 (in progress)
+## ForteL2
 
 [ForteL2](https://github.com/StephenForte/ForteL2) — the OP Stack L2 that is the
 long-term home settlement rail — is in the network registry as `fortel2-sepolia`
@@ -318,14 +321,19 @@ FORTEL2_SEPOLIA_READ_RPC_URL=
 FORTEL2_LOCAL_RPC_URL=http://127.0.0.1:9545
 ```
 
-**Live as a settlement rail** (phases F1–F3 of
+**Live as a settlement + treasury rail** (phases F1–F5 of
 [tasks/prd-fortel2-integration.md](tasks/prd-fortel2-integration.md)):
-SettlementOS contracts are deployed on chain 852 and the ACME → Tokyo
-USD→JPY demo settles there end to end. The division of labor is deliberate:
-**SettlementOS is the payments product; ForteL2 is the rail.** SettlementOS
-deploys its own escrow/token contracts onto ForteL2 exactly as it does onto
-Base Sepolia — no ForteL2-side primitives are duplicated here, and nothing in
-this repo runs the chain (sequencer, batcher, bridge, and L1 contracts are
+SettlementOS contracts — `MockERC20`s, `PaymentSettlement`, and
+`TokenizedMMF` — deploy onto chain 852 the same way they do onto Base Sepolia
+/ Amoy. The ACME → Tokyo USD→JPY demo settled there end to end (2026-07-24),
+and F4 (2026-08-03) wired overnight liquidity parking: `deploy-testnet.mjs`
+provisions the fund + 50k mockUSDC yield buffer + treasury approval, and
+`lib/treasury` resolves it via `mmfAddress()` like any other network. A
+park→accrue→recall cycle was verified against a local chainId-852 node;
+a live-sequencer run is pending a reachable ForteL2 RPC. The division of
+labor is deliberate: **SettlementOS is the payments product; ForteL2 is the
+rail.** No ForteL2-side primitives are duplicated here, and nothing in this
+repo runs the chain (sequencer, batcher, bridge, and L1 contracts are
 ForteL2's; see ForteL2's `tasks/coordination-settlementos.md` and
 `tasks/prd-money-rail.md` for infra questions).
 
@@ -337,15 +345,18 @@ cast chain-id --rpc-url http://127.0.0.1:9545
 # 2. Fund the deployer on L2 (no faucet): send ETH on Sepolia L1 to the
 #    OptimismPortalProxy (address in ForteL2 deployments/rail-interface.json);
 #    the same amount mints to the deployer on 852. ~0.05 ETH is ample.
-# 3. Deploy contracts + dust-fund wallets, then register entities
+# 3. Deploy contracts (escrow + tokens + TokenizedMMF) + dust-fund wallets,
+#    then register entities
 npm run deploy:fortel2-sepolia
 npm run setup
 ```
 
 The deploy writes `chain/deployments.fortel2-sepolia.json` (gitignored — holds
 generated dust-wallet keys) and is idempotent: re-runs reuse existing wallets
-and top up dust only when below target. ForteL2 has no block explorer yet, so
-payments there show raw tx hashes without links; verify with
+and top up dust only when below target. Older overlays that predate the MMF
+still settle — `mmfAddress()` returns `undefined` and the Liquidity page
+degrades to "no fund". ForteL2 has no block explorer yet, so payments there
+show raw tx hashes without links; verify with
 `cast receipt <hash> --rpc-url http://127.0.0.1:9545`. The Sepolia deployment
 is pinned through ForteL2's learning Phase 6 — a Phase 7 re-genesis requires a
 coordinated redeploy of the SettlementOS contracts.

@@ -46,7 +46,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 
 | Module | Responsibility |
 |---|---|
-| [lib/networks.ts](lib/networks.ts) | Network registry (local sims + real base-sepolia and polygon-amoy), explorer URL helpers. **Client-safe — no node imports, no secrets.** |
+| [lib/networks.ts](lib/networks.ts) | Network registry (local sims + real base-sepolia, polygon-amoy, and fortel2-sepolia), explorer URL helpers. **Client-safe — no node imports, no secrets.** |
 | [lib/chain.ts](lib/chain.ts) | viem chain adapter. Loads/merges `chain/deployments*.json`, per-network accounts via `accountsFor()`, contract ABIs (`SETTLEMENT_ABI`, `MMF_ABI`), `operatorWrite()` (escrow) / `mmfOperatorWrite()` (fund), `treasuryTokenTransfer()`, `ensureSenderAllowance()` (exact per-payment escrow approval) / `ensureTreasuryAllowance()`, `mmfAddress()` (undefined where no fund is deployed). Resolves no keys itself — `walletFor(networkId, signer)` takes a `Signer`. **`server-only`** |
 | [lib/signers.ts](lib/signers.ts) | The custody seam: `Signer` (`address` + async `account()`), `signerFor(ref, role)` dispatching on the `AccountRef` (`kmsKeyId` → `KmsSigner`, else `LocalKeySigner`), `resolveKey()` (inline key or `privateKeyEnv` → .env), `AccountRef`. `KmsSigner` is the documented extension point and throws "not configured". **`server-only`** |
 | [lib/state.ts](lib/state.ts) | Payment lifecycle state machine; `assertTransition()` enforces legal moves. Pure — no DB, no framework |
@@ -67,7 +67,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/assets.ts](lib/assets.ts) | Asset metadata, currency↔token mapping, base-unit conversion |
 | [lib/money.ts](lib/money.ts) | The amount gate at the API boundary: `parseAmount(amount, currency)` → bigint **minor units** (canonical grammar only — no exponent/sign/whitespace, at most the currency's decimals, ≤15 integer digits, > 0), `formatMinorUnits()` / `canonicalAmount()` for the stored string, `formatScaledUnits()` / `parseScaledUnits()` (the generic halves — any integer scaled by `10^n`, at any precision: FX rates, and reservation strings read back as token base units), `CURRENCY_DECIMALS` (USD/SGD 2, JPY 0), typed `MoneyError`. Framework-free; routes map it to a 400 |
 | [scripts/setup.mjs](scripts/setup.mjs) | Local deploy (tokens, escrow, TokenizedMMF + its yield buffer and treasury approval) + DB seed (dev-mnemonic accounts, local only) |
-| [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy via argv): env deployer key, per-network gas-dust targets, generated dust wallets, DB registration |
+| [scripts/deploy-testnet.mjs](scripts/deploy-testnet.mjs) | Real testnet deploy (base-sepolia / polygon-amoy / fortel2-sepolia via argv): env deployer key, tokens + escrow + TokenizedMMF (yield buffer + treasury approval), per-network gas-dust targets, generated dust wallets, DB registration |
 | `app/api/*` | REST route handlers (thin; logic lives in lib/) |
 | [app/api/guard.ts](app/api/guard.ts) | Authorization glue: `requirePrincipal(req)` / `requireRole(req, ...roles)` return a `Principal` **or** the `NextResponse` to return (`if (x instanceof NextResponse) return x`), plus `isPlatformRole()` for the OPERATOR/REVIEWER-see-everything check, `authorizePaymentWrite(principal, payment)` for the quote/execute/cancel rule (OPERATOR or the sender; returns the response to send or null), and `actorOf(principal)` for the audit actor. Also the error responses every handler returns: `errorResponse(code, msg?)` / `invalidRequest()` / `conflict()` / `unauthorized()` / `forbidden()` / `notFound()`, and `caughtErrorResponse(e, fallback, context)` for catch paths; `scrubFailureReason(principal, payment)` redacts the failure column and `scrubAuditDetail(principal, events)` the included audit-event detail for tenants. `isPlatformRole` is re-exported from lib/auth (pure, so pages can use it). HTTP concerns live here, not in lib/auth.ts |
 | [lib/api-errors.ts](lib/api-errors.ts) | Framework-free error vocabulary: the `ApiErrorCode` union (unauthorized/forbidden/not_found/invalid_request/conflict/idempotency_conflict/execution_failed/internal), the code→status and code→canned-message tables, `ApiError` (throw when a lib wants to pick the client's message), `apiError()`, `fromThrown()` (logs the real error, returns a safe one), `SAFE_FAILURE_SUMMARY`. The NextResponse wrappers live in app/api/guard.ts |
@@ -392,10 +392,10 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 - Advancing the MMF index does **not** add asset to the fund: simulated yield is
   paid out of a buffer that must be funded separately (mint mock asset to the MMF
   address). An underfunded buffer makes `redeem` revert rather than shortchange a
-  redeemer — fund it wherever the MMF is deployed. `scripts/setup.mjs` and the test
-  fixture each mint a 50,000 mockUSDC buffer and have the **treasury approve the fund**
-  (`subscribe` pulls via `transferFrom`); a new deploy target must do both or parking
-  reverts.
+  redeemer — fund it wherever the MMF is deployed. `scripts/setup.mjs`,
+  `scripts/deploy-testnet.mjs`, and the test fixture each mint a 50,000 mockUSDC
+  buffer and have the **treasury approve the fund** (`subscribe` pulls via
+  `transferFrom`); a new deploy target must do both or parking reverts.
 - **Accrual is one-way.** `accrueDaily()` raises the share index, and the contract
   reverts on any decrease — there is no "un-accrue". So an accrued fund is accrued for
   good: after one, a park→recall round-trip returns *more* than the principal (assert
@@ -404,10 +404,12 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   than par. Vitest does not guarantee file order (it is sequential, not alphabetical), so
   *any* test file that accrues raises the index for every other file: derive expected
   amounts from the live index (`valueOfShares(shares, index)`), never from par.
-- The MMF is deployed **per network** and only on the local chains today. Resolve it
-  with `mmfAddress(networkId)` from `lib/chain.ts`, which returns `undefined` (never
-  throws) where no fund exists — real testnets included. Treat "no MMF here" as a
-  normal state to degrade to, not an error.
+- The MMF is deployed **per network**. Local chains always get one (`scripts/setup.mjs`);
+  live networks get one from `scripts/deploy-testnet.mjs` (base-sepolia / polygon-amoy /
+  fortel2-sepolia — F4). Resolve it with `mmfAddress(networkId)` from `lib/chain.ts`,
+  which returns `undefined` (never throws) where no fund exists — overlays written
+  before F4 still lack `TokenizedMMF`. Treat "no MMF here" as a normal state to
+  degrade to, not an error.
 - The `server-only` marker is enforced by the **bundler**, so two things follow.
   (1) `npm test` would die at import time without help — outside a React Server
   Components bundle the package resolves to a bare `throw` (its `react-server`
