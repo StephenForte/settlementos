@@ -2,7 +2,7 @@ name: Security & Vulnerability Scans
 
 on:
   pull_request:
-    branches: [ main, master ]
+    #branches: [ main, master ]
 
 # Grant minimum required permissions for scanning and SARIF reporting
 permissions:
