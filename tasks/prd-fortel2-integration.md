@@ -72,7 +72,7 @@ Canonical file: ForteL2 `deployments/rail-interface.json` + `tasks/prd-money-rai
 | **F1** | Network registry + chain adapter for **`fortel2-sepolia` (852)** (and optional local 901) | ✅ Done (PR #21) |
 | **F2** | Deploy existing contracts + seed wallets on ForteL2 852 | ✅ Done (PR #24) — deployed 2026-07-24 |
 | **F3** | Single-chain payment demo (ACME → Tokyo) on ForteL2 | ✅ Done — first settle 2026-07-24 (`pay_8c318fcae804`) |
-| **F4** | Treasury MMF park/recall against ForteL2 balances | After F2 |
+| **F4** | Treasury MMF park/recall against ForteL2 balances | ✅ Code complete (2026-08-03) — deploy provisions `TokenizedMMF` + yield buffer + treasury approval; park→accrue→recall verified on a local chainId-852 node. Live sequencer run pending a reachable ForteL2 RPC |
 | **F5** | Docs/demo/README: ForteL2 as destination rail | ✅ Done (with F3) |
 | **F6** | Explorer address book + optional replica read URL | After F3 |
 | **F7** | Optional: simulated bridge legs involving ForteL2 | After F3 |
@@ -127,9 +127,9 @@ Canonical file: ForteL2 `deployments/rail-interface.json` + `tasks/prd-money-rai
 **Description:** As a treasury operator, I want overnight parking to work against ForteL2 liquidity.
 
 **Acceptance Criteria:**
-- [ ] Park/recall/accrue APIs succeed when treasury inventory lives on ForteL2
-- [ ] Segregation invariant preserved (MMF funds not commingled with escrow) — existing tests still pass; add ForteL2 fixture coverage if practical
-- [ ] Route engine `recall_required` behavior unchanged
+- [x] Park/recall/accrue APIs succeed when treasury inventory lives on ForteL2 — `scripts/deploy-testnet.mjs` now deploys `TokenizedMMF`, mints its 50k mockUSDC yield buffer, and has the treasury approve the fund; `lib/treasury` is network-generic (proven on the local chains) and resolves the fund from the ForteL2 overlay. A park→accrue→recall cycle was run against a local chainId-852 node (100k parked, +3.5%/365 yield returned on recall). Live-sequencer run is pending a reachable ForteL2 RPC.
+- [x] Segregation invariant preserved (MMF funds not commingled with escrow) — existing tests still pass; the 852 verification asserted the escrow balance is untouched through park→accrue→recall. Hermetic ForteL2 overlay wiring coverage added (`tests/unit/fortel2-mmf-wiring.test.ts`).
+- [x] Route engine `recall_required` behavior unchanged — no routing changes; suite green.
 
 ### US-F006: Documentation and demo run-of-show
 **Description:** As a partner viewer, I want README/DEMO to show ForteL2 as the destination rail without implying SOS runs the sequencer.
