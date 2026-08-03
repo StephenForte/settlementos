@@ -1,6 +1,6 @@
 # PRD: EVM-Based Stablecoin Settlement Infrastructure MVP
 
-## Implementation Status (living section — updated 2026-07-13)
+## Implementation Status (living section — updated 2026-08-03)
 
 The MVP described in this PRD is **built and running**. Code: [github.com/StephenForte/settlementos](https://github.com/StephenForte/settlementos) (Next.js App Router + Prisma/SQLite + viem + Hardhat, Solidity 0.8.24). Engineering guide in `AGENTS.md`, demo run-of-show in `DEMO.md`.
 
@@ -15,6 +15,7 @@ The MVP described in this PRD is **built and running**. Code: [github.com/Stephe
 | 7 | Second real testnet (Polygon Amoy) — public cross-chain demo | ✅ Done 2026-07-15 |
 | 8 | Tokenized MMF / overnight liquidity parking (JLTXX-inspired, see §24) | ✅ Done 2026-07-14 |
 | 9 | Production hardening (AUDIT.md remediation) + regulatory & partner package | 🔨 Track A ✅ Done 2026-07-16 (327→341 tests, merged #8); Track B drafts in `docs/regulatory/` |
+| ForteL2 | Home-rail integration (registry → deploy → settle → MMF → docs) | ✅ F1–F5 done — see [`tasks/prd-fortel2-integration.md`](tasks/prd-fortel2-integration.md); F4 live-MMF wiring PR #29 (2026-08-03); live-sequencer park/recall pending reachable RPC |
 
 Live on Base Sepolia (chainId 84532): `PaymentSettlement` at
 [`0x9d8b8b7c476ab02306046f3da719d380fa0456aa`](https://sepolia.basescan.org/address/0x9d8b8b7c476ab02306046f3da719d380fa0456aa);
@@ -1431,6 +1432,13 @@ agent loop (`scripts/ralph/`), 10 user stories:
 - Liquidity-page MMF card: park/recall/accrue controls, live index and yield,
   "Institutional only" / "Simulated yield — testnet only" pills
 - Suite grew 93 → 131 tests; park→accrue→recall verified in the browser
+- **Live-network deploy (ForteL2 F4, 2026-08-03, PR #29):**
+  `scripts/deploy-testnet.mjs` now provisions `TokenizedMMF` + yield buffer +
+  treasury approval on every live network (base-sepolia / polygon-amoy /
+  fortel2-sepolia). Older overlays without a fund still settle
+  (`mmfAddress()` → `undefined`). Park→accrue→recall verified on a local
+  chainId-852 node; live ForteL2 sequencer run pending a reachable RPC.
+  Details in [`tasks/prd-fortel2-integration.md`](tasks/prd-fortel2-integration.md).
 
 ### Phase 9: Production Hardening + Regulatory / Partner Package
 

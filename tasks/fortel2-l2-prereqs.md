@@ -74,6 +74,6 @@ writes and tx confirmation always stay on the sequencer). Purely optional.
 ## Explicitly NOT needed from ForteL2
 
 - No genesis predeploys and no contracts deployed on the L2 side — SOS deploys
-  its own `MockERC20`s + `PaymentSettlement` (and possibly `TokenizedMMF`).
+  its own `MockERC20`s + `PaymentSettlement` + `TokenizedMMF`.
 - No fee/gas parameter changes, no paymaster, no canonical USDC.
 - No funding of SOS treasury/entity wallets (script-generated, deployer-funded).

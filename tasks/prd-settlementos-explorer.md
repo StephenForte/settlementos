@@ -148,7 +148,7 @@ It lives in its **own repository** and deploys as a static site. It has no backe
 
 ## Non-Goals (Out of Scope)
 
-- No SettlementOS API or database integration — no payment records, compliance status, audit-chain data, or MMF positions (the MMF exists only on local chains, which are out of scope anyway).
+- No SettlementOS API or database integration — no payment records, compliance status, audit-chain data, or MMF positions (treasury parking is a SettlementOS surface; the explorer stays payments/settlement-state only).
 - No local Hardhat chains (31337/31338) — real testnets only.
 - No write operations of any kind: no transactions, no wallet connection (MetaMask etc.), no faucet features.
 - No authentication or user accounts — the app is fully public.

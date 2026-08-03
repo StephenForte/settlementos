@@ -4,8 +4,9 @@ A complete, from-scratch walkthrough of everything built through Phase 6:
 environment setup, the 5-minute core demo on the local chains (Phases 1–3),
 real compliance screening against OpenSanctions and the Chainalysis oracle
 (Phase 6), the Base Sepolia finale with public Basescan links (Phase 4), and
-the ForteL2 closer — the same payment settling on our own L2 (Part E).
-Timings assume a warm machine; the full script runs comfortably in ~20 minutes.
+the ForteL2 closer — the same payment (and overnight parking) on our own L2
+(Part E). Timings assume a warm machine; the full script runs comfortably in
+~20 minutes.
 
 > Testnet demo only. Mock assets, simulated FX, simulated payout. No real funds.
 > Sanctions and wallet screening optionally run against **real** services (Part C).
@@ -121,7 +122,9 @@ $250k review threshold. The payment parks in **MANUAL_REVIEW** → open the
 ### 5. Liquidity & Treasury + close-out (60 s)
 
 - **Liquidity & Treasury** — live on-chain treasury balances per network, active
-  reservations, the tokenized T-bill placeholder (disabled by design, per PRD).
+  reservations, and the **tokenized MMF** card: park unreserved mockUSDC,
+  Accrue one day of simulated yield (3.5% APY), Recall T+0 with the yield.
+  Escrow balance stays untouched through the cycle (segregation).
 - **Dashboard → Export reconciliation CSV** — per-network tx hashes included.
 - **Compliance page** — audit chain **INTACT** badge (append-only, hash-chained,
   tamper-evident).
@@ -222,12 +225,13 @@ Same contracts, real chain (chainId 84532), every transaction publicly visible o
    ```
 
    The script prints a Basescan link for every step: it deploys the three mock
-   tokens + `PaymentSettlement`, generates treasury/entity wallets (funding each
-   with dust ETH for approvals), mints demo balances, pre-approves the settlement
-   contract, registers the wallets in the app database, and writes
-   `chain/deployments.base-sepolia.json` (gitignored — holds the generated
-   dust-wallet keys; your funded deployer key never leaves `.env`).
-   Re-running is safe: generated wallets are reused.
+   tokens + `PaymentSettlement` + `TokenizedMMF` (with its 50k mockUSDC yield
+   buffer and treasury approval), generates treasury/entity wallets (funding
+   each with dust ETH — entity wallets sign an exact-amount approve per
+   payment, no standing escrow allowance), mints demo balances, registers the
+   wallets in the app database, and writes `chain/deployments.base-sepolia.json`
+   (gitignored — holds the generated dust-wallet keys; your funded deployer
+   key never leaves `.env`). Re-running is safe: generated wallets are reused.
 
 Optional `.env` settings: `BASE_SEPOLIA_RPC_URL` (defaults to the public
 `https://sepolia.base.org`; use an Alchemy/Infura URL if it rate-limits) and
@@ -253,13 +257,14 @@ Optional `.env` settings: `BASE_SEPOLIA_RPC_URL` (defaults to the public
 
 ## Part E — ForteL2 (the home rail)
 
-The closing statement: the same payment, settling on **our own L2**.
-[ForteL2](https://github.com/StephenForte/ForteL2) (OP Stack, Sepolia-backed,
-chain ID 852) is operated outside this repo — **SettlementOS is the payments
-product; ForteL2 is the rail.** No primitives are duplicated: the exact same
-escrow and token contracts deploy onto ForteL2 as onto Base Sepolia, and
-nothing here touches the sequencer. For infra questions see ForteL2's
-`tasks/coordination-settlementos.md` and `tasks/prd-money-rail.md`.
+The closing statement: the same payment **and** the same overnight parking,
+on **our own L2**. [ForteL2](https://github.com/StephenForte/ForteL2) (OP Stack,
+Sepolia-backed, chain ID 852) is operated outside this repo — **SettlementOS
+is the payments product; ForteL2 is the rail.** No primitives are duplicated:
+the exact same escrow, token, and `TokenizedMMF` contracts deploy onto ForteL2
+as onto Base Sepolia, and nothing here touches the sequencer. For infra
+questions see ForteL2's `tasks/coordination-settlementos.md` and
+`tasks/prd-money-rail.md`.
 
 ### One-time setup (on the machine running the ForteL2 sequencer)
 
@@ -275,10 +280,13 @@ nothing here touches the sequencer. For infra questions see ForteL2's
    npm run setup
    ```
 
-   Same script family as Base Sepolia — idempotent, reuses generated wallets,
-   writes `chain/deployments.fortel2-sepolia.json` (gitignored).
+   Same script family as Base Sepolia — deploys mocks + `PaymentSettlement` +
+   `TokenizedMMF` (yield buffer + treasury approval), idempotent, reuses
+   generated wallets, writes `chain/deployments.fortel2-sepolia.json`
+   (gitignored). Overlays from before F4 lack the fund; re-run the deploy to
+   provision it.
 
-### The beat (90 s)
+### The settle beat (90 s)
 
 1. **New Payment**: ACME US Inc → Tokyo Trading KK, `100000.00` USD → JPY,
    **ForteL2 Sepolia → ForteL2 Sepolia**.
@@ -295,6 +303,23 @@ nothing here touches the sequencer. For infra questions see ForteL2's
    put there. A payment product settling on its own rail, verified at the RPC.
 4. Audit Trail + reconciliation export both reference the ForteL2 hashes —
    same evidence chain as every other network, no special-casing.
+
+### The treasury beat (60 s) — F4
+
+Same Liquidity & Treasury controls as the local chains, against ForteL2
+balances:
+
+1. Open **Liquidity & Treasury** → the ForteL2 Sepolia section. The MMF card
+   shows the live share index (starts at `1e18`).
+2. **Park** `100000.00` mockUSDC → Accrue one day → **Recall**. Expect
+   principal + ~9.59 yield back (3.5%/365), and the escrow balance unchanged
+   through the whole cycle.
+3. Audit Trail picks up `TREASURY_PARKED` / `TREASURY_ACCRUED` /
+   `TREASURY_RECALLED` on the same hash chain.
+
+> Code path is identical to Base Sepolia / Amoy — only `networkId` differs.
+> Verified end-to-end against a local chainId-852 node (2026-08-03); run it
+> against the live sequencer when the RPC is reachable from the demo machine.
 
 > Reset caveat: the ForteL2 Sepolia deployment is pinned through ForteL2's
 > learning Phase 6. A Phase 7 re-genesis wipes the L2 state — redeploy with the

@@ -50,10 +50,10 @@ L2 ETH arrives via an L1→L2 deposit through the Sepolia Standard Bridge
 3. `scripts/setup.mjs` — add `fortel2-sepolia` to its `LIVE_NETWORK_IDS`
    wallet re-registration list (line ~225), so `npm run setup` re-binds
    ForteL2 entity wallets after a DB reset.
-4. **TokenizedMMF decision** (US-F002 includes it; the existing script deploys
-   escrow+tokens only — no live network has a fund today). If deploying it,
-   remember the AGENTS gotcha: mint the mock-asset yield buffer to the fund
-   AND have the treasury approve the fund, or parking reverts.
+4. **TokenizedMMF** — ✅ shipped in F4 (PR #29). `deploy-testnet.mjs` now
+   deploys the fund on every live network, mints the 50k mockUSDC yield
+   buffer, and has the treasury approve it. Older overlays without a fund
+   still settle (`mmfAddress()` → `undefined`).
 5. Overlay `chain/deployments.fortel2-sepolia.json` is written by the script
    (gitignored — holds generated dust-wallet keys). `loadDeployments()`
    already looks for it since F1 made the network `live: true`.
