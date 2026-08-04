@@ -99,3 +99,11 @@ Entry format:
   fenced "once T2 lands" variant is now the actual path. Fold into I6's doc
   pass; the fenced note already steers the operator right.
 - Resolution: note for I6; no runbook change needed pre-ops-run.
+
+## T4 — executor RPC resilience (wave 2)
+
+(entries here — your APPROVED brief is T1-1 and T1-2 above)
+
+## T5 — hardening review (wave 2)
+
+(entries here)
