@@ -263,9 +263,19 @@ async function confirm(networkId: string, hash: Hex): Promise<TxResult> {
 }
 
 /**
- * What the destination chain says about a payout attempt. A null receipt is
- * "absent" (never mined); an RPC error is "unknown" — callers must not treat
- * unknown as unpaid and auto-compensate.
+ * What the destination chain says about a payout attempt. Callers must not
+ * treat "unknown" as unpaid and auto-compensate.
+ *
+ * "absent" is deliberately near-unreachable from a live chain: viem's
+ * getTransactionReceipt THROWS TransactionReceiptNotFoundError on a missing
+ * receipt, and one read cannot distinguish "dropped forever" from "still in
+ * the mempool" — so a missing receipt maps to "unknown" (operator decides),
+ * never "absent". Do NOT "fix" this by catching NotFound → "absent": a caller
+ * that compensates on "absent" would race a payout still waiting to mine and
+ * pay the sender back while the recipient's transfer lands — the exact
+ * double-pay this function exists to prevent. "absent" stays in the union for
+ * test hooks (executorTestHooks.destinationPayoutOutcome) and any future
+ * evidence source that can actually prove a tx will never mine.
  */
 export async function transactionOutcome(
   networkId: string,
