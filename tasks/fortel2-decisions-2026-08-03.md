@@ -102,7 +102,23 @@ Entry format:
 
 ## T4 — executor RPC resilience (wave 2)
 
-(entries here — your APPROVED brief is T1-1 and T1-2 above)
+### T4-1: destination payout attempt vs confirmation without schema change
+- Status: APPROVED (implicit — implemented per T1-1 resolution)
+- Type: design-choice
+- Detail: Reuse `destinationTxHash` for the submitted attempt hash (persisted before receipt await). Catch path no longer treats hash alone as proof of payment — calls `transactionOutcome()` on the destination chain. Confirmed → `completeSettledPayout`; reverted/absent → fall through to source-side compensate; unknown → stay `PAYOUT_PENDING`, audit `payment.destination_payout_unresolved`, visible in `stuckPayments`. Separate audit events: `bridge.destination_payout_submitted` (attempt) and `bridge.destination_payout` (receipt confirmed). No Prisma/state-machine changes.
+- Resolution: implemented on branch fortel2/executor-rpc-resilience.
+
+### T4-2: network-aware replica-lag retry budget via network id prefix
+- Status: APPROVED (implicit — implemented per T1-2 resolution)
+- Type: design-choice
+- Detail: `replicaLagRetries(networkId)` returns 0 for `fortel2-*` and local chains, 4 for other live networks (base-sepolia, polygon-amoy). Avoids editing `lib/networks.ts`; ForteL2 ids are the stable signal for single-sequencer rails. No new config machinery.
+- Resolution: implemented on branch fortel2/executor-rpc-resilience.
+
+### T4-3: executorTestHooks extensions for hermetic receipt-loss tests
+- Status: APPROVED (implicit)
+- Type: design-choice
+- Detail: Added `afterDestinationPayoutSubmitted` (throw between hash persist and confirm) and `destinationPayoutOutcome` (force reconciliation outcome without a live ForteL2 RPC). Keeps CI hermetic on fixture chains 19545/19546.
+- Resolution: implemented on branch fortel2/executor-rpc-resilience.
 
 ## T5 — hardening review (wave 2)
 

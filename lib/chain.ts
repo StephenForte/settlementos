@@ -247,10 +247,54 @@ export interface TxResult {
   gasUsed: bigint;
 }
 
+/** A tx hash returned by writeContract before its receipt is awaited. */
+export interface SubmittedTx {
+  hash: Hex;
+  confirm(): Promise<TxResult>;
+}
+
+/** Ground truth for a submitted tx hash on a network — read before undoing a payout. */
+export type TransactionOutcome = "confirmed" | "reverted" | "absent" | "unknown";
+
 async function confirm(networkId: string, hash: Hex): Promise<TxResult> {
   const receipt = await publicClientFor(networkId).waitForTransactionReceipt({ hash });
   if (receipt.status !== "success") throw new Error(`Transaction ${hash} reverted on ${networkId}`);
   return { hash, blockNumber: receipt.blockNumber, gasUsed: receipt.gasUsed };
+}
+
+/**
+ * What the destination chain says about a payout attempt. Callers must not
+ * treat "unknown" as unpaid and auto-compensate.
+ *
+ * "absent" is deliberately near-unreachable from a live chain: viem's
+ * getTransactionReceipt THROWS TransactionReceiptNotFoundError on a missing
+ * receipt, and one read cannot distinguish "dropped forever" from "still in
+ * the mempool" — so a missing receipt maps to "unknown" (operator decides),
+ * never "absent". Do NOT "fix" this by catching NotFound → "absent": a caller
+ * that compensates on "absent" would race a payout still waiting to mine and
+ * pay the sender back while the recipient's transfer lands — the exact
+ * double-pay this function exists to prevent. "absent" stays in the union for
+ * test hooks (executorTestHooks.destinationPayoutOutcome) and any future
+ * evidence source that can actually prove a tx will never mine.
+ */
+export async function transactionOutcome(
+  networkId: string,
+  hash: Hex
+): Promise<TransactionOutcome> {
+  try {
+    const receipt = await publicClientFor(networkId).getTransactionReceipt({ hash });
+    if (!receipt) return "absent";
+    return receipt.status === "success" ? "confirmed" : "reverted";
+  } catch {
+    return "unknown";
+  }
+}
+
+/** Public testnets use load-balanced RPCs where replica lag is real; ForteL2 and local chains do not. */
+export function replicaLagRetries(networkId: string): number {
+  if (networkId.startsWith("fortel2-")) return 0;
+  if (networkInfo(networkId).live) return 4;
+  return 0;
 }
 
 /**
@@ -292,6 +336,7 @@ export async function operatorWrite(
   // initiatePayment needs the sender's allowance (approved one tx earlier — a
   // replica that hasn't seen that block yet estimates against a zero allowance).
   const dependsOnEscrowRow = functionName !== "initiatePayment";
+  const retries = replicaLagRetries(networkId);
   const hash = await retryOnReplicaLag(
     () =>
       wallet.writeContract({
@@ -302,7 +347,8 @@ export async function operatorWrite(
         args: args as any,
       }),
     (message) =>
-      dependsOnEscrowRow ? message.includes("not initiated") : message.includes("insufficient allowance")
+      dependsOnEscrowRow ? message.includes("not initiated") : message.includes("insufficient allowance"),
+    { retries, delayMs: retries > 0 ? 2000 : 0 }
   );
   return confirm(networkId, hash);
 }
@@ -422,7 +468,7 @@ export async function treasuryTokenTransfer(
   tokenSymbol: string,
   to: Address,
   amount: bigint
-): Promise<TxResult> {
+): Promise<SubmittedTx> {
   const dep = loadDeployments();
   const token = dep.networks[networkId].contracts.tokens[tokenSymbol];
   if (!token) throw new Error(`Token ${tokenSymbol} not deployed on ${networkId}`);
@@ -434,7 +480,7 @@ export async function treasuryTokenTransfer(
     functionName: "transfer",
     args: [to, amount],
   });
-  return confirm(networkId, hash);
+  return { hash, confirm: () => confirm(networkId, hash) };
 }
 
 export { NETWORKS };
