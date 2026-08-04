@@ -25,12 +25,14 @@ import {
   onchainPaymentState,
   operatorWrite,
   treasuryTokenTransfer,
+  transactionOutcome,
   type OnchainPaymentState,
+  type TransactionOutcome,
 } from "./chain";
 import { availableLiquidity, destinationUnits, type RouteOption } from "./routing";
 import { recallForPayment } from "./treasury";
 import { walletOnNetwork } from "./wallets";
-import { keccak256, toHex, type Address } from "viem";
+import { keccak256, toHex, type Address, type Hex } from "viem";
 
 /**
  * Someone else is already executing this payment (or it left APPROVED before we
@@ -56,10 +58,16 @@ interface ExecutorTestHooks {
   /** Throws in the payout leg, with the source chain already settled — the compensation path. */
   beforeDestinationPayout?: () => void | Promise<void>;
   /**
+   * Throws after the destination payout tx is submitted and its hash persisted,
+   * but before the receipt is awaited — the receipt-loss window where the
+   * recipient may already hold tokens while the DB has no confirmation yet.
+   */
+  afterDestinationPayoutSubmitted?: () => void | Promise<void>;
+  /**
    * Throws *after* the destination payout has already landed (recipient paid,
-   * destinationTxHash written) but before the settlement is recorded — the path
-   * that must complete forward, never compensate, or the recipient keeps the
-   * payout while the treasury also refunds the sender.
+   * destinationTxHash written and receipt confirmed) but before the settlement
+   * is recorded — the path that must complete forward, never compensate, or the
+   * recipient keeps the payout while the treasury also refunds the sender.
    */
   afterDestinationPayout?: () => void | Promise<void>;
   /**
@@ -87,6 +95,11 @@ interface ExecutorTestHooks {
    * escrow.
    */
   escrowReadFails?: boolean;
+  /**
+   * Force destination payout reconciliation to a fixed outcome instead of reading
+   * the chain — simulates an unreadable destination RPC or a reverted attempt.
+   */
+  destinationPayoutOutcome?: TransactionOutcome;
 }
 
 /**
@@ -129,6 +142,54 @@ async function setStatus(
 /** An entity's wallet on `networkId` — addresses differ per network. */
 function walletOn(wallets: { network: string; address: string }[], networkId: string) {
   return walletOnNetwork(wallets, networkId)!;
+}
+
+async function resolveDestinationPayoutOutcome(
+  networkId: string,
+  txHash: Hex
+): Promise<TransactionOutcome> {
+  if (executorTestHooks.destinationPayoutOutcome !== undefined) {
+    return executorTestHooks.destinationPayoutOutcome;
+  }
+  return transactionOutcome(networkId, txHash);
+}
+
+/**
+ * Read the destination chain for a persisted payout hash before deciding whether
+ * the recipient was paid. Unknown means leave the payment non-terminal — never
+ * auto-compensate and never auto-complete on unreadable evidence.
+ */
+async function reconcileDestinationPayout(
+  payment: Payment,
+  destNet: string,
+  destAmount: string,
+  reason: string
+): Promise<Payment | null> {
+  if (!payment.destinationTxHash) return null;
+
+  const outcome = await resolveDestinationPayoutOutcome(
+    destNet,
+    payment.destinationTxHash as Hex
+  );
+  if (outcome === "confirmed") {
+    return completeSettledPayout(payment, destAmount, reason, {
+      evidence: "destination_tx_hash",
+    });
+  }
+  if (outcome === "unknown") {
+    await audit(
+      "payment.destination_payout_unresolved",
+      {
+        network: destNet,
+        txHash: payment.destinationTxHash,
+        note: "destination receipt unreadable — operator action required",
+      },
+      payment.id
+    );
+    return payment;
+  }
+  // absent or reverted — fall through to source-side reconciliation.
+  return null;
 }
 
 function selectedRoute(payment: Payment): RouteOption {
@@ -383,7 +444,8 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
 
     if (isCrossChain) {
       // Simulated bridge: treasury releases destination-asset tokens to the
-      // recipient's wallet on the destination network.
+      // recipient's wallet on the destination network. Persist the attempt hash
+      // before awaiting the receipt so a post-mine RPC drop can be reconciled.
       const bridgeTx = await treasuryTokenTransfer(
         destNet,
         destAsset.symbol,
@@ -397,6 +459,19 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
           data: { destinationTxHash: bridgeTx.hash },
         })),
       };
+      await audit(
+        "bridge.destination_payout_submitted",
+        {
+          network: destNet,
+          asset: destAsset.symbol,
+          amount: destAmount,
+          to: recipientWallet.address,
+          txHash: bridgeTx.hash,
+        },
+        payment.id
+      );
+      await executorTestHooks.afterDestinationPayoutSubmitted?.();
+      await bridgeTx.confirm();
       await audit(
         "bridge.destination_payout",
         {
@@ -438,25 +513,27 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
 
-    // The recipient was already paid — on-chain bridge payout (destinationTxHash)
-    // and/or the simulated fiat ledger credit. Undoing now would pay twice:
-    // treasury refunds the sender while the recipient keeps the credit. The money
-    // movement is done; only bookkeeping threw, so finish the settlement forward
-    // instead of compensating. The reservation stays RESERVED here
-    // (completeSettledPayout consumes it), so this returns before the release
-    // below. Same-chain routes never set destinationTxHash — the ledger credit
-    // alone is the proof the recipient was paid. That inference is only sound
-    // because a credit exists iff this payment's recipient was paid: the unique
-    // constraint on LedgerCredit.paymentId means no duplicate or stray second
-    // credit can force this branch, so the credit's existence *is* the proof.
+    // The recipient was already paid — simulated fiat ledger credit. Undoing now
+    // would pay twice: treasury refunds the sender while the recipient keeps the
+    // credit. Same-chain routes never set destinationTxHash — the ledger credit
+    // alone is the proof the recipient was paid.
     const ledgerCredit = await prisma.ledgerCredit.findFirst({
       where: { paymentId: payment.id },
       select: { id: true },
     });
-    if (payment.destinationTxHash || ledgerCredit) {
+    if (ledgerCredit) {
       return await completeSettledPayout(payment, destAmount, reason, {
-        evidence: payment.destinationTxHash ? "destination_tx_hash" : "ledger_credit",
+        evidence: "ledger_credit",
       });
+    }
+
+    // Cross-chain: a persisted hash is evidence of an ATTEMPT, not payment.
+    // Reconcile the destination receipt before completing forward or compensating.
+    const destReconciled = await reconcileDestinationPayout(payment, destNet, destAmount, reason);
+    if (destReconciled) {
+      if (destReconciled.status === "SETTLED") return destReconciled;
+      // Unknown outcome — stay PAYOUT_PENDING; reservation stays RESERVED.
+      return destReconciled;
     }
 
     await prisma.liquidityReservation
@@ -628,7 +705,8 @@ async function compensateSender(payment: Payment, ctx: CompensationContext): Pro
 async function runCompensationTransfer(compensating: Payment, ctx: CompensationContext): Promise<Payment> {
   try {
     await executorTestHooks.beforeCompensationTransfer?.();
-    const tx = await treasuryTokenTransfer(ctx.network, ctx.tokenSymbol, ctx.sender, ctx.amountUnits);
+    const submitted = await treasuryTokenTransfer(ctx.network, ctx.tokenSymbol, ctx.sender, ctx.amountUnits);
+    const tx = await submitted.confirm();
     await audit(
       "payment.compensation_transfer",
       {
@@ -688,6 +766,9 @@ export async function stuckPayments(): Promise<StuckPayment[]> {
     where: {
       OR: [
         { status: "COMPENSATION_PENDING" },
+        // PAYOUT_PENDING with a persisted attempt hash: receipt outcome may be
+        // unknown — keep visible until an operator or a retry resolves it.
+        { status: "PAYOUT_PENDING", destinationTxHash: { not: null } },
         // A FAILED payment attempted escrow iff it has a reservation row: the
         // reservation is created immediately before initiatePayment, and the
         // earlier failures (rejected quote, insufficient liquidity, failed
@@ -718,10 +799,12 @@ export async function stuckPayments(): Promise<StuckPayment[]> {
   // same as fine, so keep it. NONE (a reservation that never escrowed — the tx
   // reverted before mining) and REFUNDED (the sender already has it back, only the
   // REFUNDED transition missing) are done. COMPENSATION_PENDING is always kept —
-  // the sender is owed a transfer regardless of escrow state.
+  // the sender is owed a transfer regardless of escrow state. PAYOUT_PENDING with
+  // an attempt hash is always kept — the destination receipt may be unresolved.
   return rows.filter(
     (r) =>
       r.payment.status === "COMPENSATION_PENDING" ||
+      (r.payment.status === "PAYOUT_PENDING" && r.payment.destinationTxHash !== null) ||
       r.escrowState === "INITIATED" ||
       r.escrowState === "SETTLED" ||
       r.escrowState === null
@@ -752,6 +835,28 @@ export async function repairCompensation(paymentId: string): Promise<Payment> {
   // race between two operators clicking Repair at once.
   return withExecutionLease(paymentId, "COMPENSATION_PENDING", async (leaseId) => {
     const ctx = compensationContextFor(payment);
+
+    // A compensation repair must not pay the sender if the destination payout
+    // already landed — complete forward instead of double-paying treasury.
+    if (payment.destinationTxHash) {
+      const outcome = await resolveDestinationPayoutOutcome(
+        payment.destinationNetwork,
+        payment.destinationTxHash as Hex
+      );
+      if (outcome === "confirmed") {
+        throw new ApiError(
+          "conflict",
+          "destination payout already confirmed — compensation refused"
+        );
+      }
+      if (outcome === "unknown") {
+        throw new ApiError(
+          "conflict",
+          "destination payout outcome unresolved — cannot compensate safely"
+        );
+      }
+    }
+
     const escrow = executorTestHooks.escrowReadFails
       ? null
       : await onchainPaymentState(ctx.network, onchainPaymentId(payment.id)).catch(() => null);
