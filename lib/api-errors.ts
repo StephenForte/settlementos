@@ -94,7 +94,7 @@ export function apiError(code: ApiErrorCode, message?: string): ApiErrorResult {
  * guess out loud. `context` labels the log line (usually the route).
  */
 export function fromThrown(e: unknown, fallback: ApiErrorCode, context: string): ApiErrorResult {
-  console.error(`[api:${context}]`, e);
+  console.error("[api]", context, e);
   if (e instanceof ApiError) return apiError(e.code, e.message);
   return apiError(fallback);
 }
