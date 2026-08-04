@@ -437,6 +437,22 @@ async function runMmfAddon({
   const contracts = networkOverlay.contracts;
   const mockUsdc = contracts.tokens.mockUSDC;
 
+  // Resolve the treasury signer BEFORE any transaction: the overlay merge is the
+  // last step, so an abort after the fund deploys leaves the overlay without a
+  // TokenizedMMF entry and a re-run would deploy a second, orphaned fund. Every
+  // check that can fail without a chain must run while nothing has been spent.
+  const treasuryAccount = networkOverlay.accounts?.treasury;
+  if (!treasuryAccount?.address) fail("Overlay missing treasury account — cannot approve MMF");
+
+  let treasuryKey = process.env.TREASURY_PRIVATE_KEY;
+  if (!treasuryKey) {
+    if (!treasuryAccount.privateKey) {
+      fail("Overlay treasury has no privateKey and TREASURY_PRIVATE_KEY is not set");
+    }
+    treasuryKey = treasuryAccount.privateKey;
+  }
+  const treasuryAddr = treasuryAccount.address;
+
   async function send(fn, label) {
     const hash = await fn();
     const receipt = await publicClient.waitForTransactionReceipt({ hash });
@@ -485,18 +501,6 @@ async function runMmfAddon({
     );
   }
 
-  const treasuryAccount = networkOverlay.accounts?.treasury;
-  if (!treasuryAccount?.address) fail("Overlay missing treasury account — cannot approve MMF");
-
-  let treasuryKey = process.env.TREASURY_PRIVATE_KEY;
-  if (!treasuryKey) {
-    if (!treasuryAccount.privateKey) {
-      fail("Overlay treasury has no privateKey and TREASURY_PRIVATE_KEY is not set");
-    }
-    treasuryKey = treasuryAccount.privateKey;
-  }
-
-  const treasuryAddr = treasuryAccount.address;
   const allowance = await publicClient.readContract({
     address: mockUsdc.address,
     abi: tokenAbi,
