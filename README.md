@@ -352,10 +352,16 @@ npm run setup
 ```
 
 The deploy writes `chain/deployments.fortel2-sepolia.json` (gitignored — holds
-generated dust-wallet keys) and is idempotent: re-runs reuse existing wallets
-and top up dust only when below target. Older overlays that predate the MMF
-still settle — `mmfAddress()` returns `undefined` and the Liquidity page
-degrades to "no fund". ForteL2 has no block explorer yet, so payments there
+generated dust-wallet keys) and re-runs are mode-aware, auto-detected from that
+overlay: a pre-MMF overlay (escrow + tokens, no fund) gets an **MMF add-on**
+run — `TokenizedMMF` + its 50k mockUSDC yield buffer + the treasury approval
+merged in without redeploying escrow or tokens — and an overlay that already
+carries the fund makes the re-run a no-op. Dry-run any live deploy first with
+`node --env-file=.env scripts/deploy-testnet.mjs fortel2-sepolia
+--preflight-only`, which validates the RPC, chain id, and deployer balance and
+prints the detected mode without sending a transaction. Older overlays that
+predate the MMF still settle — `mmfAddress()` returns `undefined` and the
+Liquidity page degrades to "no fund". ForteL2 has no block explorer yet, so payments there
 show raw tx hashes without links; verify with
 `cast receipt <hash> --rpc-url http://127.0.0.1:9545`. The Sepolia deployment
 is pinned through ForteL2's learning Phase 6 — a Phase 7 re-genesis requires a
