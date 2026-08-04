@@ -32,22 +32,30 @@ Entry format:
   merges new files in a new directory without conflict.
 - US-F007's checkbox state is known-inconsistent with the F1 phase table;
   no worker acts on US-F007 this wave (Stephen to resolve).
+- Branch naming: `cursor/<slug>-<hash>` is an accepted standing exception to
+  the `fortel2/<slug>` convention where a worker's PR tooling requires the
+  prefix (first used by T2 / PR #34). Content and commit rules unchanged.
+- 2026-08-03 (evening): the ForteL2 stack moves onto THIS machine tomorrow
+  (2026-08-04) — the 852 sequencer becomes reachable at the default loopback
+  RPC. The §9 "externally blocked" ops items (live MMF redeploy, bridge
+  manual QA, F4 live verification) become executable. Worker tests still
+  stay hermetic — CI must never depend on the ForteL2 stack being up.
 
 ---
 
 ## T1 — bridge-leg verification
 
 ### T1-1: destination-payout receipt loss can compensate after tokens moved
-- Status: OPEN
+- Status: APPROVED
 - Type: bug-found-elsewhere
 - Detail: In `lib/chain.ts` `treasuryTokenTransfer`, `writeContract` returns a hash then `confirm()` awaits the receipt. If the RPC drops after the dest transfer mines but before the receipt returns, `lib/executor.ts` never writes `destinationTxHash` and the catch path treats the recipient as unpaid → `compensateSender` on source while dest tokens already sit on the recipient wallet (treasury double-pay). Pre-existing for all bridges; more likely on a best-effort single-sequencer ForteL2 than on Base/Amoy public RPCs. Proposed direction for T4: persist the hash as soon as `writeContract` returns (before receipt), or reconcile dest balance before compensating. No lib edit in T1.
-- Resolution:
+- Resolution: APPROVED as T4's primary brief (verified against lib/chain.ts:431-437 + the executor catch path by the integrator). CAUTION baked into the T4 prompt: naive persist-early inverts the bug — a hash written pre-receipt is evidence of an ATTEMPT, not of payment; the catch path currently treats destinationTxHash as proof the recipient was paid, so persist-early without reconciliation would mark SETTLED payments whose payout tx reverted/never mined. The fix must extend "reconcile with the chain before undoing anything" to the destination leg.
 
 ### T1-2: operatorWrite replica-lag retries on a single-sequencer L2
-- Status: OPEN
+- Status: APPROVED
 - Type: bug-found-elsewhere
 - Detail: `operatorWrite`'s `retryOnReplicaLag` classifies `"not initiated"` / `"insufficient allowance"` as transient. On fortel2-sepolia (no replica; `readRpcUrl` optional) those strings are usually real failures, so a ForteL2 *source* leg can burn ~4×2s before failing closed. Not a correctness break of the compensate/refund invariants. T4 may want a network-aware retry policy or shorter budget for single-node rails.
-- Resolution:
+- Resolution: APPROVED as T4 secondary scope (lower priority than T1-1; latency-only, no correctness break).
 
 ### T1-3: quoting claim VERIFIED for ForteL2 network ids
 - Status: APPROVED
@@ -58,8 +66,36 @@ Entry format:
 
 ## T2 — deploy/registry hardening
 
-(entries here)
+### T2-1 (integrator, post-review): treasury signer validated before first tx
+- Status: APPROVED
+- Type: bug-found-elsewhere
+- Detail: PR #34's MMF add-on resolved the treasury key AFTER deploying the
+  fund; since the overlay merge is the last step, aborting there would leave
+  the overlay fund-less and a re-run would deploy a second, orphaned fund.
+  Fixed by the integrator on the branch (b46c011) before merge: validation
+  hoisted above the first transaction.
+- Resolution: merged in PR #34.
+
+### T2-2 (integrator, post-review): idempotency is mode-level only
+- Status: APPROVED
+- Type: design-choice
+- Detail: `mmfYieldBufferSatisfied` / `treasuryMmfApprovalSatisfied` are
+  unreachable on every normal path — an add-on run always deploys a fresh
+  fund whose balance/allowance are zero. The protection that matters is
+  mode-level (`noop` when the overlay carries a fund). Recorded so nobody
+  credits the script with per-step idempotency it doesn't have; a tx
+  revert/RPC drop mid-add-on can still orphan a fund (acceptable, testnet
+  mock assets, `--preflight-only` first shrinks the window).
+- Resolution: no change; known residual.
 
 ## T3 — MMF runbook + coverage
 
-(entries here)
+### T3-1 (integrator, post-review): runbook's "current behavior" predates #34
+- Status: APPROVED
+- Type: design-choice
+- Detail: `tasks/runbooks/fortel2-mmf-redeploy.md` §2 describes the pre-#34
+  full-deploy behavior; since #34 merged, `npm run deploy:fortel2-sepolia`
+  auto-selects the MMF add-on against the existing overlay — the runbook's
+  fenced "once T2 lands" variant is now the actual path. Fold into I6's doc
+  pass; the fenced note already steers the operator right.
+- Resolution: note for I6; no runbook change needed pre-ops-run.
