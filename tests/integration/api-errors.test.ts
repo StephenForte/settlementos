@@ -50,7 +50,7 @@ describe("lib/api-errors", () => {
     expect(status).toBe(500);
     expect(body).toEqual({ error_code: "execution_failed", message: "execution failed" });
     expect(JSON.stringify(body)).not.toMatch(/9545|0xdeadbeef|ECONNREFUSED/);
-    expect(spy).toHaveBeenCalledWith("[api:test]", boom); // the detail is not lost, just not shipped
+    expect(spy).toHaveBeenCalledWith("[api]", "test", boom); // the detail is not lost, just not shipped
   });
 
   it("passes an ApiError's own message through — a route chose it deliberately", () => {
