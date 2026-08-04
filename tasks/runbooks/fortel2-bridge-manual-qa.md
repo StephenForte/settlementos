@@ -142,7 +142,7 @@ If compliance returns `MANUAL_REVIEW`, approve as REVIEWER then re-execute:
 curl -s -X POST "http://localhost:3000/api/payments/$PAY_ID/review" \
   -H "Content-Type: application/json" \
   -H "x-api-key: <REVIEWER key>" \
-  -d '{"decision":"APPROVE"}'
+  -d '{"decision":"approve"}'
 ```
 
 ### 4. SETTLED evidence to capture
