@@ -244,3 +244,138 @@ COMMIT AND MERGE CONTRACT
   Open questions for Stephen: <none or list>
   PR: <link>
 ```
+
+---
+
+# ForteL2 Wave 2 — T4 prompt (added 2026-08-03, after T1/PR #33 merged)
+
+Dispatch only after PR #33 is on main (it is, as of `0dcac71`). Model:
+strongest available, high reasoning effort — this task touches the
+compensate/complete-forward correctness invariants directly.
+
+## Prompt 4 — T4: executor resilience for a flaky single-sequencer L2 (strongest model)
+
+```
+You are a worker agent on the SettlementOS repo. Read CLAUDE.md and AGENTS.md
+first — the invariants there are binding, especially "Never refund a released
+escrow; compensate it", "Compensate only when the recipient was NOT paid;
+otherwise complete forward", and "Reconcile with the chain before undoing
+anything". Then read tasks/fortel2-worker-plan.md (your task is T4) and
+tasks/fortel2-decisions-2026-08-03.md — entries T1-1 and T1-2 are APPROVED
+and are your brief. Append your own proposals under the T4 heading per the
+log's rules.
+
+CONTEXT (verified by the integrator, but re-verify before coding)
+ForteL2 (fortel2-sepolia, 852) is a single-sequencer personal L2: no replica
+fleet, no SLA, and its RPC can drop mid-settlement. Two confirmed weaknesses:
+
+T1-1 (PRIMARY — real double-pay window): treasuryTokenTransfer
+(lib/chain.ts ~431-437) submits the destination payout via writeContract,
+then confirm() awaits the receipt before returning; lib/executor.ts writes
+destinationTxHash only after that returns (~line 393). If the RPC drops
+after the transfer MINES but before the receipt arrives, the throw reaches
+the executor catch with destinationTxHash still null -> the reconciliation
+treats the recipient as unpaid -> compensateSender pays the sender back on
+source while the recipient already holds the destination tokens. Treasury
+pays twice.
+
+T1-2 (SECONDARY — latency only): operatorWrite's retryOnReplicaLag
+(lib/chain.ts ~264-308) classifies "not initiated"/"insufficient allowance"
+errors as transient replica lag and retries 4x2s. On a single-node chain
+those are usually real failures; a ForteL2 source leg burns ~8s before
+failing closed. No correctness break.
+
+THE TRAP — read this twice
+The naive T1-1 fix (persist the hash the moment writeContract returns)
+INVERTS the bug: the catch path currently treats a non-null
+destinationTxHash as proof the recipient was paid (it runs
+completeSettledPayout, which marks SETTLED). A hash written before the
+receipt is evidence of an ATTEMPT, not of payment — the tx can revert or
+never mine. Persist-early without changing the reconciliation would mark
+payments SETTLED whose recipient got nothing. Your design must distinguish
+"payout attempted (hash known, outcome unknown)" from "payout confirmed",
+and the catch path must resolve "attempted" by READING THE DESTINATION
+CHAIN (receipt lookup for the known hash): confirmed -> complete forward;
+definitively absent/reverted -> compensate; unreadable -> leave the payment
+in a non-terminal state for the operator repair view (stuckPayments), never
+auto-compensate and never auto-complete on unknown evidence. That is the
+existing source-side "reconcile before undoing" invariant, extended to the
+destination leg.
+
+TASK
+1. Fix T1-1 along the lines above. Design choices are yours (e.g.
+   treasuryTokenTransfer returning {hash, wait()} so the executor can
+   persist the attempt before awaiting confirmation; how to represent
+   attempted-vs-confirmed — an audit event alongside the column, a second
+   column via decisions-log proposal, or deriving it from status). Keep the
+   blast radius small: do not touch lib/state.ts or lib/transitions.ts —
+   if you believe a new payment status is unavoidable, STOP and propose it
+   in the decisions log first (expect pushback; PAYOUT_PENDING +
+   COMPENSATION_PENDING + the stuck view likely already cover the
+   operator-facing states you need).
+2. Make stuckPayments()/repairCompensation() aware of the new
+   attempted-unknown case if they are not already: a payment whose payout
+   attempt has an unknown outcome must stay visible in the stuck view, and
+   repairCompensation must not compensate one whose destination receipt now
+   reads confirmed (it should complete forward instead, or at minimum
+   refuse and say why).
+3. Fix T1-2 with the smallest change that works: make the transient
+   classifier or retry budget network-aware (a single-sequencer chain gets
+   fewer/no replica-lag retries). Do not invent per-network config
+   machinery if a simple property on the existing NETWORK/deployment shape
+   or a parameter threaded from the caller suffices. Justify the shape you
+   pick in your handback.
+4. Tests in tests/integration/executor-rpc-resilience.test.ts (new file),
+   driven through executorTestHooks (lib/executor.ts ~52-108) on the local
+   fixture chains — CI must never depend on a ForteL2 stack being up. You
+   may ADD hooks to ExecutorTestHooks if the existing seams cannot express
+   receipt-loss-after-mine (likely: a hook between tx submission and
+   receipt await inside the payout leg). Cover at minimum:
+   a. receipt lost AFTER the payout mined -> reconciliation completes
+      forward, recipient NOT double-paid, sender NOT compensated;
+   b. payout tx never mined / reverted -> compensateSender runs exactly
+      once, ledger + audit consistent;
+   c. destination chain unreadable during reconciliation -> payment stays
+      non-terminal, appears in stuckPayments, no money moves;
+   d. repairCompensation on case (a)'s payment refuses to double-pay;
+   e. T1-2: the retry classifier change (unit-style is fine for this one).
+   Every test asserts the audit trail matches what actually happened
+   (events only for landed writes, chain INTACT).
+
+CONSTRAINTS
+- Allowed to edit: lib/chain.ts, lib/executor.ts,
+  tests/integration/executor-rpc-resilience.test.ts (new).
+- prisma/schema.prisma, lib/state.ts, lib/transitions.ts: decisions-log
+  proposal required BEFORE touching (expect no for the latter two).
+- Never touch: README.md, DEMO.md, AGENTS.md, CLAUDE.md, PRD.md,
+  tasks/prd-fortel2-integration.md, package.json, package-lock.json, any
+  chain/deployments*.json, any .env, scripts/*.
+- No literal 9545/9546 in tests (ForteL2 sequencer ports; fixture uses
+  19545/19546).
+- No new npm dependencies.
+- Audit invariants apply in full: events in the same transaction as what
+  they describe, no bigint in audit detail JSON, actor "system" for
+  executor-initiated events.
+
+COMMIT AND MERGE CONTRACT
+- Branch fortel2/executor-rpc-resilience from current origin/main. Never
+  branch from another task's branch.
+- Small scoped commits: fix(executor): ..., fix(chain): ...,
+  test(executor): ...
+- Before handback: npx tsc --noEmit && npm run lint && npm test all green.
+- Open a PR; do not merge it. End your work by pasting this filled in:
+
+  Task: T4 executor-rpc-resilience
+  Branch: fortel2/executor-rpc-resilience
+  Files touched: <list>
+  Tests: <before> -> <after>, all green? <y/n>
+  Deviations from assignment: <none or exact description>
+  Findings outside my allowlist (not fixed, reporting only): <none or list>
+  Proposed doc snippet for integrator: <exact text or none>
+  New dependency requests: <none or list>
+  Open questions for Stephen: <none or list>
+  What to verify LIVE once the ForteL2 stack is up on this machine
+  (2026-08-04+): <specific manual checks your hermetic tests could not
+  cover>
+  PR: <link>
+```
