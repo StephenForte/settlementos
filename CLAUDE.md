@@ -96,9 +96,31 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
     polygon-amoy / fortel2-sepolia); hermetic overlay wiring test added;
     park→accrue→recall verified on a local chainId-852 node. Live-sequencer
     run pending a reachable ForteL2 RPC. Suite 398 tests.
-- NEXT: live ForteL2 park→accrue→recall once the sequencer RPC is reachable;
-  optional F6 explorer address book / replica reads; F7 simulated
-  Base↔ForteL2 bridge; Stephen's review of the Track B regulatory drafts.
+- ForteL2 parallel-worker waves 1+2 (2026-08-03, PRs #32–#37, dispatched per
+  `tasks/fortel2-worker-plan.md` with `tasks/fortel2-decisions-2026-08-03.md`
+  as the wave decisions log):
+  - T1 (PR #33): hermetic BRIDGE_AND_SETTLE quoting proof for
+    base-sepolia↔fortel2-sepolia (`tests/db/fortel2-bridge-route.test.ts`) +
+    bridge manual-QA runbook. Surfaced T1-1 (receipt-loss double-pay window)
+    and T1-2 (replica-lag retries wasted on a single-sequencer rail).
+  - T2 (PR #34): deploy script mode-aware — auto-detected full / MMF add-on
+    (fund + buffer + approval merged into an existing overlay) / no-op, plus
+    `--preflight-only`; preflight extracted into unit-tested helpers.
+  - T3 (PR #35): MMF live-redeploy runbook
+    (`tasks/runbooks/fortel2-mmf-redeploy.md`) + treasury-seam tests.
+  - T4 (PR #37): executor RPC resilience — `destinationTxHash` persisted on
+    submit as an *attempt*, catch path reconciles the destination receipt
+    (`transactionOutcome`) before compensating or completing forward, unknown
+    outcome stays PAYOUT_PENDING in the stuck view, `repairCompensation`
+    refuses on confirmed/unknown, `replicaLagRetries` 0 on fortel2-*/local.
+  - Suite 398 → 438. T5 (hardening review) HELD until after the live 852
+    session; its brief is queued in the decisions log.
+- NEXT: live ForteL2 session on this machine (852 sequencer now local):
+  MMF add-on deploy + park→accrue→recall (runbook), bridge QA (runbook),
+  T4's four live checks — then dispatch T5, then the I6 checkbox/doc flips
+  those runs justify. Also: optional F6 explorer address book; Stephen's
+  review of the Track B regulatory drafts; US-F007 checkbox inconsistency
+  in the PRD still needs Stephen's call.
 
 ## Base Sepolia (live)
 - Deployed 2026-07-07, verified with a real settled payment.

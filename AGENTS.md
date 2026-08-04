@@ -47,11 +47,11 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | Module | Responsibility |
 |---|---|
 | [lib/networks.ts](lib/networks.ts) | Network registry (local sims + real base-sepolia, polygon-amoy, and fortel2-sepolia), explorer URL helpers. **Client-safe — no node imports, no secrets.** |
-| [lib/chain.ts](lib/chain.ts) | viem chain adapter. Loads/merges `chain/deployments*.json`, per-network accounts via `accountsFor()`, contract ABIs (`SETTLEMENT_ABI`, `MMF_ABI`), `operatorWrite()` (escrow) / `mmfOperatorWrite()` (fund), `treasuryTokenTransfer()`, `ensureSenderAllowance()` (exact per-payment escrow approval) / `ensureTreasuryAllowance()`, `mmfAddress()` (undefined where no fund is deployed). Resolves no keys itself — `walletFor(networkId, signer)` takes a `Signer`. **`server-only`** |
+| [lib/chain.ts](lib/chain.ts) | viem chain adapter. Loads/merges `chain/deployments*.json`, per-network accounts via `accountsFor()`, contract ABIs (`SETTLEMENT_ABI`, `MMF_ABI`), `operatorWrite()` (escrow) / `mmfOperatorWrite()` (fund), `treasuryTokenTransfer()` (returns a `SubmittedTx` — hash first, `confirm()` separately, so callers can persist the attempt before awaiting the receipt), `transactionOutcome()` (destination-receipt ground truth; never returns "absent" from a live chain — see its comment), `replicaLagRetries()` (0 on single-sequencer rails), `ensureSenderAllowance()` (exact per-payment escrow approval) / `ensureTreasuryAllowance()`, `mmfAddress()` (undefined where no fund is deployed). Resolves no keys itself — `walletFor(networkId, signer)` takes a `Signer`. **`server-only`** |
 | [lib/signers.ts](lib/signers.ts) | The custody seam: `Signer` (`address` + async `account()`), `signerFor(ref, role)` dispatching on the `AccountRef` (`kmsKeyId` → `KmsSigner`, else `LocalKeySigner`), `resolveKey()` (inline key or `privateKeyEnv` → .env), `AccountRef`. `KmsSigner` is the documented extension point and throws "not configured". **`server-only`** |
 | [lib/state.ts](lib/state.ts) | Payment lifecycle state machine; `assertTransition()` enforces legal moves. Pure — no DB, no framework |
 | [lib/transitions.ts](lib/transitions.ts) | The one way a payment's status changes: `transitionStatus(payment, to, {data, detail, auditData, action, actor})` asserts the move is legal, then compare-and-swaps on the observed status (`updateMany where {id, status: from}`). Zero rows → `StaleTransitionError` (an `ApiError` with code `conflict`, so `caughtErrorResponse` renders a 409 with no mapping). Audits only after a successful swap. `auditData` replaces `data` in the audit detail when a written column is too large/redundant to log (a quote's full `quoteJson`) |
-| [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: `withExecutionLease` (the one CAS-claim/finally-release the executor and the repair path share), auto-recall of parked MMF liquidity, liquidity reservation, escrow, FX, payout, and the failure exits — refund while the escrow is held, **compensation** once it is released (`compensateSender`), and `completeSettledPayout` when the recipient was already paid (a throw after `destinationTxHash` completes forward, never compensates). `ExecutionLeaseError` (an `ApiError` with code `conflict` → 409, like `StaleTransitionError`) is a second attempt losing the lease. Also the operator-repair half: `stuckPayments()` (payments still holding funds — candidacy off the reservation, not `onchainPaymentId` — each with its escrow state read live) and `repairCompensation()`. `executorTestHooks` are the test-only throw points for every failure exit |
+| [lib/executor.ts](lib/executor.ts) | Orchestrates APPROVED → SETTLED: `withExecutionLease` (the one CAS-claim/finally-release the executor and the repair path share), auto-recall of parked MMF liquidity, liquidity reservation, escrow, FX, payout, and the failure exits — refund while the escrow is held, **compensation** once it is released (`compensateSender`), and `completeSettledPayout` when the recipient was provably paid (a ledger credit, or a destination receipt read back **confirmed** — a persisted `destinationTxHash` alone is an *attempt*, reconciled via `transactionOutcome()` before any undo; unknown outcome stays PAYOUT_PENDING for the operator). `ExecutionLeaseError` (an `ApiError` with code `conflict` → 409, like `StaleTransitionError`) is a second attempt losing the lease. Also the operator-repair half: `stuckPayments()` (payments still holding funds — candidacy off the reservation, not `onchainPaymentId` — each with its escrow state read live) and `repairCompensation()`. `executorTestHooks` are the test-only throw points for every failure exit |
 | [lib/routing.ts](lib/routing.ts) | Route quotes (instant/batched/bridged), treasury liquidity checks. Parked MMF liquidity counts as available: free-short-but-parked-covers still quotes, flagged `recall_required`. `availableLiquidity()` is a display wrapper over `treasury.freeTreasuryBalance()` (bigint base units + formatted strings), and `liquidityCheck()`/`destinationUnits()` compare in **token base units** |
 | [lib/fx.ts](lib/fx.ts) | Simulated FX, **all bigint**: static mid rates, spread + tiered slippage, platform fee. Amounts are currency **minor units**; rates are integers scaled by `10^RATE_DECIMALS` (18) — `midRate()` returns a scaled bigint, `formatRate()` renders it. `convert()` (minor units across currencies at a rate), `applyBps()` (worsen a rate), `usdEquivalent()` (→ USD minor units, for tiering/risk thresholds) |
 | [lib/compliance.ts](lib/compliance.ts) | Compliance gate (KYB, sanctions, wallet/tx/corridor risk) → PASS/FAIL/MANUAL_REVIEW. Sanctions + wallet screening dispatch to real providers when env config is set (`OPENSANCTIONS_API_KEY`, `CHAINALYSIS_ORACLE_RPC_URL`), mocks otherwise |
@@ -303,12 +303,23 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   sender's wallet on the **source** network → COMPENSATED. A compensation transfer that
   itself fails leaves the payment in COMPENSATION_PENDING for an operator, never FAILED.
 - **Compensate only when the recipient was *not* paid; otherwise complete forward**:
-  once the destination payout has landed (`destinationTxHash` set, cross-chain only),
-  the recipient has the money and compensating the sender would pay twice out of
-  treasury. A throw after that point (the ledger credit, the SETTLED transition)
-  runs `completeSettledPayout` — create the ledger credit if missing, consume the
-  reservation, mark SETTLED — never `compensateSender`. So the executor's catch
-  checks `destinationTxHash` *before* the escrow reconciliation below.
+  once the destination payout has landed, the recipient has the money and
+  compensating the sender would pay twice out of treasury. Cross-chain, the payout
+  hash is persisted **on submit** (`destinationTxHash`, before the receipt is
+  awaited — audit `bridge.destination_payout_submitted`), so the hash proves an
+  *attempt*, not a payment. The executor's catch resolves it with
+  `transactionOutcome()` on the destination chain *before* the escrow
+  reconciliation below: **confirmed** → `completeSettledPayout` (create the ledger
+  credit if missing, consume the reservation, mark SETTLED — never
+  `compensateSender`); **reverted** → fall through to compensation; **unknown**
+  (receipt unreadable — includes a tx still in the mempool; viem throws on a
+  missing receipt, so "absent" is deliberately near-unreachable live, see the
+  comment on `transactionOutcome`) → stay PAYOUT_PENDING, audit
+  `payment.destination_payout_unresolved`, keep it in `stuckPayments()` — never
+  auto-compensate and never auto-complete on unknown evidence. Same-chain routes
+  never set `destinationTxHash`; the ledger credit alone is the proof there.
+  `repairCompensation` re-checks the same outcome and refuses (409) on
+  confirmed/unknown rather than double-paying.
 - **Reconcile with the chain before undoing anything**: the executor's catch decides
   refund-vs-compensate from `onchainPaymentState()` (the escrow's own `getPayment`), not
   from the DB status — they disagree exactly when a step threw mid-flight, which is the
@@ -480,10 +491,22 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   yet and revert (seen live: `settlePayment` → "not initiated" seconds after the
   escrow confirmed, and the auto-refund failed the same way). `operatorWrite` wraps
   state-dependent calls in `retryOnReplicaLag` (lib/chain.ts); use it for any new
-  call that reads state written by a previous tx. Local single-node chains can
-  never reproduce this — it only shows up live.
-- Re-running `deploy:base-sepolia` / `deploy:polygon-amoy` deploys **fresh
-  contracts** but reuses the generated treasury/entity wallets (and their gas dust).
+  call that reads state written by a previous tx. The retry budget is
+  network-aware (`replicaLagRetries`): 4×2s on load-balanced public testnets,
+  **0 on `fortel2-*` and local chains** — a single-sequencer rail has no replicas,
+  so "not initiated" there is a real failure that should surface immediately, not
+  after ~8s of retries. Local single-node chains can never reproduce the lag —
+  it only shows up live.
+- Re-running a `deploy:*` script is **mode-aware** (auto-detected from the
+  network's overlay): no overlay → full deploy; overlay with escrow + tokens but
+  no `TokenizedMMF` → **MMF add-on** (fund + yield buffer + treasury approval
+  merged into the existing overlay, escrow/tokens untouched); overlay already
+  carrying a fund → **no-op**. So a full redeploy of fresh contracts now requires
+  moving the overlay aside first (wallets in it are reused wherever possible).
+  `--preflight-only` prints the detected mode and planned actions without sending
+  a transaction — run it before any live deploy. Add-on idempotency is
+  **mode-level only**: a run that dies between the fund deploy and the overlay
+  merge leaves an orphaned fund a re-run won't reuse (decisions log T2-2).
 - A test that drives `initiatePayment` **directly** (rather than through the executor)
   must approve the sender's tokens itself — no fixture wallet carries a standing
   allowance any more. See `approveAmount()` in tests/integration/contract.test.ts.
