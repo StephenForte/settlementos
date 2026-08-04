@@ -13,11 +13,16 @@
 //      generated dust-wallet keys; the funded deployer key stays in .env only).
 //   5. Registers the entity wallets in the app database (if entities are seeded).
 //
-// The TokenizedMMF (overnight liquidity parking, PRD §24) deploys on live
-// networks the same way it always has on the local chains — mint its mockUSDC
-// yield buffer to the fund AND have the treasury approve the fund, or parking
-// reverts (AGENTS.md gotcha). mmfAddress() returns undefined for any network
-// whose overlay predates this, so older deploys keep settling untouched.
+// When an overlay already has PaymentSettlement + tokens but no TokenizedMMF
+// (e.g. fortel2-sepolia deployed before F4), the script auto-selects MMF add-on
+// mode: deploy only the fund, mint its yield buffer, treasury MAX-approve, and
+// merge TokenizedMMF into the existing overlay without touching escrow/tokens.
+// A re-run when TokenizedMMF is already present is a no-op.
+//
+//   node scripts/deploy-testnet.mjs <network> [--preflight-only]
+//
+// --preflight-only runs RPC/chain-id/balance checks and prints the planned mode
+// and actions without sending any transactions.
 //
 // Run: npm run deploy:base-sepolia | deploy:polygon-amoy | deploy:fortel2-sepolia
 //      (all load .env via node --env-file)
@@ -39,7 +44,7 @@ const root = path.join(__dirname, "..");
 // Gas-dust targets are per network: Base Sepolia gas is fractions of a gwei,
 // while Polygon Amoy enforces a ~30 gwei floor (~100× pricier per tx), so Amoy
 // targets are proportionally higher. Top-ups only happen when below target.
-const NETWORK_CONFIGS = {
+export const NETWORK_CONFIGS = {
   "base-sepolia": {
     chainId: 84532,
     name: "Base Sepolia",
@@ -92,21 +97,7 @@ const NETWORK_CONFIGS = {
   },
 };
 
-const NETWORK_ID = process.argv[2];
-const CFG = NETWORK_CONFIGS[NETWORK_ID];
-if (!CFG) {
-  console.error(
-    `Usage: node scripts/deploy-testnet.mjs <network>\nSupported: ${Object.keys(NETWORK_CONFIGS).join(", ")}`
-  );
-  process.exit(1);
-}
-const RPC_URL = process.env[CFG.rpcEnv] || CFG.defaultRpc;
-const EXPLORER = CFG.explorer;
-const txLink = (hash) => (EXPLORER ? `${EXPLORER}/tx/${hash}` : hash);
-const addressLink = (addr) => (EXPLORER ? `${EXPLORER}/address/${addr}` : addr);
-const OUT_PATH = path.join(root, "chain", `deployments.${NETWORK_ID}.json`);
-
-const TOKENS = [
+export const TOKENS = [
   ["Mock USD Coin", "mockUSDC", 6],
   ["Mock JPY Token", "mockJPY", 0],
   ["Mock SGD Token", "mockSGD", 6],
@@ -115,10 +106,10 @@ const TOKENS = [
 // Pre-funded mockUSDC held by the MMF to pay simulated yield on redemption —
 // accrual raises the redemption value without minting asset, so the yield is
 // paid out of this buffer (mirrors scripts/setup.mjs + the test fixture).
-const MMF_YIELD_BUFFER = 50_000n * 10n ** 6n;
+export const MMF_YIELD_BUFFER = 50_000n * 10n ** 6n;
 // The treasury is the platform's own parking account, so its approval to the
 // fund stays MAX (unlike entity → escrow allowances, which are exact per payment).
-const MAX_UINT256 = 2n ** 256n - 1n;
+export const MAX_UINT256 = 2n ** 256n - 1n;
 
 // externalId → demo profile (mirrors scripts/setup.mjs; wallet risk attributes
 // drive the compliance demo the same way they do on the local chains).
@@ -128,6 +119,200 @@ const ENTITY_PROFILES = {
   ent_sg_supplier: { label: "SG Imports settlement wallet", allowlisted: true, riskScore: 8 },
   ent_osaka_parts: { label: "Osaka Parts wallet (unverified)", allowlisted: false, riskScore: 55 },
 };
+
+/** @typedef {"full" | "mmf_addon" | "noop"} DeployMode */
+
+/**
+ * Parse argv for network id and --preflight-only.
+ * @param {string[]} argv process.argv
+ */
+export function parseDeployArgs(argv) {
+  const rest = argv.slice(2);
+  const preflightOnly = rest.includes("--preflight-only");
+  const networkId = rest.find((a) => a !== "--preflight-only");
+  return { networkId, preflightOnly };
+}
+
+/**
+ * Read a live-network overlay slice for `networkId`, or null when missing.
+ * @param {string | null | undefined} overlayJson raw file contents
+ * @param {string} networkId
+ */
+export function readNetworkOverlay(overlayJson, networkId) {
+  if (!overlayJson) return null;
+  try {
+    const data = JSON.parse(overlayJson);
+    return data.networks?.[networkId] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decide deploy mode from an existing overlay slice (pure — no I/O).
+ * Auto-detect: full deploy when absent or incomplete; MMF add-on when
+ * PaymentSettlement + mockUSDC exist but TokenizedMMF does not; no-op when
+ * TokenizedMMF is already recorded.
+ * @param {Record<string, unknown> | null | undefined} networkOverlay
+ * @returns {{ mode: DeployMode, reason: string, mmfAddress?: string }}
+ */
+export function decideDeployMode(networkOverlay) {
+  if (!networkOverlay) {
+    return { mode: "full", reason: "no overlay — fresh full deploy" };
+  }
+
+  const contracts = /** @type {Record<string, unknown> | undefined} */ (networkOverlay.contracts);
+  const settlement = contracts?.PaymentSettlement;
+  const tokens = /** @type {Record<string, { address?: string }> | undefined} */ (contracts?.tokens);
+  const mockUsdc = tokens?.mockUSDC?.address;
+
+  if (!settlement || !mockUsdc) {
+    return { mode: "full", reason: "overlay incomplete — missing PaymentSettlement or mockUSDC" };
+  }
+
+  const mmf = contracts?.TokenizedMMF;
+  if (typeof mmf === "string" && mmf.length > 0) {
+    return {
+      mode: "noop",
+      reason: "TokenizedMMF already present in overlay",
+      mmfAddress: mmf,
+    };
+  }
+
+  return {
+    mode: "mmf_addon",
+    reason: "PaymentSettlement + tokens present, TokenizedMMF missing — MMF add-on",
+  };
+}
+
+/**
+ * Validate DEPLOYER_PRIVATE_KEY is present and well-formed.
+ * @returns {{ ok: true } | { ok: false, message: string }}
+ */
+export function validateDeployerKey(deployerKey, cfg) {
+  if (!deployerKey || !deployerKey.startsWith("0x")) {
+    return {
+      ok: false,
+      message:
+        "DEPLOYER_PRIVATE_KEY is not set in .env.\n" +
+        `Generate a fresh key (never reuse a mainnet key) and fund it with ~${formatEther(
+          cfg.minDeployerBalance
+        )} ${cfg.currency} on ${cfg.name}:\n` +
+        cfg.funding.join("\n"),
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Validate on-chain chain id matches the network config.
+ * @param {number | null} onchainId null when RPC unreachable
+ * @returns {{ ok: true, chainId: number } | { ok: false, message: string }}
+ */
+export function validateChainId(onchainId, cfg, rpcUrl) {
+  if (onchainId === null) {
+    return { ok: false, message: `${cfg.name} RPC not reachable at ${rpcUrl}` };
+  }
+  if (onchainId !== cfg.chainId) {
+    return {
+      ok: false,
+      message: `Expected chainId ${cfg.chainId} at ${rpcUrl}, found ${onchainId}`,
+    };
+  }
+  return { ok: true, chainId: onchainId };
+}
+
+/**
+ * Validate deployer native balance meets the minimum for deploy + dust funding.
+ * @param {bigint} balance
+ * @returns {{ ok: true } | { ok: false, message: string }}
+ */
+export function validateDeployerBalance(balance, cfg, deployerAddr) {
+  if (balance < cfg.minDeployerBalance) {
+    return {
+      ok: false,
+      message:
+        `Deployer balance too low (need ≥ ${formatEther(cfg.minDeployerBalance)} ${cfg.currency} for deploy + wallet funding).\n` +
+        `Fund ${deployerAddr}:\n` +
+        cfg.funding.join("\n"),
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Run all preflight checks (pure except the caller supplies RPC-derived values).
+ * @param {{ deployerKey?: string, onchainId: number | null, balance: bigint, deployerAddr: string, cfg: typeof NETWORK_CONFIGS[string], rpcUrl?: string }} input
+ * @returns {{ ok: true } | { ok: false, message: string }}
+ */
+export function runPreflightChecks({ deployerKey, onchainId, balance, deployerAddr, cfg, rpcUrl }) {
+  const keyCheck = validateDeployerKey(deployerKey, cfg);
+  if (!keyCheck.ok) return keyCheck;
+
+  const resolvedRpc = rpcUrl ?? process.env[cfg.rpcEnv] ?? cfg.defaultRpc;
+  const chainCheck = validateChainId(onchainId, cfg, resolvedRpc);
+  if (!chainCheck.ok) return chainCheck;
+
+  return validateDeployerBalance(balance, cfg, deployerAddr);
+}
+
+/**
+ * Human-readable plan for --preflight-only and logging.
+ * @param {DeployMode} mode
+ * @param {string} networkId
+ * @param {Record<string, unknown> | null | undefined} networkOverlay
+ */
+export function describePlannedActions(mode, networkId, networkOverlay) {
+  const lines = [`Deploy mode: ${mode}`];
+  switch (mode) {
+    case "full":
+      lines.push(
+        "- Deploy MockERC20 tokens (mockUSDC, mockJPY, mockSGD)",
+        "- Deploy PaymentSettlement + TokenizedMMF",
+        "- Fund treasury/entity wallets with gas dust",
+        "- Mint demo balances + MMF yield buffer (50,000 mockUSDC)",
+        "- Treasury MAX-approve mockUSDC → TokenizedMMF",
+        `- Write chain/deployments.${networkId}.json`,
+        "- Register entity wallets in the database (if seeded)"
+      );
+      break;
+    case "mmf_addon":
+      lines.push(
+        `- Reuse existing PaymentSettlement (${networkOverlay?.contracts?.PaymentSettlement})`,
+        `- Reuse existing mockUSDC (${networkOverlay?.contracts?.tokens?.mockUSDC?.address})`,
+        "- Deploy TokenizedMMF only",
+        "- Mint MMF yield buffer (50,000 mockUSDC) if not already funded",
+        "- Treasury MAX-approve mockUSDC → TokenizedMMF if not already approved",
+        `- Merge TokenizedMMF into chain/deployments.${networkId}.json (other entries untouched)`
+      );
+      break;
+    case "noop":
+      lines.push(
+        `- TokenizedMMF already recorded (${networkOverlay?.contracts?.TokenizedMMF}) — no transactions`
+      );
+      break;
+    default:
+      break;
+  }
+  return lines;
+}
+
+/**
+ * True when the MMF already holds at least the yield buffer (idempotent skip).
+ * @param {bigint} balance mockUSDC balance of the fund address
+ */
+export function mmfYieldBufferSatisfied(balance) {
+  return balance >= MMF_YIELD_BUFFER;
+}
+
+/**
+ * True when treasury already granted a MAX-style approval (idempotent skip).
+ * @param {bigint} allowance treasury → MMF mockUSDC allowance
+ */
+export function treasuryMmfApprovalSatisfied(allowance) {
+  // Any prior MAX approve leaves allowance at or near MAX_UINT256.
+  return allowance >= MAX_UINT256 / 2n;
+}
 
 function artifact(name) {
   const p = path.join(root, "chain", "artifacts", "contracts", `${name}.sol`, `${name}.json`);
@@ -140,16 +325,25 @@ function fail(msg) {
 }
 
 async function main() {
-  const deployerKey = process.env.DEPLOYER_PRIVATE_KEY;
-  if (!deployerKey || !deployerKey.startsWith("0x")) {
-    fail(
-      "DEPLOYER_PRIVATE_KEY is not set in .env.\n" +
-        `Generate a fresh key (never reuse a mainnet key) and fund it with ~${formatEther(
-          CFG.minDeployerBalance
-        )} ${CFG.currency} on ${CFG.name}:\n` +
-        CFG.funding.join("\n")
+  const { networkId: NETWORK_ID, preflightOnly } = parseDeployArgs(process.argv);
+  const CFG = NETWORK_CONFIGS[NETWORK_ID];
+  if (!CFG) {
+    console.error(
+      `Usage: node scripts/deploy-testnet.mjs <network> [--preflight-only]\nSupported: ${Object.keys(NETWORK_CONFIGS).join(", ")}`
     );
+    process.exit(1);
   }
+
+  const RPC_URL = process.env[CFG.rpcEnv] || CFG.defaultRpc;
+  const EXPLORER = CFG.explorer;
+  const txLink = (hash) => (EXPLORER ? `${EXPLORER}/tx/${hash}` : hash);
+  const addressLink = (addr) => (EXPLORER ? `${EXPLORER}/address/${addr}` : addr);
+  const OUT_PATH = path.join(root, "chain", `deployments.${NETWORK_ID}.json`);
+
+  const deployerKey = process.env.DEPLOYER_PRIVATE_KEY;
+  const deployerAddr = deployerKey?.startsWith("0x")
+    ? privateKeyToAccount(deployerKey).address
+    : "0x0000000000000000000000000000000000000000";
 
   const chain = defineChain({
     id: CFG.chainId,
@@ -162,20 +356,202 @@ async function main() {
     createWalletClient({ chain, transport: http(RPC_URL), account: privateKeyToAccount(pk) });
 
   const onchainId = await publicClient.getChainId().catch(() => null);
-  if (onchainId === null) fail(`${CFG.name} RPC not reachable at ${RPC_URL}`);
-  if (onchainId !== CFG.chainId) fail(`Expected chainId ${CFG.chainId} at ${RPC_URL}, found ${onchainId}`);
+  const balance =
+    onchainId !== null && deployerKey?.startsWith("0x")
+      ? await publicClient.getBalance({ address: deployerAddr })
+      : 0n;
 
+  const preflight = runPreflightChecks({
+    deployerKey,
+    onchainId,
+    balance,
+    deployerAddr,
+    cfg: CFG,
+  });
+  if (!preflight.ok) fail(preflight.message);
+
+  const overlayJson = fs.existsSync(OUT_PATH) ? fs.readFileSync(OUT_PATH, "utf8") : null;
+  const networkOverlay = readNetworkOverlay(overlayJson, NETWORK_ID);
+  const { mode, reason } = decideDeployMode(networkOverlay);
+
+  console.log(`\n${CFG.name} (${NETWORK_ID}) — ${reason}`);
+  const plan = describePlannedActions(mode, NETWORK_ID, networkOverlay);
+  for (const line of plan) console.log(line);
+
+  if (preflightOnly) {
+    console.log("\n--preflight-only: no transactions sent.");
+    return;
+  }
+
+  if (mode === "noop") {
+    console.log("\nNothing to do — overlay already includes TokenizedMMF.");
+    return;
+  }
+
+  if (mode === "mmf_addon") {
+    await runMmfAddon({
+      NETWORK_ID,
+      CFG,
+      OUT_PATH,
+      overlayJson,
+      networkOverlay,
+      deployerKey,
+      publicClient,
+      walletFor,
+      txLink,
+      addressLink,
+    });
+    return;
+  }
+
+  await runFullDeploy({
+    NETWORK_ID,
+    CFG,
+    OUT_PATH,
+    RPC_URL,
+    EXPLORER,
+    deployerKey,
+    publicClient,
+    walletFor,
+    txLink,
+    addressLink,
+  });
+}
+
+/**
+ * MMF add-on: deploy fund + buffer + treasury approval, merge into overlay.
+ */
+async function runMmfAddon({
+  NETWORK_ID,
+  CFG,
+  OUT_PATH,
+  overlayJson,
+  networkOverlay,
+  deployerKey,
+  publicClient,
+  walletFor,
+  txLink,
+  addressLink,
+}) {
+  const deployer = walletFor(deployerKey);
+  const contracts = networkOverlay.contracts;
+  const mockUsdc = contracts.tokens.mockUSDC;
+
+  async function send(fn, label) {
+    const hash = await fn();
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    if (receipt.status !== "success") fail(`${label} reverted: ${txLink(hash)}`);
+    console.log(`  ${label} → ${txLink(hash)}`);
+    return receipt;
+  }
+
+  console.log("\nDeploying TokenizedMMF (add-on):");
+  const mmfArt = artifact("TokenizedMMF");
+  const mmfHash = await deployer.deployContract({
+    abi: mmfArt.abi,
+    bytecode: mmfArt.bytecode,
+    args: [mockUsdc.address],
+  });
+  const mmfReceipt = await publicClient.waitForTransactionReceipt({ hash: mmfHash });
+  if (mmfReceipt.status !== "success") fail(`TokenizedMMF deploy reverted: ${txLink(mmfHash)}`);
+  const mmfAddress = mmfReceipt.contractAddress;
+  console.log(`  TokenizedMMF → ${addressLink(mmfAddress)}`);
+
+  const tokenArt = artifact("MockERC20");
+  const tokenAbi = tokenArt.abi;
+
+  const mmfUsdcBalance = await publicClient.readContract({
+    address: mockUsdc.address,
+    abi: tokenAbi,
+    functionName: "balanceOf",
+    args: [mmfAddress],
+  });
+
+  if (mmfYieldBufferSatisfied(mmfUsdcBalance)) {
+    console.log(
+      `\nMMF yield buffer already funded (${mmfUsdcBalance.toString()} base units ≥ ${MMF_YIELD_BUFFER.toString()}) — skip mint`
+    );
+  } else {
+    console.log("\nMinting MMF yield buffer:");
+    await send(
+      () =>
+        deployer.writeContract({
+          address: mockUsdc.address,
+          abi: tokenAbi,
+          functionName: "mint",
+          args: [mmfAddress, MMF_YIELD_BUFFER],
+        }),
+      "mint MMF yield buffer 50,000 mockUSDC"
+    );
+  }
+
+  const treasuryAccount = networkOverlay.accounts?.treasury;
+  if (!treasuryAccount?.address) fail("Overlay missing treasury account — cannot approve MMF");
+
+  let treasuryKey = process.env.TREASURY_PRIVATE_KEY;
+  if (!treasuryKey) {
+    if (!treasuryAccount.privateKey) {
+      fail("Overlay treasury has no privateKey and TREASURY_PRIVATE_KEY is not set");
+    }
+    treasuryKey = treasuryAccount.privateKey;
+  }
+
+  const treasuryAddr = treasuryAccount.address;
+  const allowance = await publicClient.readContract({
+    address: mockUsdc.address,
+    abi: tokenAbi,
+    functionName: "allowance",
+    args: [treasuryAddr, mmfAddress],
+  });
+
+  if (treasuryMmfApprovalSatisfied(allowance)) {
+    console.log(`\nTreasury already approved mockUSDC → TokenizedMMF — skip approve`);
+  } else {
+    console.log("\nApproving the MMF as treasury:");
+    const treasuryWallet = walletFor(treasuryKey);
+    await send(
+      () =>
+        treasuryWallet.writeContract({
+          address: mockUsdc.address,
+          abi: tokenAbi,
+          functionName: "approve",
+          args: [mmfAddress, MAX_UINT256],
+        }),
+      "treasury approve mockUSDC → TokenizedMMF"
+    );
+  }
+
+  const existing = JSON.parse(overlayJson);
+  existing.networks[NETWORK_ID].contracts.TokenizedMMF = mmfAddress;
+  fs.writeFileSync(OUT_PATH, JSON.stringify(existing, null, 2));
+  console.log(`\nMerged TokenizedMMF into ${path.relative(root, OUT_PATH)}`);
+
+  const deployerAddr = deployer.account.address;
+  const remaining = await publicClient.getBalance({ address: deployerAddr });
+  console.log(`\nDone. Deployer gas remaining: ${formatEther(remaining)} ${CFG.currency}`);
+  console.log(`PaymentSettlement: ${addressLink(contracts.PaymentSettlement)} (unchanged)`);
+  console.log(`TokenizedMMF: ${addressLink(mmfAddress)} (new)`);
+}
+
+/**
+ * Full deploy path (original behavior).
+ */
+async function runFullDeploy({
+  NETWORK_ID,
+  CFG,
+  OUT_PATH,
+  RPC_URL,
+  EXPLORER,
+  deployerKey,
+  publicClient,
+  walletFor,
+  txLink,
+  addressLink,
+}) {
   const deployer = walletFor(deployerKey);
   const deployerAddr = deployer.account.address;
   const balance = await publicClient.getBalance({ address: deployerAddr });
   console.log(`Deployer ${deployerAddr} — ${formatEther(balance)} ${CFG.currency} on ${CFG.name}`);
-  if (balance < CFG.minDeployerBalance) {
-    fail(
-      `Deployer balance too low (need ≥ ${formatEther(CFG.minDeployerBalance)} ${CFG.currency} for deploy + wallet funding).\n` +
-        `Fund ${deployerAddr}:\n` +
-        CFG.funding.join("\n")
-    );
-  }
 
   // Reuse previously generated wallets so re-deploys don't strand funded dust wallets.
   const existing = fs.existsSync(OUT_PATH)
@@ -374,7 +750,12 @@ async function main() {
   console.log(`Start the app (npm run dev) and pick ${CFG.name} as source and/or destination chain.`);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+const isMain =
+  process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+
+if (isMain) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
