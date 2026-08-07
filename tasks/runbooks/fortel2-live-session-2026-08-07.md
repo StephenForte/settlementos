@@ -1,5 +1,7 @@
 # ForteL2 live session results — 2026-08-07
 
+**Outcome: F4 (MMF) and F7/US-F008 (bridge) both verified live on ForteL2 852.**
+
 First session with the ForteL2 852 sequencer reachable on the SettlementOS
 machine (geth on `127.0.0.1:9545`). Everything below was executed against the
 **live** chain, not a fixture. Tx hashes are permanent on-chain evidence and
@@ -94,34 +96,82 @@ Earlier ForteL2 history confirmed present in the DB before this session:
 `pay_8c318fcae804`, the F3 first settle (SETTLED, $100,000.00, 2026-07-25) —
 which independently verifies the F3 claim that could not be checked from git.
 
+## F7 / US-F008 — simulated bridge with a live ForteL2 leg ✅
+
+The cross-chain work initially looked blocked: this machine has no
+`deployments.base-sepolia.json` / `deployments.polygon-amoy.json` (absent and
+never committed — correct, they hold generated wallet private keys), so those
+networks' treasury/entity **signing keys are unrecoverable** and Base Sepolia
+cannot originate or receive a payment from here. Stephen's call was to
+`npm run setup` — wiping the local DB to restore `base-local` / `polygon-local`
+as the second leg — after this session's evidence was preserved on-chain and
+committed. The reset left the ForteL2 overlay (including the new
+`TokenizedMMF`) untouched and re-registered all four ForteL2 entity wallets.
+
+**Forward — `base-local` → `fortel2-sepolia`** (`pay_6f678a415d2b`):
+
+- Quote matched T1's hermetic prediction exactly: `BRIDGE_AND_SETTLE`
+  recommended, `bridge_fee_bps: 5`, destination **3,915,077** mockJPY against
+  the single-chain fallback's 3,917,040 — the 5bps bridge fee, visible.
+- Escrow `0x6ab3c11ad80e0ee65b02366abb6290d11545c5912e5b28a3935937af981709cf`
+  and settle `0x22e9507a54dcd4eb51fba9ea8120095d189e338a70becccc5a34d225b4db862e`
+  on base-local; **destination payout on ForteL2**
+  `0x30ad783a7beac85f0456b2be4f01b41438300bf749fc62513dd9b64946aef725`
+  (block 732,051, status success).
+- Recipient balance moved **exactly** as quoted: Tokyo +3,915,077 mockJPY,
+  treasury −3,915,077, on the live L2.
+- **SETTLED in ~4.5s.**
+
+**Reverse — `fortel2-sepolia` → `base-local`** (`pay_302fbe6a0541`), proving
+ForteL2 works as a bridge *source*, not only a destination:
+
+- $10,000.00 → 1,566,344 mockJPY, `bridge_fee_bps: 5`.
+- Escrow `0xb68b1e9b823592c47a89045a630964c881b4fdaecdfd0b8327cf8fbe58d04c1e`
+  and settle `0x2c9f97808743a1298c6c9d12286371ac343ab1b6f5ecbc3809dd1dd8ca1a158c`
+  **on ForteL2**; destination payout on base-local
+  `0x11d8220325306dc51fb577f0688906c1a8fd589e3319ce5c4cdb325df79e641f`.
+- **SETTLED in ~12.5s.**
+
+**T4's persist-on-submit design verified in production.** Each cross-chain
+payment wrote exactly two bridge events in the right order —
+`bridge.destination_payout_submitted` (the attempt, hash persisted before the
+receipt is awaited) then `bridge.destination_payout` (receipt confirmed) — 4
+events across the 2 payments. That is the PR #37 fix behaving live, and it is
+the seam that stops a lost receipt from compensating a recipient who was
+already paid. Audit chain **INTACT** throughout (28 events).
+
 ## Not completed this session
 
-Both blocked by the same cause, not by any code defect:
+**3 of T4's 4 live checks** — receipt-loss-completes-forward, unresolved-stays-
+`PAYOUT_PENDING`, and repair-refuses-on-confirmed. Each requires injecting a
+failure at a precise instant (RPC dropping *after* the destination transfer
+mines but *before* its receipt returns). `executorTestHooks` is deliberately
+test-only — the Proxy throws outside the test runner — so staging these live
+would mean interrupting the sequencer mid-payment with second-level timing, on
+the chain holding the demo history. The hermetic tests in
+`tests/integration/executor-rpc-resilience.test.ts` cover all three, and the
+live run confirmed the observable half of the same mechanism (both events, in
+order, with the payment completing correctly).
 
-- **US-F008 bridge QA** (`tasks/runbooks/fortel2-bridge-manual-qa.md`)
-- **3 of T4's 4 live checks** (receipt-loss forward-complete, unresolved stays
-  stuck, repair 409) — each needs a cross-chain payment, and only a cross-chain
-  route sets `destinationTxHash`.
-
-**Cause:** a cross-chain payment needs two live networks; this machine has one.
-`chain/deployments.base-sepolia.json` and `deployments.polygon-amoy.json` are
-absent here and were never committed (correct — they hold generated wallet
-private keys), so the Base Sepolia treasury/entity **signing keys are
-unrecoverable**. The contracts remain live on Base Sepolia, but nothing on this
-machine can sign as those wallets. Restoring that leg means a fresh deploy,
-which would produce new addresses and break the documented "same address on
-every network" property.
-
-T4's fourth check (ForteL2 failures surfacing immediately rather than after
+**T4's fourth check** (ForteL2 failures surfacing immediately rather than after
 ~8s of replica-lag retries) stays covered by the `replicaLagRetries` unit
-tests; provoking it live would have meant deliberately failing a payment on the
-demo chain for little added confidence.
+tests. Provoking it live means deliberately failing a payment, and the error
+strings the classifier keys on (`"not initiated"`, `"insufficient allowance"`)
+are awkward to produce honestly — an insufficient *balance* takes a different
+path, so the test would not isolate what it claims to.
 
 ## Follow-ups
 
-- Bridge QA + the three T4 live checks, once a second live network exists.
-- Flip the doc claims this session earns (PRD US-F005 "pending live run",
-  README/CLAUDE "live-sequencer run pending", DEMO ForteL2 treasury beat).
-- The ForteL2 overlay is the **only** copy of its generated wallet keys. It is
-  gitignored by design; losing it costs what Base Sepolia's loss cost here.
-  Worth an offline backup before any machine migration.
+- The three staged-failure T4 checks, if ever worth the setup — low marginal
+  value over the hermetic coverage.
+- Flip the doc claims this session earns (PRD US-F005 / US-F008, README and
+  CLAUDE "live-sequencer run pending", DEMO ForteL2 treasury + bridge beats).
+- **Back up `chain/deployments.fortel2-sepolia.json` offline.** It is the only
+  copy of ForteL2's generated treasury and entity wallet keys, gitignored by
+  design. Losing it costs exactly what losing Base Sepolia's overlay cost here:
+  the contracts stay live and unusable. This session's copy is in the session
+  scratchpad, which is not durable.
+- Base Sepolia / Polygon Amoy remain unusable from this machine. Restoring
+  either means a fresh deploy with new addresses, which breaks the documented
+  "same address on every network" property and orphans the existing demo
+  history — a deliberate decision, not a cleanup task.
