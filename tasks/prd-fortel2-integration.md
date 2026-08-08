@@ -72,10 +72,10 @@ Canonical file: ForteL2 `deployments/rail-interface.json` + `tasks/prd-money-rai
 | **F1** | Network registry + chain adapter for **`fortel2-sepolia` (852)** (and optional local 901) | ✅ Done (PR #21) |
 | **F2** | Deploy existing contracts + seed wallets on ForteL2 852 | ✅ Done (PR #24) — deployed 2026-07-24 |
 | **F3** | Single-chain payment demo (ACME → Tokyo) on ForteL2 | ✅ Done — first settle 2026-07-24 (`pay_8c318fcae804`) |
-| **F4** | Treasury MMF park/recall against ForteL2 balances | ✅ Code complete (2026-08-03) — deploy provisions `TokenizedMMF` + yield buffer + treasury approval; park→accrue→recall verified on a local chainId-852 node. Live sequencer run pending a reachable ForteL2 RPC |
+| **F4** | Treasury MMF park/recall against ForteL2 balances | ✅ **Done live (2026-08-07)** — `TokenizedMMF` deployed to the real 852 sequencer via the add-on path (`0xaed29387…e7ff`); park→accrue→recall returned 50004.79452 on 50k (+4.794520 = 3.5%/365 exactly) with the escrow balance unmoved. Evidence: [`tasks/runbooks/fortel2-live-session-2026-08-07.md`](runbooks/fortel2-live-session-2026-08-07.md) |
 | **F5** | Docs/demo/README: ForteL2 as destination rail | ✅ Done (with F3) |
 | **F6** | Explorer address book + optional replica read URL | After F3 |
-| **F7** | Optional: simulated bridge legs involving ForteL2 | After F3 |
+| **F7** | Optional: simulated bridge legs involving ForteL2 | ✅ **Done live (2026-08-07)** — both directions settled with dual hashes (`base-local`→`fortel2-sepolia` in ~4.5s, `fortel2-sepolia`→`base-local` in ~12.5s). Second leg is a local chain, not Base Sepolia — see US-F008 |
 | **F8** | Later: canonical USDC adapter cutover | Joint with ForteL2 MR-4 |
 
 ## User stories — SettlementOS
@@ -126,8 +126,8 @@ Canonical file: ForteL2 `deployments/rail-interface.json` + `tasks/prd-money-rai
 **Description:** As a treasury operator, I want overnight parking to work against ForteL2 liquidity.
 
 **Acceptance Criteria:**
-- [x] Park/recall/accrue APIs succeed when treasury inventory lives on ForteL2 — `scripts/deploy-testnet.mjs` now deploys `TokenizedMMF`, mints its 50k mockUSDC yield buffer, and has the treasury approve the fund; `lib/treasury` is network-generic (proven on the local chains) and resolves the fund from the ForteL2 overlay. A park→accrue→recall cycle was run against a local chainId-852 node (100k parked, +3.5%/365 yield returned on recall). Live-sequencer run is pending a reachable ForteL2 RPC.
-- [x] Segregation invariant preserved (MMF funds not commingled with escrow) — existing tests still pass; the 852 verification asserted the escrow balance is untouched through park→accrue→recall. Hermetic ForteL2 overlay wiring coverage added (`tests/unit/fortel2-mmf-wiring.test.ts`).
+- [x] Park/recall/accrue APIs succeed when treasury inventory lives on ForteL2 — **verified against the live 852 sequencer on 2026-08-07**. `TokenizedMMF` (`0xaed29387…e7ff`) was deployed by the add-on path with its 50k mockUSDC yield buffer and treasury MAX approval; a park→accrue→recall of 50,000 returned **50004.79452** (+4.794520 = 3.5%/365 to the base unit, matching an independent recompute of the index). Tx hashes in [`tasks/runbooks/fortel2-live-session-2026-08-07.md`](runbooks/fortel2-live-session-2026-08-07.md).
+- [x] Segregation invariant preserved (MMF funds not commingled with escrow) — proven **on the live chain**: through park→accrue→recall the treasury moved +4.794520, the fund −4.794520, and the escrow contract's balance delta was **exactly 0.000000**. It stayed 0 through a subsequent real settlement on the same network. Hermetic overlay wiring coverage in `tests/unit/fortel2-mmf-wiring.test.ts`.
 - [x] Route engine `recall_required` behavior unchanged — no routing changes; suite green.
 
 ### US-F006: Documentation and demo run-of-show
@@ -155,10 +155,19 @@ Canonical file: ForteL2 `deployments/rail-interface.json` + `tasks/prd-money-rai
 **Description:** As a demo, I may show Base Sepolia ↔ ForteL2 using the **existing simulated bridge** (escrow on A, treasury payout on B).
 
 **Acceptance Criteria:**
-- [ ] Only after US-F004 is green
-- [ ] No new bridge protocol — reuse current adapter behavior
-- [ ] Dual tx hashes on payment detail
-- [ ] Documented as simulation, same honesty as Base↔Amoy
+- [x] Only after US-F004 is green — US-F004 settled 2026-07-24, re-confirmed live 2026-08-07
+- [x] No new bridge protocol — reuse current adapter behavior. No bridge code was written for this: `quoteRoutes`/`lib/executor` were already network-pair generic (proven hermetically by T1, `tests/db/fortel2-bridge-route.test.ts`), and the live run confirmed it
+- [x] Dual tx hashes on payment detail — **both directions, live 2026-08-07**. `base-local`→`fortel2-sepolia` (`pay_6f678a415d2b`): source escrow+settle on base-local, destination payout on ForteL2 at block 732,051; recipient's ForteL2 mockJPY moved +3,915,077, exactly the quoted amount. Reverse (`pay_302fbe6a0541`): escrow+settle **on ForteL2**, payout on base-local
+- [x] Documented as simulation, same honesty as Base↔Amoy — treasury-funded ERC-20 payout on the destination chain, not lock-and-mint
+
+**Deviation from the description, deliberate:** the second leg was `base-local`,
+not Base Sepolia. This machine's `deployments.base-sepolia.json` is absent and
+was never committed (it holds generated wallet keys), so Base Sepolia's
+treasury/entity **signing keys are unrecoverable** — its contracts are live but
+unusable from here. The mechanism under test (network-pair-generic quoting,
+cross-chain escrow, treasury payout on the destination, dual hashes) is
+identical; only the counterpart chain differs. A Base Sepolia leg needs a fresh
+deploy with new addresses — a deliberate decision, tracked in the session notes.
 
 ## Out of scope for SettlementOS in this PRD (ForteL2 owns)
 
