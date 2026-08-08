@@ -131,7 +131,7 @@ describe("execute-time recall when free is short (T7)", () => {
       const payment = await usdPayment();
 
       // Drop the position row without redeeming — asset stranded in the fund,
-      // parkedBalance is 0, free is short. Recall finds nothing; step 1 owns
+      // parkedBalance is 0, free is short. Step 0 skips recall; step 1 owns
       // the honest insufficient-liquidity failure (nothing escrowed/reserved).
       await prisma.treasuryPosition.delete({ where: { id: parked.positionId } });
       expect(await parkedBalance(NETWORK, "mockUSDC")).toBe(0n);

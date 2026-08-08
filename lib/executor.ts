@@ -16,7 +16,7 @@ import { audit } from "./audit";
 import { ApiError } from "./api-errors";
 import { type PaymentStatus } from "./state";
 import { transitionStatus } from "./transitions";
-import { assetForCurrency, toBaseUnits } from "./assets";
+import { assetForCurrency, toBaseUnits, type AssetSymbol } from "./assets";
 import {
   accountsFor,
   ensureSenderAllowance,
@@ -30,7 +30,7 @@ import {
   type TransactionOutcome,
 } from "./chain";
 import { availableLiquidity, destinationUnits, type RouteOption } from "./routing";
-import { recallForPayment, TreasuryError } from "./treasury";
+import { parkedBalance, recallForPayment, TreasuryError } from "./treasury";
 import { walletOnNetwork } from "./wallets";
 import { keccak256, toHex, type Address, type Hex } from "viem";
 
@@ -327,35 +327,39 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
   //    time, redeem parked MMF positions T+0 before reserving. The quote's
   //    recall_required flag is a snapshot (RPC degrade freezes it false) —
   //    gate on the measured free balance, not the flag (AGENTS.md).
-  //    recallForPayment is already a no-op when free covers; we still skip
-  //    the call when free is enough so a healthy balance never touches the fund.
+  //    Skip the fund entirely when free covers, or when nothing is parked in
+  //    this asset (wrong-asset destinations like mockJPY vs a USDC-backed
+  //    MMF must fall through to step 1, not fail as Auto-recall).
   {
     const liqBefore = await availableLiquidity(destAsset.symbol, destNet);
     const neededUnits = destinationUnits(destAmount, liqBefore.decimals);
     if (liqBefore.availableUnits < neededUnits) {
-      try {
-        // Emits a TREASURY_RECALLED per position plus one payment-linked
-        // TREASURY_AUTO_RECALLED summarizing the redemption.
-        await recallForPayment({
-          networkId: destNet,
-          asset: destAsset.symbol,
-          amount: destAmount,
-          paymentId: payment.id,
-        });
-      } catch (err) {
-        // Nothing parked (or not enough) is not a step-0 failure — step 1
-        // owns the insufficient-liquidity verdict. Other recall errors
-        // (chain reverts mid-redeem) still fail the payment here with
-        // nothing reserved or escrowed.
-        if (!(err instanceof TreasuryError && err.code === "INSUFFICIENT_FREE_BALANCE")) {
-          const failureReason = `Auto-recall of parked ${destAsset.symbol} on ${destNet} failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`;
-          await prisma.liquidityReservation
-            .update({ where: { paymentId: payment.id }, data: { status: "RELEASED" } })
-            .catch(() => {});
-          await setStatus(payment, "FAILED", { failureReason });
-          throw new Error(failureReason);
+      const parked = await parkedBalance(destNet, destAsset.symbol as AssetSymbol);
+      if (parked > 0n) {
+        try {
+          // Emits a TREASURY_RECALLED per position plus one payment-linked
+          // TREASURY_AUTO_RECALLED summarizing the redemption.
+          await recallForPayment({
+            networkId: destNet,
+            asset: destAsset.symbol,
+            amount: destAmount,
+            paymentId: payment.id,
+          });
+        } catch (err) {
+          // Parked but still short is not a step-0 failure — step 1 owns the
+          // insufficient-liquidity verdict. Other recall errors (chain reverts
+          // mid-redeem) still fail the payment here with nothing reserved or
+          // escrowed.
+          if (!(err instanceof TreasuryError && err.code === "INSUFFICIENT_FREE_BALANCE")) {
+            const failureReason = `Auto-recall of parked ${destAsset.symbol} on ${destNet} failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`;
+            await prisma.liquidityReservation
+              .update({ where: { paymentId: payment.id }, data: { status: "RELEASED" } })
+              .catch(() => {});
+            await setStatus(payment, "FAILED", { failureReason });
+            throw new Error(failureReason);
+          }
         }
       }
     }

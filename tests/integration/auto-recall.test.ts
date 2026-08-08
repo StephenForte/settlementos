@@ -188,9 +188,9 @@ describe("executePayment — auto-recall from the MMF", () => {
     expect((JSON.parse(payment.quoteJson!) as RouteOption[])[0].recall_required).toBe(true);
 
     // Failure injection: drop the position row without redeeming it. The asset is
-    // still stranded in the fund, so free liquidity is short and there is no
-    // position left to recall — INSUFFICIENT_FREE_BALANCE falls through to
-    // step 1's honest insufficient-liquidity failure (nothing escrowed).
+    // still stranded in the fund, so free liquidity is short and parkedBalance
+    // is 0 — step 0 skips recall and step 1 owns the honest insufficient-
+    // liquidity failure (nothing escrowed).
     await prisma.treasuryPosition.delete({ where: { id: parked.positionId } });
 
     await expect(executePayment(payment.id)).rejects.toThrow(
