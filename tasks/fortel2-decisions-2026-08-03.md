@@ -194,6 +194,32 @@ Entry format:
 - Detail: Hermetic test calls `transactionOutcome` with a nonexistent hash on the fixture chain; expects `"unknown"` (viem throw path), not `"absent"`. Documents the trap: do not "fix" NotFound→absent. No production code change.
 - Resolution: landed in `tests/integration/executor-rpc-resilience.test.ts`.
 
+## T6 — compensation attempt reconciliation + operator re-reconcile
+
+### T6-1: compensationTxHash is the attempt hash (no schema change)
+- Status: APPROVED (implicit — implementing T5-2 per T4-1 mirror)
+- Type: design-choice
+- Detail: Reuse nullable `compensationTxHash` for the submitted attempt hash (persisted before `confirm()`), mirroring T4-1's `destinationTxHash`. The column remains nullable; COMPENSATED status (backed by a confirmed receipt read) is the only claim the sender was repaid. A non-null hash alone must never mark COMPENSATED — a reverted attempt would strand the sender silently.
+- Resolution: implemented on branch fortel2/compensation-reconcile.
+
+### T6-2: compensation reconcile outcomes match destination leg
+- Status: APPROVED (implicit — implementing T5-2 per T4-1 mirror)
+- Type: design-choice
+- Detail: Before any re-transfer, `runCompensationTransfer` calls `transactionOutcome` on the source network. confirmed → COMPENSATED with no re-send (`payment.compensation_recovered`); unknown → refuse (409 from repair, stay COMPENSATION_PENDING, audit `payment.compensation_unresolved`, stay in stuckPayments); reverted/absent → fresh transfer is correct. Distinct audit events: `payment.compensation_submitted` (attempt) and `payment.compensation_transfer` (confirm path).
+- Resolution: implemented on branch fortel2/compensation-reconcile.
+
+### T6-3: executorTestHooks for compensation receipt-loss
+- Status: APPROVED (implicit)
+- Type: design-choice
+- Detail: Added `afterCompensationSubmitted`, `beforeCompensationTxHashPersist`, and `compensationPayoutOutcome` mirrors of the destination-leg hooks. First commit landed the seam + a failing balance-delta test proving the double-pay; fix followed.
+- Resolution: implemented on branch fortel2/compensation-reconcile.
+
+### T6-4: R1 operator reconcile never broadcasts
+- Status: APPROVED (implicit — implementing R1 per T5 review)
+- Type: design-choice
+- Detail: `POST /api/payments/[id]/reconcile` + `reconcileUnresolvedPayment` re-read chain evidence under the execution lease. PAYOUT_PENDING+confirmed → complete forward; +reverted/absent → COMPENSATION_PENDING only (no treasury transfer — `/repair` sends); +unknown → unchanged. COMPENSATION_PENDING+confirmed → COMPENSATED; +reverted → unchanged (eligible for repair); +unknown → unchanged. No state-machine edits required (existing edges suffice). No schema change.
+- Resolution: implemented on branch fortel2/compensation-reconcile.
+
 ## T6 — compensation attempt reconciliation + operator re-reconcile (post-wave)
 
 (entries here — ids T6-1, T6-2, … pre-assigned; do not scan for the highest)

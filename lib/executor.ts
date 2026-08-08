@@ -92,6 +92,18 @@ interface ExecutorTestHooks {
    */
   beforeCompensationTransfer?: () => void | Promise<void>;
   /**
+   * Throws after the compensation transfer is submitted and its attempt hash
+   * persisted, but before the receipt is awaited — the receipt-loss window where
+   * the sender may already hold the make-good while the DB has no confirmation.
+   */
+  afterCompensationSubmitted?: () => void | Promise<void>;
+  /**
+   * Throws after the compensation hash is known in memory but before the DB
+   * persist of compensationTxHash — proves recovery can still reconcile when
+   * the write fails (T5-3 mirror on the compensation leg).
+   */
+  beforeCompensationTxHashPersist?: () => void | Promise<void>;
+  /**
    * Force every escrow reconciliation read to come back null, as an RPC flap
    * would: the executor's catch path, stuckPayments(), and repairCompensation().
    * The catch path needs it for "settlement provably happened per the DB, but
@@ -105,6 +117,11 @@ interface ExecutorTestHooks {
    * the chain — simulates an unreadable destination RPC or a reverted attempt.
    */
   destinationPayoutOutcome?: TransactionOutcome;
+  /**
+   * Force compensation-transfer reconciliation to a fixed outcome instead of
+   * reading the source chain — simulates an unreadable RPC or a reverted attempt.
+   */
+  compensationPayoutOutcome?: TransactionOutcome;
 }
 
 /**
@@ -155,6 +172,16 @@ async function resolveDestinationPayoutOutcome(
 ): Promise<TransactionOutcome> {
   if (executorTestHooks.destinationPayoutOutcome !== undefined) {
     return executorTestHooks.destinationPayoutOutcome;
+  }
+  return transactionOutcome(networkId, txHash);
+}
+
+async function resolveCompensationOutcome(
+  networkId: string,
+  txHash: Hex
+): Promise<TransactionOutcome> {
+  if (executorTestHooks.compensationPayoutOutcome !== undefined) {
+    return executorTestHooks.compensationPayoutOutcome;
   }
   return transactionOutcome(networkId, txHash);
 }
@@ -714,6 +741,36 @@ async function compensateSender(payment: Payment, ctx: CompensationContext): Pro
 }
 
 /**
+ * Mark COMPENSATED from a *confirmed* compensation receipt. The hash is evidence
+ * of an attempt until this transition — never treat a non-null compensationTxHash
+ * alone as proof the sender was repaid (a reverted attempt would strand them).
+ */
+async function completeCompensationFromConfirmed(
+  compensating: Payment,
+  ctx: CompensationContext
+): Promise<Payment> {
+  const txHash = compensating.compensationTxHash!;
+  await audit(
+    "payment.compensation_recovered",
+    {
+      network: ctx.network,
+      asset: ctx.tokenSymbol,
+      amount: ctx.amount,
+      amountUnits: ctx.amountUnits.toString(),
+      to: ctx.sender,
+      txHash,
+      evidence: "compensation_tx_hash",
+      note: "prior compensation attempt confirmed — marking COMPENSATED without re-transfer",
+    },
+    compensating.id
+  );
+  return transitionStatus(compensating, "COMPENSATED", {
+    data: { compensationTxHash: txHash },
+    detail: { network: ctx.network, txHash, evidence: "compensation_tx_hash" },
+  });
+}
+
+/**
  * The transfer half of the saga, entered with the payment already in
  * COMPENSATION_PENDING — by the executor's catch, or by an operator repair of an
  * attempt whose transfer failed.
@@ -722,12 +779,75 @@ async function compensateSender(payment: Payment, ctx: CompensationContext): Pro
  * the sender's funds are genuinely still missing, and that is the state a repair
  * re-enters. Nothing retries automatically — compensation moves real money, so the
  * decision to send it again is an operator's.
+ *
+ * compensationTxHash is the *attempt* hash (persisted before confirm), mirroring
+ * destinationTxHash on the bridge leg. Reconcile any prior attempt before
+ * broadcasting another transfer: confirmed → COMPENSATED with no re-send;
+ * unknown → refuse; reverted/absent → a fresh transfer is correct.
  */
 async function runCompensationTransfer(compensating: Payment, ctx: CompensationContext): Promise<Payment> {
+  // Reconcile a prior attempt before any new broadcast. Unknown throws (not
+  // swallowed) so repair surfaces a 409 rather than a silent no-op failure.
+  if (compensating.compensationTxHash) {
+    const prior = await resolveCompensationOutcome(
+      ctx.network,
+      compensating.compensationTxHash as Hex
+    );
+    if (prior === "confirmed") {
+      return completeCompensationFromConfirmed(compensating, ctx);
+    }
+    if (prior === "unknown") {
+      await audit(
+        "payment.compensation_unresolved",
+        {
+          network: ctx.network,
+          txHash: compensating.compensationTxHash,
+          note: "compensation receipt unreadable — operator action required",
+        },
+        compensating.id
+      );
+      throw new ApiError(
+        "conflict",
+        "compensation outcome unresolved — cannot transfer safely"
+      );
+    }
+    // reverted or absent — fall through to a fresh transfer.
+  }
+
   try {
     await executorTestHooks.beforeCompensationTransfer?.();
-    const submitted = await treasuryTokenTransfer(ctx.network, ctx.tokenSymbol, ctx.sender, ctx.amountUnits);
-    const tx = await submitted.confirm();
+    const submitted = await treasuryTokenTransfer(
+      ctx.network,
+      ctx.tokenSymbol,
+      ctx.sender,
+      ctx.amountUnits
+    );
+    // Remember the attempt on the in-memory row *before* any further I/O so a
+    // failed DB persist still lets this catch (or a later repair, once persisted
+    // best-effort below) reconcile — T5-3 mirror on the compensation leg.
+    compensating = { ...compensating, compensationTxHash: submitted.hash };
+    await executorTestHooks.beforeCompensationTxHashPersist?.();
+    compensating = {
+      ...compensating,
+      ...(await prisma.payment.update({
+        where: { id: compensating.id },
+        data: { compensationTxHash: submitted.hash },
+      })),
+    };
+    await audit(
+      "payment.compensation_submitted",
+      {
+        network: ctx.network,
+        asset: ctx.tokenSymbol,
+        amount: ctx.amount,
+        amountUnits: ctx.amountUnits.toString(),
+        to: ctx.sender,
+        txHash: submitted.hash,
+      },
+      compensating.id
+    );
+    await executorTestHooks.afterCompensationSubmitted?.();
+    await submitted.confirm();
     await audit(
       "payment.compensation_transfer",
       {
@@ -736,15 +856,41 @@ async function runCompensationTransfer(compensating: Payment, ctx: CompensationC
         amount: ctx.amount,
         amountUnits: ctx.amountUnits.toString(), // never a bigint — audit() JSON-stringifies
         to: ctx.sender,
-        txHash: tx.hash,
+        txHash: submitted.hash,
       },
       compensating.id
     );
     return await transitionStatus(compensating, "COMPENSATED", {
-      data: { compensationTxHash: tx.hash },
-      detail: { network: ctx.network, txHash: tx.hash },
+      data: { compensationTxHash: submitted.hash },
+      detail: { network: ctx.network, txHash: submitted.hash },
     });
   } catch (err) {
+    // Same-process recovery: the transfer may have mined even though confirm
+    // (or the hash persist) threw. Reconcile before giving up — but never treat
+    // unknown as repaid, and never mark COMPENSATED on a reverted attempt.
+    if (compensating.compensationTxHash) {
+      const row = await prisma.payment.findUnique({
+        where: { id: compensating.id },
+        select: { compensationTxHash: true },
+      });
+      if (!row?.compensationTxHash) {
+        // Persist was what failed — best-effort write so a later repair can see it.
+        await prisma.payment
+          .update({
+            where: { id: compensating.id },
+            data: { compensationTxHash: compensating.compensationTxHash },
+          })
+          .catch(() => {});
+      }
+      const outcome = await resolveCompensationOutcome(
+        ctx.network,
+        compensating.compensationTxHash as Hex
+      );
+      if (outcome === "confirmed") {
+        return completeCompensationFromConfirmed(compensating, ctx);
+      }
+    }
+
     await audit(
       "payment.compensation_failed",
       {
@@ -752,6 +898,9 @@ async function runCompensationTransfer(compensating: Payment, ctx: CompensationC
         asset: ctx.tokenSymbol,
         amount: ctx.amount,
         reason: err instanceof Error ? err.message : String(err),
+        ...(compensating.compensationTxHash
+          ? { txHash: compensating.compensationTxHash }
+          : {}),
       },
       compensating.id
     );
@@ -894,4 +1043,135 @@ export async function repairCompensation(paymentId: string): Promise<Payment> {
     }
     return runCompensationTransfer({ ...payment, executionLeaseId: leaseId }, ctx);
   });
+}
+
+/**
+ * Operator re-reconcile (R1): re-read chain evidence for an unresolved payment and
+ * advance only on conclusive outcomes. Never broadcasts a transaction — confirmed
+ * destination → complete forward; reverted destination → COMPENSATION_PENDING for
+ * a later /repair; confirmed compensation → COMPENSATED; unknown → unchanged.
+ */
+export type PaymentReconcileAction =
+  | "completed_forward"
+  | "awaiting_compensation"
+  | "marked_compensated"
+  | "unchanged";
+
+export interface PaymentReconcileResult {
+  payment: Payment;
+  outcome: TransactionOutcome;
+  action: PaymentReconcileAction;
+}
+
+export async function reconcileUnresolvedPayment(
+  paymentId: string
+): Promise<PaymentReconcileResult> {
+  const payment = await prisma.payment.findUniqueOrThrow({
+    where: { id: paymentId },
+    include: { sender: { include: { wallets: true } }, recipient: { include: { wallets: true } } },
+  });
+
+  if (payment.status === "SETTLED") {
+    return { payment, outcome: "confirmed", action: "unchanged" };
+  }
+  if (payment.status === "COMPENSATED") {
+    return { payment, outcome: "confirmed", action: "unchanged" };
+  }
+
+  if (payment.status === "PAYOUT_PENDING") {
+    if (!payment.destinationTxHash) {
+      throw new ApiError("conflict", "no destination payout attempt to reconcile");
+    }
+    return withExecutionLease(paymentId, "PAYOUT_PENDING", async (leaseId) => {
+      const leased = { ...payment, executionLeaseId: leaseId };
+      const outcome = await resolveDestinationPayoutOutcome(
+        payment.destinationNetwork,
+        payment.destinationTxHash as Hex
+      );
+      if (outcome === "confirmed") {
+        const destAmount =
+          payment.destinationAmount ?? selectedRoute(payment).estimated_destination_amount;
+        const completed = await completeSettledPayout(leased, destAmount, "operator reconcile", {
+          evidence: "destination_tx_hash",
+        });
+        return { payment: completed, outcome, action: "completed_forward" as const };
+      }
+      if (outcome === "reverted" || outcome === "absent") {
+        // Enter the compensation *state* only — never transfer here. Repair is
+        // the tool that moves treasury funds once the operator chooses to.
+        await prisma.liquidityReservation
+          .update({ where: { paymentId: payment.id }, data: { status: "RELEASED" } })
+          .catch(() => {});
+        const pending = await transitionStatus(leased, "COMPENSATION_PENDING", {
+          data: {
+            failureReason: `destination payout ${outcome} — awaiting compensation`,
+          },
+          detail: {
+            network: payment.destinationNetwork,
+            txHash: payment.destinationTxHash,
+            evidence: `destination_tx_${outcome}`,
+            note: "operator reconcile — no compensation transfer sent; use repair",
+          },
+        });
+        return { payment: pending, outcome, action: "awaiting_compensation" as const };
+      }
+      await audit(
+        "payment.destination_payout_unresolved",
+        {
+          network: payment.destinationNetwork,
+          txHash: payment.destinationTxHash,
+          note: "operator reconcile — destination receipt still unreadable",
+        },
+        payment.id
+      );
+      return { payment: leased, outcome: "unknown", action: "unchanged" as const };
+    });
+  }
+
+  if (payment.status === "COMPENSATION_PENDING") {
+    if (!payment.compensationTxHash) {
+      throw new ApiError(
+        "conflict",
+        "no compensation attempt to reconcile — use repair to send a transfer"
+      );
+    }
+    return withExecutionLease(paymentId, "COMPENSATION_PENDING", async (leaseId) => {
+      const leased = { ...payment, executionLeaseId: leaseId };
+      const ctx = compensationContextFor(payment);
+      const outcome = await resolveCompensationOutcome(
+        ctx.network,
+        payment.compensationTxHash as Hex
+      );
+      if (outcome === "confirmed") {
+        const completed = await completeCompensationFromConfirmed(leased, ctx);
+        return { payment: completed, outcome, action: "marked_compensated" as const };
+      }
+      if (outcome === "unknown") {
+        await audit(
+          "payment.compensation_unresolved",
+          {
+            network: ctx.network,
+            txHash: payment.compensationTxHash,
+            note: "operator reconcile — compensation receipt still unreadable",
+          },
+          payment.id
+        );
+        return { payment: leased, outcome: "unknown", action: "unchanged" as const };
+      }
+      // reverted/absent — eligible for a fresh repair; do not broadcast here.
+      await audit(
+        "payment.compensation_attempt_not_confirmed",
+        {
+          network: ctx.network,
+          txHash: payment.compensationTxHash,
+          outcome,
+          note: "operator reconcile — prior attempt not confirmed; use repair to re-send",
+        },
+        payment.id
+      );
+      return { payment: leased, outcome, action: "unchanged" as const };
+    });
+  }
+
+  throw new ApiError("conflict", `payment cannot be reconciled from status ${payment.status}`);
 }
