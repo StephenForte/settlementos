@@ -92,6 +92,18 @@ interface ExecutorTestHooks {
    */
   beforeCompensationTransfer?: () => void | Promise<void>;
   /**
+   * Throws after the compensation transfer is submitted and its attempt hash
+   * persisted, but before the receipt is awaited — the receipt-loss window where
+   * the sender may already hold the make-good while the DB has no confirmation.
+   */
+  afterCompensationSubmitted?: () => void | Promise<void>;
+  /**
+   * Throws after the compensation hash is known in memory but before the DB
+   * persist of compensationTxHash — proves recovery can still reconcile when
+   * the write fails (T5-3 mirror on the compensation leg).
+   */
+  beforeCompensationTxHashPersist?: () => void | Promise<void>;
+  /**
    * Force every escrow reconciliation read to come back null, as an RPC flap
    * would: the executor's catch path, stuckPayments(), and repairCompensation().
    * The catch path needs it for "settlement provably happened per the DB, but
@@ -105,6 +117,11 @@ interface ExecutorTestHooks {
    * the chain — simulates an unreadable destination RPC or a reverted attempt.
    */
   destinationPayoutOutcome?: TransactionOutcome;
+  /**
+   * Force compensation-transfer reconciliation to a fixed outcome instead of
+   * reading the source chain — simulates an unreadable RPC or a reverted attempt.
+   */
+  compensationPayoutOutcome?: TransactionOutcome;
 }
 
 /**
@@ -727,6 +744,9 @@ async function runCompensationTransfer(compensating: Payment, ctx: CompensationC
   try {
     await executorTestHooks.beforeCompensationTransfer?.();
     const submitted = await treasuryTokenTransfer(ctx.network, ctx.tokenSymbol, ctx.sender, ctx.amountUnits);
+    // Seam for receipt-loss tests: throw between writeContract and confirm so a
+    // mined compensation can leave COMPENSATION_PENDING with no confirmation.
+    await executorTestHooks.afterCompensationSubmitted?.();
     const tx = await submitted.confirm();
     await audit(
       "payment.compensation_transfer",
