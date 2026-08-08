@@ -263,19 +263,31 @@ async function confirm(networkId: string, hash: Hex): Promise<TxResult> {
 }
 
 /**
- * What the destination chain says about a payout attempt. Callers must not
- * treat "unknown" as unpaid and auto-compensate.
+ * What a chain says about a submitted tx hash — the ground truth both money-path
+ * legs reconcile against before undoing anything. Callers must not treat
+ * "unknown" as "did not happen" and act on it.
  *
  * "absent" is deliberately near-unreachable from a live chain: viem's
  * getTransactionReceipt THROWS TransactionReceiptNotFoundError on a missing
  * receipt, and one read cannot distinguish "dropped forever" from "still in
  * the mempool" — so a missing receipt maps to "unknown" (operator decides),
- * never "absent". Do NOT "fix" this by catching NotFound → "absent": a caller
- * that compensates on "absent" would race a payout still waiting to mine and
- * pay the sender back while the recipient's transfer lands — the exact
- * double-pay this function exists to prevent. "absent" stays in the union for
- * test hooks (executorTestHooks.destinationPayoutOutcome) and any future
- * evidence source that can actually prove a tx will never mine.
+ * never "absent".
+ *
+ * **Do NOT "fix" this by catching NotFound → "absent".** Two separate call sites
+ * treat "absent" as proof a transfer will never land, and each one pays twice if
+ * that proof is wrong about a tx that is merely pending:
+ *   1. the destination leg (`reconcileDestinationPayout`, lib/executor) —
+ *      compensates the sender while the recipient's payout is still in flight;
+ *   2. the compensation leg (`runCompensationTransfer`'s prior-attempt check) —
+ *      broadcasts a second make-good while the first is still in the mempool.
+ * Both are treasury double-pays, and both are invisible until someone reconciles
+ * balances by hand. R1 (`reconcileUnresolvedPayment`) also branches on "absent",
+ * but only to change *state*, never to move money — /repair still gates the funds.
+ *
+ * "absent" stays in the union for the test hooks
+ * (executorTestHooks.destinationPayoutOutcome / .compensationPayoutOutcome) and
+ * for any future evidence source that can actually prove a tx will never mine —
+ * a nonce check, a finalized-block scan, or an operator's attestation.
  */
 export async function transactionOutcome(
   networkId: string,
