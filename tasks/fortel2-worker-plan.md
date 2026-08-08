@@ -8,28 +8,36 @@ first three ready-to-paste prompts.
 
 ## 0. Verified state (read this before assigning anything)
 
-Checked against the repo on 2026-08-03, not just the PRD's checkboxes:
+Checked against the repo on **2026-08-08** (origin/main @ `d5d9a50`), re-verified
+against [`tasks/runbooks/fortel2-live-session-2026-08-07.md`](runbooks/fortel2-live-session-2026-08-07.md)
+for every live ForteL2 claim — not just the PRD's checkboxes:
 
 | Claim | Verified | Evidence |
 |---|---|---|
-| F1 network registry | **True** | `lib/networks.ts` has real `fortel2-sepolia` (852, fail-closed on missing RPC) and `fortel2-local` (901) entries; `tests/unit/networks.test.ts` covers it |
-| F2 deploy script | **True** | `scripts/deploy-testnet.mjs` has a `fortel2-sepolia` `NETWORK_CONFIGS` entry; real overlay exists at `chain/deployments.fortel2-sepolia.json` (dated 2026-07-24) with `PaymentSettlement` + 3 tokens + operator/treasury/4 entity wallets |
-| F3 single-chain settle | **Plausible, unverifiable here** | DB state (the settled payment) is local/gitignored — PR #26 merged with the claim, no reason to doubt it, but nothing in git proves it |
-| F4 MMF on ForteL2 — "code complete" | **True but overstated as "done"** | The real `chain/deployments.fortel2-sepolia.json` overlay has **no `TokenizedMMF` field**. The only F4 test (`tests/unit/fortel2-mmf-wiring.test.ts`) is hermetic against placeholder addresses in a temp dir, not the real overlay. `mmfAddress()` (`lib/chain.ts:190`) will return `undefined` for `fortel2-sepolia` today. **The live network has never actually been redeployed with the fund.** |
-| F5 docs | **True** | README/DEMO/AGENTS/PRD synced as of PR #31 |
-| F6 explorer address book | **Not started, out of repo** | `settlementos-explorer` doesn't exist as a sibling checkout; it's a separate repo per `tasks/prd-settlementos-explorer.md` |
-| F7 bridge leg via ForteL2 | **Architecturally free, not demoed** | `lib/routing.ts` and `lib/executor.ts` bridge logic is fully generic on `sourceNetwork`/`destinationNetwork` — no hardcoded network pairs. So the code probably already works; it has never been run against a live ForteL2 RPC, and can't be in this environment either. |
-| US-F007 (Sepolia-backed overlay) | **Inconsistent with F1's own table** | Unchecked, but describes work F1 already claims done under the same network id. Flagging, not resolving. |
+| F1 network registry | **True** | `lib/networks.ts` has `fortel2-sepolia` (852) and `fortel2-local` (901); RPC from env with loopback default to the operator Mac; `tests/unit/networks.test.ts` covers it. F1 landed PR #21 |
+| F2 deploy script | **True** | `scripts/deploy-testnet.mjs` has a `fortel2-sepolia` `NETWORK_CONFIGS` entry; overlay at `chain/deployments.fortel2-sepolia.json` (gitignored, dated 2026-07-24) with `PaymentSettlement` + tokens + operator/treasury/entity wallets. F2 landed PR #24 |
+| F3 single-chain settle | **True (live-verified 2026-08-07)** | First settle `pay_8c318fcae804` (2026-07-24, PR #26) re-confirmed **SETTLED** in the DB during the live session — [`tasks/runbooks/fortel2-live-session-2026-08-07.md`](runbooks/fortel2-live-session-2026-08-07.md) § "Earlier ForteL2 history". Same session also settled a fresh $25k payment on 852 |
+| F4 MMF on ForteL2 | **True live (2026-08-07)** | Add-on deploy wrote `TokenizedMMF` **`0xaed29387417dad9ab1993332e2c2b99d35ffe7ff`** into the overlay; park→accrue→recall on 50k returned 50004.79452 with escrow untouched. Evidence: live-session runbook § F4. Hermetic wiring: `tests/unit/fortel2-mmf-wiring.test.ts` |
+| F5 docs | **True** | README/DEMO/AGENTS/PRD synced; ForteL2 uptime disclosure added README § ForteL2 (2026-08-08 truth-up) |
+| F6 explorer address book | **Partially done, out of repo** | [`settlementos-explorer`](https://github.com/StephenForte/settlementos-explorer) repo exists; `src/config/networks.ts` on main already carries `fortel2-sepolia` (852) with optional read-replica URL. **`src/config/address-book.ts` still labels Base Sepolia + Amoy only** — ForteL2 contract/wallet addresses are F6's remaining work in that repo |
+| F7 bridge leg via ForteL2 | **True live (2026-08-07)** | Both directions settled with dual hashes: `base-local`→`fortel2-sepolia` (`pay_6f678a415d2b`, ~4.5s) and `fortel2-sepolia`→`base-local` (`pay_302fbe6a0541`, ~12.5s). Evidence: live-session runbook § F7. Hermetic quote math: `tests/db/fortel2-bridge-route.test.ts` (T1) |
+| US-F007 (Sepolia-backed overlay) | **Resolved (2026-08-08)** | F1/F2 delivered the overlay directly; three of four criteria ticked in [`tasks/prd-fortel2-integration.md`](prd-fortel2-integration.md) § US-F007. Explorer address book criterion stays open as F6 |
 
-Two hard blockers that no coding agent can clear from this machine:
-1. **No reachable ForteL2 RPC.** `fortel2-sepolia`'s default is `http://127.0.0.1:9545`, which is a loopback address on a *different* machine (the ForteL2 sequencer host, per `tasks/f2-prep-notes.md`). Nothing here can dial it.
-2. **`fortel2-local` (901) is also operated outside this repo** (an Anvil devnet ForteL2 runs, not one of our Hardhat nodes) — so unlike `base-local`/`polygon-local`, there is no way to spin up a throwaway ForteL2 chain in CI or in a worker's sandbox either.
+Two hard blockers that shaped this plan — **corrected 2026-08-08**:
 
-Consequence for planning: every ForteL2-touching task below is scoped to
-**code + hermetic tests + a manual runbook**, never "verified live." Redeploying
-the fund and running a live park→accrue→recall or bridge settle against real
-852 is ops work for whoever has access to the ForteL2 machine — track it as a
-checklist item for you, not a worker task.
+1. **~~No reachable ForteL2 RPC from this machine.~~ Cleared on the operator's Mac.**
+   The ForteL2 stack runs locally (`http://127.0.0.1:9545`); the 2026-08-07 live
+   session verified F4 and F7 against it. **Still true for CI and remote workers:**
+   GitHub Actions and sandbox VMs cannot dial that loopback — ForteL2-touching
+   tasks remain scoped to code + hermetic tests + runbooks unless run on the Mac.
+2. **`fortel2-local` (901) is still operated outside this repo** (Anvil devnet ForteL2
+   runs, not our Hardhat nodes) — unlike `base-local`/`polygon-local`, there is
+   no way to spin up a throwaway ForteL2 chain in CI or a worker's sandbox.
+
+Consequence for planning: hermetic tests and runbooks are the default for workers;
+**live 852 verification is ops work on the ForteL2 Mac** — done for F3/F4/F7 on
+2026-08-07 ([`tasks/runbooks/fortel2-live-session-2026-08-07.md`](runbooks/fortel2-live-session-2026-08-07.md)).
+Future live checks (F6 address book, F8 cutover) follow the same pattern.
 
 ## 1. Branching scheme: what you described is the wrong shape
 
@@ -381,9 +389,9 @@ risks exactly the rebase pain you're trying to avoid.
 ## 9. Explicitly blocked / not worker tasks
 
 - **Live-redeploying `fortel2-sepolia` with the MMF fund** and **live-running
-  a bridge settle through ForteL2** both need a reachable ForteL2 RPC that
-  this session doesn't have. T2/T3 prepare the script and runbook; the actual
-  live run is yours (or whoever has ForteL2 machine access) to execute and
-  report back — don't hand this to a coding agent expecting a "done."
-- **US-F007's ambiguity** (§0) — needs your call, not a guess baked into a
-  task.
+  a bridge settle through ForteL2** — **done 2026-08-07** on the operator's Mac
+  ([`tasks/runbooks/fortel2-live-session-2026-08-07.md`](runbooks/fortel2-live-session-2026-08-07.md)).
+  Still not a worker task: requires ForteL2 machine access. Future live ops
+  (F6 address book verification, buffer top-ups) follow the same pattern.
+- ~~**US-F007's ambiguity** (§0)~~ — **resolved 2026-08-08** (docs truth-up):
+  F1/F2 delivered the overlay; see [`tasks/prd-fortel2-integration.md`](prd-fortel2-integration.md) § US-F007.

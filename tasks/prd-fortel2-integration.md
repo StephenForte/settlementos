@@ -139,17 +139,26 @@ Canonical file: ForteL2 `deployments/rail-interface.json` + `tasks/prd-money-rai
 - [x] Explicit statement: payments product = SettlementOS; rail = ForteL2; no duplicate primitives
 - [x] Link to ForteL2 coordination + money-rail docs for infra questions
 - [x] F4 treasury beat documented: README + DEMO cover TokenizedMMF deploy on
-  live networks and the ForteL2 park→accrue→recall path (live-sequencer run
-  still pending a reachable RPC)
+  live networks and the ForteL2 park→accrue→recall path (verified live
+  2026-08-07 — [`tasks/runbooks/fortel2-live-session-2026-08-07.md`](runbooks/fortel2-live-session-2026-08-07.md))
 
 ### US-F007: Sepolia-backed ForteL2 overlay (optional, later)
+
+**What happened:** This story was written in early 2026 anticipating a *later*
+Sepolia-backed ForteL2 network entry — analogous to how `base-sepolia` arrived
+after local sims. **F1 and F2 delivered that directly:** `fortel2-sepolia`
+(chain ID 852) landed in the registry and deploy overlay in July 2026, before
+this story's criteria were ticked. The work was overtaken by events, not skipped.
+Three of four criteria are now satisfied; the explorer address book remains F6
+in a separate repo.
+
 **Description:** As a public demo, I want `fortel2-sepolia` analogous to `base-sepolia`.
 
 **Acceptance Criteria:**
-- [ ] Second network entry once ForteL2 publishes Sepolia-backed RPC + chain ID
-- [ ] `deployments.fortel2-sepolia.json` overlay pattern
-- [ ] settlementos-explorer address book updated (separate repo story)
-- [ ] Best-effort uptime called out (personal L2, not SLA)
+- [x] Second network entry once ForteL2 publishes Sepolia-backed RPC + chain ID — **F1 (PR #21):** `fortel2-sepolia`, chainId 852, in [`lib/networks.ts`](../lib/networks.ts) (`69:76`)
+- [x] `deployments.fortel2-sepolia.json` overlay pattern — **F2 (PR #24):** overlay written 2026-07-24; **F4 add-on live 2026-08-07** added `TokenizedMMF` at `0xaed29387417dad9ab1993332e2c2b99d35ffe7ff` ([`tasks/runbooks/fortel2-live-session-2026-08-07.md`](runbooks/fortel2-live-session-2026-08-07.md) § F4)
+- [ ] settlementos-explorer address book updated (separate repo story) — **still F6.** The [`settlementos-explorer`](https://github.com/StephenForte/settlementos-explorer) repo exists and its `src/config/networks.ts` on main already lists `fortel2-sepolia` (852), but `src/config/address-book.ts` still labels Base Sepolia + Amoy contracts/wallets only — ForteL2 addresses are not in the book yet
+- [x] Best-effort uptime called out (personal L2, not SLA) — [`README.md`](../README.md) § ForteL2 (2026-08-08 truth-up)
 
 ### US-F008: Simulated bridge involving ForteL2 (optional)
 **Description:** As a demo, I may show Base Sepolia ↔ ForteL2 using the **existing simulated bridge** (escrow on A, treasury payout on B).

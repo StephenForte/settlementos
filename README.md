@@ -306,9 +306,14 @@ bridge between any pair (simulated bridge, real transactions on both networks).
 [ForteL2](https://github.com/StephenForte/ForteL2) — the OP Stack L2 that is the
 long-term home settlement rail — is in the network registry as `fortel2-sepolia`
 (chain ID 852, Sepolia-backed), plus an optional offline `fortel2-local` (901).
-The chain is operated **outside this repo**: the sequencer runs on the
-operator's Mac (so the write RPC is usually loopback), with an optional Render
-read replica. Canonical chain facts (chain IDs, RPCs, bridge addresses, reset
+The chain is operated **outside this repo** on the operator's Mac — a personal,
+best-effort L2 with **no uptime SLA**. Base Sepolia and Polygon Amoy are public
+testnets run by real operators; ForteL2 is one person's stack. A demo against
+852 only works while that sequencer is up. An optional Render read replica can
+back balance/display reads, but it is read-only, not a substitute for the
+sequencer, and has OOM'd on catch-up on small instances (see
+[`tasks/fortel2-l2-prereqs.md`](tasks/fortel2-l2-prereqs.md) § "Replica OOM on
+catch-up"). Canonical chain facts (chain IDs, RPCs, bridge addresses, reset
 policy) live in ForteL2's `deployments/rail-interface.json`.
 
 ```bash
