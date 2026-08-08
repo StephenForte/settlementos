@@ -223,3 +223,17 @@ Entry format:
 ## T6 — compensation attempt reconciliation + operator re-reconcile (post-wave)
 
 (entries here — ids T6-1, T6-2, … pre-assigned; do not scan for the highest)
+
+## T7 — execute-time recall when free liquidity is short (T5-6)
+
+### T7-1: Gate auto-recall on measured free balance, not frozen recall_required
+- Status: APPROVED (implicit — implementing T5-6)
+- Type: design-choice
+- Detail: Step 0 reads `availableLiquidity` (→ `freeTreasuryBalance`) in destination token base units via `destinationUnits`. When free is short, call `recallForPayment` regardless of `route.recall_required`. When free covers, skip the call entirely (do not treat the flag as "always recall"). Step 1's insufficient-liquidity check is unchanged and remains the real guard after any recall.
+- Resolution: implemented on branch fortel2/execute-time-recall.
+
+### T7-2: INSUFFICIENT_FREE_BALANCE from recall falls through to step 1
+- Status: APPROVED (implicit — trap in T5-6 prompt)
+- Type: design-choice
+- Detail: `recallForPayment` throws `TreasuryError("INSUFFICIENT_FREE_BALANCE")` when free is short and parked cannot cover (including zero ACTIVE positions). That case must not APPROVED→FAILED at step 0 with an Auto-recall reason — fall through so step 1 emits the honest insufficient-liquidity failure. Other recall errors (mid-redeem chain reverts) still fail at step 0. Widens the set of payments that *attempt* recall (frozen-false path) without turning "nothing parked" into a step-0 hard fail.
+- Resolution: implemented on branch fortel2/execute-time-recall.

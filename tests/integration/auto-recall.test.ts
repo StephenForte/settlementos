@@ -189,14 +189,17 @@ describe("executePayment — auto-recall from the MMF", () => {
 
     // Failure injection: drop the position row without redeeming it. The asset is
     // still stranded in the fund, so free liquidity is short and there is no
-    // position left to recall — the payment must fail rather than settle.
+    // position left to recall — INSUFFICIENT_FREE_BALANCE falls through to
+    // step 1's honest insufficient-liquidity failure (nothing escrowed).
     await prisma.treasuryPosition.delete({ where: { id: parked.positionId } });
 
-    await expect(executePayment(payment.id)).rejects.toThrow(/Auto-recall of parked mockUSDC/);
+    await expect(executePayment(payment.id)).rejects.toThrow(
+      /Insufficient mockUSDC liquidity on base-local/
+    );
 
     const after = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
     expect(after.status).toBe("FAILED");
-    expect(after.failureReason).toMatch(/Auto-recall/);
+    expect(after.failureReason).toMatch(/Insufficient mockUSDC liquidity/);
     expect(after.txHash).toBeNull(); // nothing ever hit the chain
 
     const reservation = await prisma.liquidityReservation.findUnique({ where: { paymentId: payment.id } });

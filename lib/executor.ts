@@ -30,7 +30,7 @@ import {
   type TransactionOutcome,
 } from "./chain";
 import { availableLiquidity, destinationUnits, type RouteOption } from "./routing";
-import { recallForPayment } from "./treasury";
+import { recallForPayment, TreasuryError } from "./treasury";
 import { walletOnNetwork } from "./wallets";
 import { keccak256, toHex, type Address, type Hex } from "viem";
 
@@ -323,29 +323,41 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
     };
   }
 
-  // 0. Auto-recall: the route only cleared because liquidity is parked in the
-  //    MMF, so redeem it T+0 before reserving anything against it.
-  if (route.recall_required) {
-    try {
-      // Emits a TREASURY_RECALLED per position plus one payment-linked
-      // TREASURY_AUTO_RECALLED summarizing the redemption.
-      await recallForPayment({
-        networkId: destNet,
-        asset: destAsset.symbol,
-        amount: destAmount,
-        paymentId: payment.id,
-      });
-    } catch (err) {
-      const failureReason = `Auto-recall of parked ${destAsset.symbol} on ${destNet} failed: ${
-        err instanceof Error ? err.message : String(err)
-      }`;
-      // Nothing is reserved or escrowed yet, but a stale reservation from an
-      // earlier attempt must not survive a failed payment.
-      await prisma.liquidityReservation
-        .update({ where: { paymentId: payment.id }, data: { status: "RELEASED" } })
-        .catch(() => {});
-      await setStatus(payment, "FAILED", { failureReason });
-      throw new Error(failureReason);
+  // 0. Auto-recall: when free destination liquidity is short at *execute*
+  //    time, redeem parked MMF positions T+0 before reserving. The quote's
+  //    recall_required flag is a snapshot (RPC degrade freezes it false) —
+  //    gate on the measured free balance, not the flag (AGENTS.md).
+  //    recallForPayment is already a no-op when free covers; we still skip
+  //    the call when free is enough so a healthy balance never touches the fund.
+  {
+    const liqBefore = await availableLiquidity(destAsset.symbol, destNet);
+    const neededUnits = destinationUnits(destAmount, liqBefore.decimals);
+    if (liqBefore.availableUnits < neededUnits) {
+      try {
+        // Emits a TREASURY_RECALLED per position plus one payment-linked
+        // TREASURY_AUTO_RECALLED summarizing the redemption.
+        await recallForPayment({
+          networkId: destNet,
+          asset: destAsset.symbol,
+          amount: destAmount,
+          paymentId: payment.id,
+        });
+      } catch (err) {
+        // Nothing parked (or not enough) is not a step-0 failure — step 1
+        // owns the insufficient-liquidity verdict. Other recall errors
+        // (chain reverts mid-redeem) still fail the payment here with
+        // nothing reserved or escrowed.
+        if (!(err instanceof TreasuryError && err.code === "INSUFFICIENT_FREE_BALANCE")) {
+          const failureReason = `Auto-recall of parked ${destAsset.symbol} on ${destNet} failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`;
+          await prisma.liquidityReservation
+            .update({ where: { paymentId: payment.id }, data: { status: "RELEASED" } })
+            .catch(() => {});
+          await setStatus(payment, "FAILED", { failureReason });
+          throw new Error(failureReason);
+        }
+      }
     }
   }
 
