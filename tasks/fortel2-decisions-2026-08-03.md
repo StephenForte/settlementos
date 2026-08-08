@@ -122,4 +122,26 @@ Entry format:
 
 ## T5 — hardening review (wave 2)
 
-(entries here)
+### T5-1: residual rulings R1–R4 (money-path review)
+- Status: APPROVED (reviewer ruling)
+- Type: residual-ruling
+- Detail: Full write-up in `tasks/fortel2-hardening-review-2026-08.md`. R1 accept-automation / escalate-ops-UX (no auto-act on unknown; need operator re-reconcile tool). R2 accept-with-caveat (hash vs audit not one $transaction — audit consistency, not demonstrated double-pay). R3 accept for this money-path review (deploy orphan MMF is ops/deploy residual). R4 accept — do NOT map missing receipt → "absent"; that reintroduces T1-1 double-pay. Dead `!receipt` arm stays for hooks/future provers only.
+- Resolution: rulings recorded; no R4 code "cleanup".
+
+### T5-2: compensation transfer still has T1-1 receipt-loss double-pay (P1)
+- Status: OPEN
+- Type: finding
+- Detail: `runCompensationTransfer` awaits `confirm()` before writing `compensationTxHash`. A mined compensation whose receipt is lost leaves `COMPENSATION_PENDING` with null hash; `repairCompensation` re-sends → sender paid twice. T4 fixed this shape on the bridge leg only.
+- Resolution: needs design choice (persist attempt hash before confirm — possibly schema — vs on-chain scan before repair). Not fixed in the review commit.
+
+### T5-3: destinationTxHash persist failure after broadcast (P1)
+- Status: OPEN
+- Type: finding
+- Detail: If `prisma.payment.update({ destinationTxHash })` throws after `treasuryTokenTransfer` returns a hash, catch sees null hash and compensates while the dest tx may mine. Same-process mitigation: keep hash on the in-memory payment before rethrow so `reconcileDestinationPayout` runs.
+- Resolution: deferred as a small follow-up fix+test; documented in the review.
+
+### T5-4: PAYOUT_PENDING without hash invisible to stuckPayments (P2)
+- Status: OPEN
+- Type: finding
+- Detail: T4 added `PAYOUT_PENDING`+`destinationTxHash` candidacy; process death after `PAYOUT_PENDING` and before persist leaves a settled escrow with no stuck-list entry and no repair API.
+- Resolution: widen candidacy to all `PAYOUT_PENDING` (or reservation-backed) in a follow-up; pairs with R1 operator tool.

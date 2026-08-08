@@ -237,6 +237,44 @@ describe("T1-1 — destination payout receipt loss after mine", () => {
     );
     await assertAuditIntact();
   });
+
+  it("repairCompensation refuses when destination payout outcome is unknown", async () => {
+    const senderBefore = await walletBalance("base-local", "mockUSDC", senderWallet("base-local"));
+
+    const payment = await createApprovedPayment({
+      amount: "3200.00",
+      sourceNetwork: "base-local",
+      destinationNetwork: "polygon-local",
+    });
+
+    executorTestHooks.beforeDestinationPayout = () => {
+      throw new Error("payout failed");
+    };
+    executorTestHooks.beforeCompensationTransfer = () => {
+      throw new Error("treasury signer unavailable");
+    };
+    const stuck = await executePayment(payment.id);
+    delete executorTestHooks.beforeDestinationPayout;
+    delete executorTestHooks.beforeCompensationTransfer;
+    expect(stuck.status).toBe("COMPENSATION_PENDING");
+    const short = await walletBalance("base-local", "mockUSDC", senderWallet("base-local"));
+    expect(short).toBeLessThan(senderBefore);
+
+    await prisma.payment.update({
+      where: { id: payment.id },
+      data: { destinationTxHash: "0xbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef" },
+    });
+    executorTestHooks.destinationPayoutOutcome = "unknown";
+
+    // Unknown must move no money — repairing would risk paying the sender while
+    // a still-unreadable destination attempt might yet confirm.
+    await expect(repairCompensation(payment.id)).rejects.toThrow(/outcome unresolved/);
+    expect(await walletBalance("base-local", "mockUSDC", senderWallet("base-local"))).toBe(short);
+    expect((await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } })).status).toBe(
+      "COMPENSATION_PENDING"
+    );
+    await assertAuditIntact();
+  });
 });
 
 describe("T1-2 — network-aware replica-lag retries", () => {
