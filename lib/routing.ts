@@ -123,7 +123,10 @@ export async function liquidityCheck(
     // failure the MoneyError branch is meant to stop slips through as ok:true.
     if (e instanceof MoneyError) throw e;
     if (e instanceof TreasuryError && e.code === "INVALID_AMOUNT") throw e;
-    return { ok: true, recallRequired: false }; // chain unreachable while quoting → execution re-checks
+    // Chain unreachable while quoting: offer the route and let execution
+    // re-measure free balance and recall parked liquidity if short. Do not
+    // freeze recallRequired:true here — we have no parked evidence either.
+    return { ok: true, recallRequired: false };
   }
 }
 
