@@ -94,8 +94,8 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
     `deploy-testnet.mjs` provisions `TokenizedMMF` + 50k mockUSDC yield
     buffer + treasury approval on every live network (base-sepolia /
     polygon-amoy / fortel2-sepolia); hermetic overlay wiring test added;
-    park→accrue→recall verified on a local chainId-852 node. Live-sequencer
-    run pending a reachable ForteL2 RPC. Suite 398 tests.
+    park→accrue→recall verified on a local chainId-852 node. Suite 398 tests.
+    **Verified live 2026-08-07** — see the live-session entry below.
 - ForteL2 parallel-worker waves 1+2 (2026-08-03, PRs #32–#37, dispatched per
   `tasks/fortel2-worker-plan.md` with `tasks/fortel2-decisions-2026-08-03.md`
   as the wave decisions log):
@@ -115,12 +115,41 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
     refuses on confirmed/unknown, `replicaLagRetries` 0 on fortel2-*/local.
   - Suite 398 → 438. T5 (hardening review) HELD until after the live 852
     session; its brief is queued in the decisions log.
-- NEXT: live ForteL2 session on this machine (852 sequencer now local):
-  MMF add-on deploy + park→accrue→recall (runbook), bridge QA (runbook),
-  T4's four live checks — then dispatch T5, then the I6 checkbox/doc flips
-  those runs justify. Also: optional F6 explorer address book; Stephen's
-  review of the Track B regulatory drafts; US-F007 checkbox inconsistency
-  in the PRD still needs Stephen's call.
+- ForteL2 live session (2026-08-07) — full results and every tx hash in
+  `tasks/runbooks/fortel2-live-session-2026-08-07.md`:
+  - **F4/US-F005 done live**: the 2026-07-24 deploy was intact, so T2's MMF
+    **add-on** path applied — `TokenizedMMF` `0xaed29387417dad9ab1993332e2c2b99d35ffe7ff`
+    + 50k buffer + treasury MAX approval, escrow/tokens untouched; a re-run
+    then reported `noop` (T2's idempotency, live). park→accrue→recall of 50k
+    returned **50004.79452** (+4.794520 = 3.5%/365 exactly, index matched an
+    independent recompute). **Escrow balance delta 0.000000** through the
+    cycle *and* through a later real settlement — segregation proven on-chain.
+  - **F7/US-F008 done live**, both directions with dual hashes:
+    `base-local`→`fortel2-sepolia` (~4.5s; recipient's ForteL2 mockJPY moved
+    +3,915,077, exactly the quote) and `fortel2-sepolia`→`base-local` (~12.5s,
+    escrow+settle on the L2). No bridge code was written — T1 was right that
+    the path was already network-pair generic.
+  - **T4's persist-on-submit verified in production**: two events per
+    cross-chain payment, `bridge.destination_payout_submitted` then
+    `bridge.destination_payout`. Audit INTACT throughout.
+  - Second bridge leg is `base-local`, **not** Base Sepolia: this machine's
+    `deployments.base-sepolia.json` / `.polygon-amoy.json` are gone and were
+    never committed (they hold wallet keys), so those networks' signing keys
+    are unrecoverable — contracts live, unusable from here. Restoring one
+    means a fresh deploy with new addresses (breaks the documented
+    same-address property). `npm run setup` was run to restore the local
+    chains, after this session's evidence was committed; the ForteL2 overlay
+    and its MMF survived.
+  - **`chain/deployments.fortel2-sepolia.json` is the only copy of ForteL2's
+    generated wallet keys — back it up offline.** Base Sepolia is the worked
+    example of what losing it costs.
+  - Not run: 3 of T4's 4 live checks (staged receipt-loss timing needs the
+    test-only `executorTestHooks`); hermetic tests cover them.
+- NEXT: dispatch T5 (hardening review — its brief should fold in the live
+  results plus the four residuals in the decisions log). Also: optional F6
+  explorer address book (ForteL2 addresses now final); Stephen's review of
+  the Track B regulatory drafts; US-F007 checkbox inconsistency in the PRD
+  still needs Stephen's call.
 
 ## Base Sepolia (live)
 - Deployed 2026-07-07, verified with a real settled payment.

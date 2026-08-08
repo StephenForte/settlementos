@@ -1437,7 +1437,9 @@ agent loop (`scripts/ralph/`), 10 user stories:
   treasury approval on every live network (base-sepolia / polygon-amoy /
   fortel2-sepolia). Older overlays without a fund still settle
   (`mmfAddress()` → `undefined`). Park→accrue→recall verified on a local
-  chainId-852 node; live ForteL2 sequencer run pending a reachable RPC.
+  chainId-852 node, then **live against the real 852 sequencer on 2026-08-07**
+  (50k parked → 50004.79452 recalled, +4.794520 = 3.5%/365 exactly; escrow
+  balance delta 0). Evidence: `tasks/runbooks/fortel2-live-session-2026-08-07.md`.
   Details in [`tasks/prd-fortel2-integration.md`](tasks/prd-fortel2-integration.md).
 
 ### Phase 9: Production Hardening + Regulatory / Partner Package

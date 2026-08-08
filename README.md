@@ -13,7 +13,7 @@ ForteL2 is the long-term home rail: SettlementOS as the application layer, Forte
 ## Roadmap (directional)
 
 1. **Now:** multi-chain deployment and settlement mechanics on testnets (Base Sepolia, Polygon Amoy, and [ForteL2](https://github.com/StephenForte/ForteL2) Sepolia — first settle 2026-07-24; TokenizedMMF park/recall wiring shipped 2026-08-03)
-2. **Next:** live ForteL2 sequencer park→accrue→recall, simulated bridge legs involving ForteL2, and explorer/replica polish as the rail hardens toward public operation
+2. **Next:** explorer/replica polish as the rail hardens toward public operation (live ForteL2 sequencer park→accrue→recall and cross-chain bridge legs both landed 2026-08-07)
 3. **Eventually:** a true settlement platform for cross-border transactions — acknowledged to be far away; everything before that point is learning in public
 
 ## Why
@@ -330,7 +330,10 @@ and F4 (2026-08-03) wired overnight liquidity parking: `deploy-testnet.mjs`
 provisions the fund + 50k mockUSDC yield buffer + treasury approval, and
 `lib/treasury` resolves it via `mmfAddress()` like any other network. A
 park→accrue→recall cycle was verified against a local chainId-852 node;
-a live-sequencer run is pending a reachable ForteL2 RPC. The division of
+and a live park→accrue→recall ran against the real 852 sequencer on
+2026-08-07 (50,000 mockUSDC out, 50004.79452 back, escrow untouched — see
+`tasks/runbooks/fortel2-live-session-2026-08-07.md`). Cross-chain legs with
+ForteL2 on either side also settle live with dual tx hashes. The division of
 labor is deliberate: **SettlementOS is the payments product; ForteL2 is the
 rail.** No ForteL2-side primitives are duplicated here, and nothing in this
 repo runs the chain (sequencer, batcher, bridge, and L1 contracts are

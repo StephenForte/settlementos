@@ -318,8 +318,11 @@ balances:
    `TREASURY_RECALLED` on the same hash chain.
 
 > Code path is identical to Base Sepolia / Amoy — only `networkId` differs.
-> Verified end-to-end against a local chainId-852 node (2026-08-03); run it
-> against the live sequencer when the RPC is reachable from the demo machine.
+> **Verified against the live ForteL2 852 sequencer on 2026-08-07**: 50,000
+> mockUSDC parked, one day accrued, 50004.79452 recalled (+4.794520 = 3.5%/365
+> to the base unit), with the escrow contract's balance unmoved throughout.
+> Cross-chain legs settle live in both directions with dual tx hashes. Hashes
+> in `tasks/runbooks/fortel2-live-session-2026-08-07.md`.
 
 > Reset caveat: the ForteL2 Sepolia deployment is pinned through ForteL2's
 > learning Phase 6. A Phase 7 re-genesis wipes the L2 state — redeploy with the
