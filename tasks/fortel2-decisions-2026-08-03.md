@@ -193,3 +193,7 @@ Entry format:
 - Type: design-choice
 - Detail: Hermetic test calls `transactionOutcome` with a nonexistent hash on the fixture chain; expects `"unknown"` (viem throw path), not `"absent"`. Documents the trap: do not "fix" NotFound→absent. No production code change.
 - Resolution: landed in `tests/integration/executor-rpc-resilience.test.ts`.
+
+## T6 — compensation attempt reconciliation + operator re-reconcile (post-wave)
+
+(entries here — ids T6-1, T6-2, … pre-assigned; do not scan for the highest)

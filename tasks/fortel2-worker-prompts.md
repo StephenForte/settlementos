@@ -620,3 +620,219 @@ RISKS AND FOLLOW-UPS:
   Residual risk stated plainly rather than implied. Anything you chose not to
   fix, and why.
 ```
+
+---
+
+# T6 — compensation attempt reconciliation (T5-2) + operator re-reconcile (R1)
+
+Dispatch after PR #41 is on main (it is, `c35fc20`). Model: strongest available,
+high reasoning effort. **This is a money path** — the highest-consequence task
+in the whole ForteL2 sequence. Two findings shipped together because they share
+one mechanism: T5-2's fix creates a new "unknown" dead end, and R1 is the exit.
+
+## Prompt 6 — T6 (strongest model, high effort)
+
+```
+You are fixing a confirmed treasury double-pay on the compensation path, and
+adding the operator tool that resolves the states it can leave behind.
+
+READ FIRST, IN THIS ORDER
+1. CLAUDE.md and AGENTS.md. Binding invariants, most relevant first:
+   "Compensate only when the recipient was *not* paid; otherwise complete
+   forward", "Reconcile with the chain before undoing anything", "Never refund
+   a released escrow; compensate it", "A stranded payment must stay visible",
+   "Repairing is not retrying", "Audit only what happened, in the same
+   transaction as what happened".
+2. tasks/fortel2-hardening-review-2026-08.md — the T5 review. Your two items
+   are the P1 "Compensation transfer still has the T1-1 receipt-loss
+   double-pay window" and the P1 "Unresolved PAYOUT_PENDING has no resolution
+   path (R1)".
+3. tasks/fortel2-decisions-2026-08-03.md, entry T4-1 — the already-approved
+   design you are going to mirror. Append your own entries under `## T6`.
+4. lib/executor.ts: reconcileDestinationPayout, runCompensationTransfer,
+   repairCompensation, stuckPayments. This is the code you are changing.
+
+**Verify before trusting.** Every claim below was checked against main at
+c35fc20 by the reviewer, but check them yourself — line numbers move, and a
+fix built on a stale reading is worse than no fix.
+
+THE BUG (T5-2) — confirmed, four links
+1. `compensationTxHash` is written at exactly ONE site — inside the transition
+   to COMPENSATED in runCompensationTransfer. Success path only.
+2. runCompensationTransfer catches every error and returns the payment
+   untouched, so the row stays COMPENSATION_PENDING with NO record that money
+   moved.
+3. repairCompensation checks the *destination* outcome and the source escrow,
+   then calls runCompensationTransfer with NO prior-attempt check.
+4. treasuryTokenTransfer broadcasts (writeContract) and confirms
+   (waitForTransactionReceipt) as two separate RPC calls.
+So: the compensation transfer mines, the receipt read fails, the payment stays
+COMPENSATION_PENDING with a null hash, an operator clicks Repair, and the
+treasury pays the sender a second time. This is exactly the T1-1 bug that T4
+fixed on the destination leg, still open on the compensation leg.
+
+Reviewer's honest caveat: this was verified by inspection, NOT reproduced.
+Two probe attempts failed to stage it because of the seam gap below. Your
+first job is to make it reproducible; if you conclude the bug is NOT real,
+say so with evidence and stop — that is a valid and valuable outcome.
+
+DO THIS FIRST — the missing test seam
+The compensation leg has no submit/confirm seam. `beforeCompensationTransfer`
+fires BEFORE the transfer, so nothing can currently simulate "transfer landed,
+receipt lost." The destination leg has exactly this
+(`afterDestinationPayoutSubmitted`, `beforeCompensationTxHashPersist`-style
+hooks). Add the mirror hooks to ExecutorTestHooks and use them to write a
+FAILING test that demonstrates the double-pay. Watch it fail. Only then fix it.
+A regression test you never saw fail is not evidence.
+
+THE FIX (T5-2) — mirror T4-1, do not invent a new pattern
+Reuse the existing nullable `compensationTxHash` column for the attempt hash:
+persist it as soon as writeContract returns, BEFORE the receipt is awaited,
+and set it on the in-memory row first (T5-3 in the same file is the pattern —
+a failed DB persist must not blind the recovery path). Then teach the
+compensation path to reconcile that hash with transactionOutcome() on the
+SOURCE network before ever re-sending:
+  confirmed -> the sender already has the money -> transition to COMPENSATED,
+               do NOT transfer again
+  reverted  -> nothing moved -> a fresh transfer is correct
+  unknown   -> refuse: stay COMPENSATION_PENDING, audit it, stay visible in
+               stuckPayments. Never transfer, never mark COMPENSATED.
+Emit the attempt and the confirmation as distinct audit events, mirroring
+bridge.destination_payout_submitted / bridge.destination_payout.
+**No schema change is required** — the column exists and is nullable. If you
+believe one is unavoidable, that is a T6 decisions-log proposal, not a commit.
+
+THE TRAP — this one bites in the OPPOSITE direction to T4's
+On the destination leg the danger was treating an attempt hash as proof of
+payment (completing forward on unknown). Here the mirror-image is worse
+because it is silent: if you treat a non-null compensationTxHash as proof the
+sender was repaid, a compensation whose tx REVERTED is marked COMPENSATED and
+the sender is stranded permanently, with the books saying they were made
+whole. Nobody gets an alert. A double-pay is at least visible in the treasury
+balance; this is not.
+So the hash must mean "attempted" everywhere, the *status* COMPENSATED must
+remain the only claim that the sender was repaid, and every transition to it
+must be backed by a **confirmed** receipt read — not by the presence of a hash.
+Second face of the same trap: do not "simplify" the unknown branch into either
+of the conclusive ones. Unknown is a real third state and it is R1's input.
+
+THE FIX (R1) — the exit from unknown
+T5-2 creates a new dead end (COMPENSATION_PENDING with an unknown attempt) and
+one already exists (PAYOUT_PENDING with an unresolved destination hash).
+Neither has an exit: execute cannot resume them (its lease CAS requires
+APPROVED) and repair refuses. Add ONE operator-triggered endpoint that
+re-reads chain evidence and advances the payment only on CONCLUSIVE evidence:
+- PAYOUT_PENDING + destination hash: confirmed -> complete forward;
+  reverted -> the compensation path; unknown -> unchanged, report unknown.
+- COMPENSATION_PENDING + compensation hash: confirmed -> COMPENSATED;
+  reverted -> eligible for a fresh repair; unknown -> unchanged.
+Requirements: OPERATOR-only; claims the same execution lease (two operators
+clicking at once must not both act); idempotency-wrapped and rate-limited like
+the existing repair route (app/api/payments/[id]/repair/route.ts is your
+model); returns the safe error vocabulary, never a raw error; audits what it
+did. It is a **re-read**, not a retry — it must never broadcast a transaction.
+If the evidence is still unknown it changes nothing and says so.
+Check whether the transitions you need are already legal in lib/state.ts. They
+should be. If one is not, STOP and propose it — do not edit the state machine.
+
+WHAT MUST NOT CHANGE
+- lib/state.ts, lib/transitions.ts, prisma/schema.prisma — proposal first.
+- stuckPayments must not become narrower. T5-4 widened it deliberately.
+- The lease discipline: anything that moves money claims the lease.
+- Audit events go in the same transaction as the domain write they describe,
+  per the invariant (the bridge pair is a known, documented exception — do not
+  copy it as though it were the rule).
+- **Do not weaken existing tests.** Several tests currently assert
+  `compensationTxHash` is null in not-compensated cases; those become
+  attempt-vs-confirmation assertions. That is a legitimate strengthening —
+  declare each one in the handoff with your reasoning. Silent rewrites are how
+  invariants die.
+
+FILE SCOPE
+- Owned: lib/executor.ts; the new API route under app/api/payments/[id]/;
+  new test files.
+- Shared, additive only: tasks/fortel2-decisions-2026-08-03.md — append under
+  `## T6` only, using ids **T6-1, T6-2, …** (pre-assigned; do NOT scan the file
+  for the highest number, and if you think you need a different id, stop and
+  ask). Existing test files where an assertion must change.
+- Narrow: lib/chain.ts, only if transactionOutcome needs a source-network
+  caller and only minimally.
+- Off-limits: README.md, DEMO.md, AGENTS.md, CLAUDE.md, PRD.md,
+  tasks/prd-fortel2-integration.md (doc-freeze — hand doc changes back as
+  snippets); package.json / package-lock.json; chain/deployments*.json; .env;
+  lib/state.ts; lib/transitions.ts; prisma/schema.prisma.
+**If you need something off-limits, stop and report rather than widening
+scope.**
+
+OUT OF SCOPE
+- T5-6 (execute-time recall when the free balance is short) — scheduled as the
+  next task deliberately; do not fold it in.
+- Any UI. The stuck view is a server component and a button there is a
+  separate, smaller task once this endpoint exists.
+- Re-auditing anything Phase 9 or T5 already covered.
+
+THE GATE — run after rebasing onto current origin/main at handoff time
+```bash
+git fetch origin && git rebase origin/main
+npx tsc --noEmit
+npm run lint
+npm test
+```
+`npm test` is self-contained (own chains on 19545/19546, own DB under
+tests/.tmp) — no dev chains, no DATABASE_URL, no ForteL2 stack. A test that
+dials 9545/9546 is a bug in the test.
+**Baseline is 446 passing.** Report the exact number; unexplained movement in
+either direction is itself a finding.
+
+THE TESTS THAT MATTER — state the property, not the file
+1. The one that must fail before your fix: compensation transfer lands, receipt
+   lost, repair invoked -> the sender is paid exactly ONCE. Assert the sender's
+   on-chain balance delta, not just the status.
+2. A compensation attempt that REVERTED is retried and does succeed — the
+   stranding case from the trap.
+3. An unknown compensation outcome moves NO money in either direction and
+   leaves the payment visible in stuckPayments.
+4. R1 on conclusive evidence advances the payment; R1 on unknown evidence
+   changes nothing and broadcasts nothing.
+5. Two concurrent R1 calls: one acts, the other loses the lease cleanly (409).
+
+IF YOU THINK THIS IS WRONG
+If you conclude the double-pay is not real, or that reusing compensationTxHash
+for attempts is the wrong shape, argue it with evidence rather than
+implementing it half-heartedly. The reviewer could not reproduce this bug and
+said so; you may find they were wrong about it. That is a good outcome, not an
+awkward one.
+
+COMMIT AND MERGE CONTRACT
+- Branch `fortel2/compensation-reconcile` from current origin/main
+  (`cursor/<slug>-<hash>` acceptable if your tooling requires it).
+- Small scoped commits: `test(executor): …` (the failing test first),
+  `fix(executor): …`, `feat(api): …`.
+- Open a PR; do NOT merge it.
+- Hand back EXACTLY this block:
+
+TASK:        T6 — compensation attempt reconciliation + operator re-reconcile
+BRANCH:      <branch>
+PR:          <url>
+STATUS:      complete | complete-with-caveats | blocked
+
+GATE:        lint ✅  typecheck ✅
+             tests <N> passed  (baseline 446; explain any delta)
+MIGRATION:   none  (repo uses prisma db push; a schema change needs a proposal)
+
+REPRODUCED FIRST?  yes/no — describe the failing test and what it showed
+                   BEFORE the fix (balance delta, status, hash)
+
+DECISION-LOG ENTRIES ADDED:  T6-1 <title> … (or: none)
+
+EXISTING TESTS MODIFIED:
+  <path> — <old assertion> → <new assertion>; why this is a strengthening
+  (or: none)
+
+DECISIONS NEEDED FROM STEPHEN:
+  none | <question, and what you did in the meantime>
+
+RISKS AND FOLLOW-UPS:
+  What is NOT covered. Hand-verified vs automated. Residual risk plainly
+  stated — especially any state a payment can still reach with no exit.
+```
