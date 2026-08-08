@@ -145,3 +145,27 @@ Entry format:
 - Type: finding
 - Detail: T4 added `PAYOUT_PENDING`+`destinationTxHash` candidacy; process death after `PAYOUT_PENDING` and before persist leaves a settled escrow with no stuck-list entry and no repair API.
 - Resolution: widen candidacy to all `PAYOUT_PENDING` (or reservation-backed) in a follow-up; pairs with R1 operator tool.
+
+### T5-5: Addon TREASURY_PRIVATE_KEY not bound to overlay treasury address (P1)
+- Status: OPEN
+- Type: finding
+- Detail: `runMmfAddon` prefers `process.env.TREASURY_PRIVATE_KEY` without checking it derives `overlay.accounts.treasury.address`. Can approve from the wrong wallet while merge succeeds → noop. park() often self-heals when overlay has an inline key; `privateKeyEnv` mismatch breaks park. Proposed: fail closed on address mismatch; prefer overlay inline key when present. Small + unit-testable.
+- Resolution: (integrator) approve fix-on-branch or defer.
+
+### T5-6: Execute must not trust frozen recall_required alone when free is short (P2)
+- Status: OPEN
+- Type: finding
+- Detail: `liquidityCheck` RPC degrade → `recall_required: false`; executor skips `recallForPayment` then fails free-liquidity check even if parked covers. Fail-closed for money, wrong for flaky ForteL2 RPC demo UX. Proposed: call `recallForPayment` (no-op when free covers) whenever free is short at execute. Needs regression tests.
+- Resolution: (integrator) schedule follow-up or reject.
+
+### T5-7: §0 / MMF redeploy runbook stale after 2026-08-07 live session (P2)
+- Status: OPEN
+- Type: scope-question
+- Detail: worker-plan §0 still says F4 overlay has no TokenizedMMF; `fortel2-mmf-redeploy.md` §2 still centers full deploy / "addon not landed". Live session + PR #40 closed F4 via mmf_addon. Doc-freeze blocks editing AGENTS/README/plan body from T5; hand to I6. Also: §0 "fail-closed on missing RPC" overstates F1 — missing env defaults to loopback, not fail-closed.
+- Resolution: (I6) refresh §0 F4/F7/F1 wording and rewrite runbook §2 around addon/noop.
+
+### T5-8: R3 deepened — ACCEPT; helpers unreachable; buffer unrecoverable on orphan
+- Status: APPROVED (reviewer ruling)
+- Type: residual-ruling
+- Detail: Supersedes the shallow "out of money-path scope" half of T5-1's R3 note with a full deploy-surface read. Confirmed: crash between fund deploy and overlay merge re-detects mmf_addon and deploys a second fund; `mmfYieldBufferSatisfied`/`treasuryMmfApprovalSatisfied` never help (fresh address is empty); TokenizedMMF has no rescue so a minted 50k buffer on the orphan is stranded. Accept for mock-asset testnet; optional follow-up early overlay write + noop heal. Documented in Part B of `tasks/fortel2-hardening-review-2026-08.md`.
+- Resolution: ACCEPT; no code change in T5.
