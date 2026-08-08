@@ -1044,3 +1044,134 @@ export async function repairCompensation(paymentId: string): Promise<Payment> {
     return runCompensationTransfer({ ...payment, executionLeaseId: leaseId }, ctx);
   });
 }
+
+/**
+ * Operator re-reconcile (R1): re-read chain evidence for an unresolved payment and
+ * advance only on conclusive outcomes. Never broadcasts a transaction — confirmed
+ * destination → complete forward; reverted destination → COMPENSATION_PENDING for
+ * a later /repair; confirmed compensation → COMPENSATED; unknown → unchanged.
+ */
+export type PaymentReconcileAction =
+  | "completed_forward"
+  | "awaiting_compensation"
+  | "marked_compensated"
+  | "unchanged";
+
+export interface PaymentReconcileResult {
+  payment: Payment;
+  outcome: TransactionOutcome;
+  action: PaymentReconcileAction;
+}
+
+export async function reconcileUnresolvedPayment(
+  paymentId: string
+): Promise<PaymentReconcileResult> {
+  const payment = await prisma.payment.findUniqueOrThrow({
+    where: { id: paymentId },
+    include: { sender: { include: { wallets: true } }, recipient: { include: { wallets: true } } },
+  });
+
+  if (payment.status === "SETTLED") {
+    return { payment, outcome: "confirmed", action: "unchanged" };
+  }
+  if (payment.status === "COMPENSATED") {
+    return { payment, outcome: "confirmed", action: "unchanged" };
+  }
+
+  if (payment.status === "PAYOUT_PENDING") {
+    if (!payment.destinationTxHash) {
+      throw new ApiError("conflict", "no destination payout attempt to reconcile");
+    }
+    return withExecutionLease(paymentId, "PAYOUT_PENDING", async (leaseId) => {
+      const leased = { ...payment, executionLeaseId: leaseId };
+      const outcome = await resolveDestinationPayoutOutcome(
+        payment.destinationNetwork,
+        payment.destinationTxHash as Hex
+      );
+      if (outcome === "confirmed") {
+        const destAmount =
+          payment.destinationAmount ?? selectedRoute(payment).estimated_destination_amount;
+        const completed = await completeSettledPayout(leased, destAmount, "operator reconcile", {
+          evidence: "destination_tx_hash",
+        });
+        return { payment: completed, outcome, action: "completed_forward" as const };
+      }
+      if (outcome === "reverted" || outcome === "absent") {
+        // Enter the compensation *state* only — never transfer here. Repair is
+        // the tool that moves treasury funds once the operator chooses to.
+        await prisma.liquidityReservation
+          .update({ where: { paymentId: payment.id }, data: { status: "RELEASED" } })
+          .catch(() => {});
+        const pending = await transitionStatus(leased, "COMPENSATION_PENDING", {
+          data: {
+            failureReason: `destination payout ${outcome} — awaiting compensation`,
+          },
+          detail: {
+            network: payment.destinationNetwork,
+            txHash: payment.destinationTxHash,
+            evidence: `destination_tx_${outcome}`,
+            note: "operator reconcile — no compensation transfer sent; use repair",
+          },
+        });
+        return { payment: pending, outcome, action: "awaiting_compensation" as const };
+      }
+      await audit(
+        "payment.destination_payout_unresolved",
+        {
+          network: payment.destinationNetwork,
+          txHash: payment.destinationTxHash,
+          note: "operator reconcile — destination receipt still unreadable",
+        },
+        payment.id
+      );
+      return { payment: leased, outcome: "unknown", action: "unchanged" as const };
+    });
+  }
+
+  if (payment.status === "COMPENSATION_PENDING") {
+    if (!payment.compensationTxHash) {
+      throw new ApiError(
+        "conflict",
+        "no compensation attempt to reconcile — use repair to send a transfer"
+      );
+    }
+    return withExecutionLease(paymentId, "COMPENSATION_PENDING", async (leaseId) => {
+      const leased = { ...payment, executionLeaseId: leaseId };
+      const ctx = compensationContextFor(payment);
+      const outcome = await resolveCompensationOutcome(
+        ctx.network,
+        payment.compensationTxHash as Hex
+      );
+      if (outcome === "confirmed") {
+        const completed = await completeCompensationFromConfirmed(leased, ctx);
+        return { payment: completed, outcome, action: "marked_compensated" as const };
+      }
+      if (outcome === "unknown") {
+        await audit(
+          "payment.compensation_unresolved",
+          {
+            network: ctx.network,
+            txHash: payment.compensationTxHash,
+            note: "operator reconcile — compensation receipt still unreadable",
+          },
+          payment.id
+        );
+        return { payment: leased, outcome: "unknown", action: "unchanged" as const };
+      }
+      // reverted/absent — eligible for a fresh repair; do not broadcast here.
+      await audit(
+        "payment.compensation_attempt_not_confirmed",
+        {
+          network: ctx.network,
+          txHash: payment.compensationTxHash,
+          outcome,
+          note: "operator reconcile — prior attempt not confirmed; use repair to re-send",
+        },
+        payment.id
+      );
+      return { payment: leased, outcome, action: "unchanged" as const };
+    });
+  }
+
+  throw new ApiError("conflict", `payment cannot be reconciled from status ${payment.status}`);
+}
