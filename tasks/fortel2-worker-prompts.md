@@ -379,3 +379,244 @@ COMMIT AND MERGE CONTRACT
   cover>
   PR: <link>
 ```
+
+---
+
+# T5 — hardening review (final worker task, added 2026-08-07)
+
+Dispatch after PR #40 (live-session results + doc flips) is on main. Model:
+strongest available, high reasoning effort. This is a **review-first** task
+over money paths; see the calibration note in the prompt.
+
+## Prompt 5 — T5: ForteL2 hardening review (strongest model, high effort)
+
+```
+You are the final worker on the SettlementOS ForteL2 integration: an
+adversarial hardening review of everything the integration added. You are the
+last gate before this surface is called done.
+
+READ FIRST, IN THIS ORDER
+1. CLAUDE.md and AGENTS.md — the invariants there are binding. Pay closest
+   attention to: "Never refund a released escrow; compensate it", "Compensate
+   only when the recipient was *not* paid; otherwise complete forward",
+   "Reconcile with the chain before undoing anything", "A stranded payment
+   must stay visible", "Audit only what happened, in the same transaction as
+   what happened", and "MMF segregation".
+2. AUDIT.md — the methodology to imitate: severity-tagged findings, each with
+   the relevant code and a concrete remediation.
+3. tasks/fortel2-worker-plan.md (you are T5) and
+   tasks/fortel2-decisions-2026-08-03.md (entries T1-1 through T4-3).
+4. tasks/runbooks/fortel2-live-session-2026-08-07.md — what was proven live
+   on the real 852 chain, and what was NOT.
+
+**Read current main before trusting any status claim above, including mine.**
+Every "done" in this prompt is a claim to verify, not a fact. The plan document
+itself was written by checking claims against the repo and finding one that was
+overstated; do the same to it.
+
+WHY THIS EXISTS
+T1–T4 shipped in two waves (PRs #33, #34, #35, #37) and were reviewed
+individually as they landed, but nobody has looked at the resulting surface as
+a whole. Individually-correct changes compose into gaps. Two of them touched
+money paths directly:
+- T4 (PR #37) changed when a destination payout is believed: the payout hash is
+  now persisted BEFORE the receipt is awaited, and the executor's catch
+  reconciles it with transactionOutcome() before compensating or completing
+  forward. That is the difference between a treasury double-pay and a correct
+  undo.
+- T2 (PR #34) made scripts/deploy-testnet.mjs mode-aware (full / MMF add-on /
+  no-op). It moves real testnet funds and deploys contracts.
+The 2026-08-07 live session exercised the happy paths on the real ForteL2
+sequencer (MMF park->accrue->recall, cross-chain settles both directions, both
+bridge audit events in order). It did NOT exercise any failure path live.
+
+SCOPE OF THE REVIEW
+The ForteL2-specific surface and what T1–T4 changed — NOT a re-audit of the
+whole payments product (Phase 9 Track A covered that):
+- lib/chain.ts — transactionOutcome, replicaLagRetries, SubmittedTx /
+  treasuryTokenTransfer, mmfAddress, operatorWrite's retry classifier
+- lib/executor.ts — reconcileDestinationPayout, the catch-path ordering,
+  completeSettledPayout, stuckPayments, repairCompensation, the bridge payout leg
+- lib/networks.ts — the fortel2-sepolia / fortel2-local entries, the read/write
+  RPC split
+- scripts/deploy-testnet.mjs — mode detection, the add-on path, preflight helpers
+- lib/treasury.ts and lib/routing.ts ONLY where ForteL2/MMF behaviour is
+  involved (both are network-generic; do not re-review them wholesale)
+- the tests T1–T4 added: are they load-bearing, or do they pass vacuously?
+
+FOUR KNOWN RESIDUALS — rule on each explicitly, by id, in your report
+R1. An unresolved PAYOUT_PENDING payment (destination receipt unreadable) has
+    NO automated resolution path: executePayment's lease CAS requires status
+    APPROVED so execute cannot resume it, and repairCompensation only accepts
+    COMPENSATION_PENDING. It sits in stuckPayments() until a human acts.
+    Is that acceptable-and-documented, or a gap that strands funds in practice?
+R2. In the cross-chain payout leg, the destinationTxHash write and its
+    bridge.destination_payout_submitted audit event are separate operations,
+    not one prisma.$transaction — arguably outside "audit in the same
+    transaction as the domain write". Rule on BOTH bridge events together.
+    Note this matches the file's pre-existing pattern, so "it was already like
+    that" is not by itself an answer.
+R3. deploy-testnet.mjs idempotency is mode-level ONLY: a run that dies between
+    the fund deploy and the overlay merge leaves an orphaned TokenizedMMF that
+    a re-run will not reuse (it re-detects mmf_addon and deploys another). The
+    mmfYieldBufferSatisfied / treasuryMmfApprovalSatisfied helpers do not
+    protect against this — they are unreachable on a freshly deployed fund.
+    Accept with a documented caveat, or fix?
+R4. transactionOutcome's "absent" branch is unreachable from a live chain
+    (viem throws TransactionReceiptNotFoundError rather than returning null),
+    so every no-receipt case maps to "unknown". Confirm the code comment
+    explaining this is accurate and sufficient. SEE THE TRAP.
+
+THE TRAP — the highest-value paragraph here; read it twice
+The most likely way this task does damage is a confident "cleanup" of R4.
+Making a missing receipt return "absent" instead of "unknown" looks like
+finishing an unfinished branch. It would reintroduce the exact double-pay T4
+was written to prevent: the executor's catch compensates the sender on
+"absent", and a transaction sitting in the mempool is indistinguishable from
+one that will never mine — so the treasury would repay the sender while the
+recipient's payout lands moments later. One receipt read cannot tell those
+apart. The same hazard has a second face: "fixing" R1 with an automatic retry
+that resolves an unknown outcome by guessing. Any change that lets the system
+act on unknown evidence is wrong, however tidy it looks. If you believe R4's
+branch should change, that is a decisions-log proposal, not a commit.
+
+WHAT MUST NOT CHANGE
+- The state machine (lib/state.ts) and the transition contract
+  (lib/transitions.ts). A new payment status is a decisions-log proposal;
+  expect no.
+- prisma/schema.prisma — decisions-log proposal required first.
+- The fail-closed rules: compliance provider errors resolve MANUAL_REVIEW
+  (never PASS); a missing ForteL2 RPC fails closed and never falls back to
+  another chain.
+- Tenant scoping as a WHERE filter, the 404-not-403 rule, and the
+  audit-actor-from-the-key rule.
+- **Do not weaken existing tests.** If a test must change because it encoded
+  the behaviour you are fixing, that is legitimate — declare it in the
+  handoff with your reasoning. Silently rewritten assertions are how
+  invariants die.
+
+WHAT TO PRODUCE
+1. `tasks/fortel2-hardening-review-2026-08.md` — findings in AUDIT.md's style,
+   severity-tagged (P0/P1/P2), each with: the relevant file:line, a concrete
+   failure scenario (inputs/state -> wrong outcome), and a remediation. An
+   explicit ruling on R1–R4 by id. If you find nothing at a severity, say so
+   and say what you looked for — a review that reports "all clear" without
+   naming its coverage is indistinguishable from one that didn't run.
+2. Fixes ONLY for findings that are clearly in scope and low-risk, each with a
+   regression test. Anything larger is a finding, not a commit. No refactors,
+   no renames, no "while I was in there".
+3. Decisions-log entries under the existing `## T5` heading in
+   tasks/fortel2-decisions-2026-08-03.md, numbered **T5-1, T5-2, T5-3, …** in
+   the order you raise them. These ids are pre-assigned: use them, and do NOT
+   scan the file for the highest existing number. If you believe you need a
+   different id, stop and ask.
+
+FILE SCOPE
+- Owned (may change freely): tasks/fortel2-hardening-review-2026-08.md (new),
+  plus new test files you add under tests/.
+- Narrow, fix-only (touch ONLY to fix a finding you documented first, minimal
+  diff): lib/chain.ts, lib/executor.ts, lib/networks.ts,
+  scripts/deploy-testnet.mjs, lib/treasury.ts, lib/routing.ts, and existing
+  test files.
+- Shared, additive only: tasks/fortel2-decisions-2026-08-03.md — append under
+  `## T5` only, never edit another task's entries (they are append-only
+  history).
+- Off-limits: README.md, DEMO.md, AGENTS.md, CLAUDE.md, PRD.md,
+  tasks/prd-fortel2-integration.md (a doc-freeze is in effect so parallel
+  workers stop colliding in prose — hand doc changes back as snippets);
+  package.json / package-lock.json (dependency freeze — a lockfile merged out
+  of order is a real conflict); any chain/deployments*.json (generated, holds
+  private keys, gitignored); any .env; lib/state.ts; lib/transitions.ts;
+  prisma/schema.prisma.
+**If you find yourself needing to change something off-limits, stop and report
+rather than widening scope.**
+
+OUT OF SCOPE, AND WHY
+- Re-auditing auth, tenant scoping, rate limits, pagination, idempotency, or
+  the audit chain in general — Phase 9 Track A did that (see CLAUDE.md); only
+  flag one if a ForteL2/T1–T4 change specifically broke it.
+- The three T4 live checks that did not run (receipt-loss-completes-forward,
+  unresolved-stays-stuck, repair-refuses-on-confirmed). They need failure
+  injected between a tx mining and its receipt returning, which requires the
+  test-only executorTestHooks. The hermetic tests cover them. Do not build a
+  live harness.
+- Base Sepolia / Polygon Amoy restoration — their overlays and signing keys
+  are gone from the dev machine; restoring one is a deliberate decision with
+  documented-address consequences, not a cleanup task.
+- F6 (explorer, separate repo) and F8 (canonical USDC, joint-later).
+
+THE GATE — run at handoff time, after rebasing onto current origin/main
+```bash
+git fetch origin && git rebase origin/main
+npx tsc --noEmit
+npm run lint
+npm test
+```
+`npm test` is self-contained (it boots its own chains on 19545/19546 and builds
+a fresh DB under tests/.tmp) — no dev chains, no DATABASE_URL, no ForteL2 stack.
+CI must never depend on the ForteL2 sequencer being up; if you add a test that
+dials 9545/9546, that is a bug in the test.
+**Baseline is 438 passing.** Report the exact count. Unexplained movement in
+either direction is itself a finding — including tests that vanish.
+Green against a stale base tells you nothing; rebase first.
+
+THE TESTS THAT MATTER
+Ask of each regression test: what property does this pin, and would it fail if
+the bug came back in a slightly different shape? State the property, not the
+file. Specifically, if you touch the reconciliation path, there must be a test
+asserting that **an unknown destination outcome moves no money in either
+direction** — neither compensating the sender nor completing forward. That is
+the property the whole T4 design exists to protect.
+If you find a bug you cannot cover with the existing harness, say so, say what
+you hand-verified instead, and do NOT build new harness infrastructure for it.
+
+IF YOU THINK THIS IS WRONG
+If you believe the review scope is wrong, a residual is misdiagnosed, or one of
+my assertions above is simply incorrect, say so and argue it with evidence
+rather than implementing it half-heartedly. You are the last gate; a
+well-argued disagreement is worth more than a compliant review. I have been
+wrong at least once per wave so far.
+
+COMMIT AND MERGE CONTRACT
+- Branch `fortel2/hardening-review` from current origin/main. Never branch from
+  another task's branch. (`cursor/<slug>-<hash>` is an accepted alternative if
+  your PR tooling requires that prefix.)
+- Small scoped commits: `docs(review): …`, `fix(chain): …`, `fix(executor): …`,
+  `test(executor): …`.
+- Open a PR; do NOT merge it.
+- Hand back EXACTLY this block, filled in:
+
+TASK:        T5 — ForteL2 hardening review
+BRANCH:      fortel2/hardening-review
+PR:          <url>
+STATUS:      complete | complete-with-caveats | blocked
+
+GATE:        lint ✅  typecheck ✅
+             tests <N> passed  (baseline 438; explain any delta)
+MIGRATION:   none  (this repo has no migrations dir — schema is db push)
+
+FINDINGS:    P0 <n>, P1 <n>, P2 <n>  — full detail in
+             tasks/fortel2-hardening-review-2026-08.md
+RULINGS:     R1 <accept|fix|escalate> — <one line>
+             R2 <…>   R3 <…>   R4 <…>
+
+SHARED FILES TOUCHED:
+  <path> — what changed, why it is additive
+  (or: none)
+
+DECISION-LOG ENTRIES ADDED:
+  T5-1 <title> … (or: none)
+
+EXISTING TESTS MODIFIED:
+  <path> — <old assertion> → <new assertion>; why this is a strengthening,
+  not a weakening
+  (or: none)
+
+DECISIONS NEEDED FROM STEPHEN:
+  none | <the question, and what you did in the meantime>
+
+RISKS AND FOLLOW-UPS:
+  What this review does NOT cover. What was hand-verified vs automated.
+  Residual risk stated plainly rather than implied. Anything you chose not to
+  fix, and why.
+```
