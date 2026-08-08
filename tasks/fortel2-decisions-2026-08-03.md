@@ -220,10 +220,6 @@ Entry format:
 - Detail: `POST /api/payments/[id]/reconcile` + `reconcileUnresolvedPayment` re-read chain evidence under the execution lease. PAYOUT_PENDING+confirmed → complete forward; +reverted/absent → COMPENSATION_PENDING only (no treasury transfer — `/repair` sends); +unknown → unchanged. COMPENSATION_PENDING+confirmed → COMPENSATED; +reverted → unchanged (eligible for repair); +unknown → unchanged. No state-machine edits required (existing edges suffice). No schema change.
 - Resolution: implemented on branch fortel2/compensation-reconcile.
 
-## T6 — compensation attempt reconciliation + operator re-reconcile (post-wave)
-
-(entries here — ids T6-1, T6-2, … pre-assigned; do not scan for the highest)
-
 ## T7 — execute-time recall when free liquidity is short (T5-6)
 
 ### T7-1: Gate auto-recall on measured free balance, not frozen recall_required
