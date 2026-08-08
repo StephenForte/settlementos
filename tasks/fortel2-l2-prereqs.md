@@ -65,6 +65,21 @@ sequencer, share the Render read RPC URL; SOS sets it as
 `FORTEL2_SEPOLIA_READ_RPC_URL` (F1 already routes only balance reads there —
 writes and tx confirmation always stay on the sequencer). Purely optional.
 
+### Replica OOM on catch-up (seen 2026-08-05)
+
+A quiet OP Stack chain still emits empty singular batches (`txs=0`) every ~2s.
+If the Render replica falls behind and then catches up, op-node can decode a
+huge backlog in one burst (`decoded singular batch from channel` floods, then
+`Advancing bq origin` with `originBehind=true`) and OOM a small instance.
+
+- Bump Render RAM (≥2GB is a safer floor for op-node + execution client) or
+  wipe/resync from a packed snapshot instead of deriving a long empty backlog
+  live.
+- Turn log level down to `warn` during catch-up so batch-decode spam does not
+  add I/O pressure.
+- SOS writes are unaffected (sequencer RPC). If the replica is flaky, unset
+  `FORTEL2_SEPOLIA_READ_RPC_URL` so balance/display reads hit the sequencer.
+
 ## 6. Bookkeeping
 
 - If the sequencer host/exposure story changed (no longer "loopback on the
