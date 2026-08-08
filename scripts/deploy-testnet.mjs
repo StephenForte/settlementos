@@ -277,12 +277,14 @@ export function describePlannedActions(mode, networkId, networkOverlay) {
       );
       break;
     case "mmf_addon":
+      // Wording is deliberate: helpers check the *fresh* fund address and are
+      // always empty on a new deploy — mode-level idempotency only (T2-2 / R3).
       lines.push(
         `- Reuse existing PaymentSettlement (${networkOverlay?.contracts?.PaymentSettlement})`,
         `- Reuse existing mockUSDC (${networkOverlay?.contracts?.tokens?.mockUSDC?.address})`,
         "- Deploy TokenizedMMF only",
-        "- Mint MMF yield buffer (50,000 mockUSDC) if not already funded",
-        "- Treasury MAX-approve mockUSDC → TokenizedMMF if not already approved",
+        "- Mint MMF yield buffer (50,000 mockUSDC) to the new fund",
+        "- Treasury MAX-approve mockUSDC → TokenizedMMF",
         `- Merge TokenizedMMF into chain/deployments.${networkId}.json (other entries untouched)`
       );
       break;
@@ -312,6 +314,46 @@ export function mmfYieldBufferSatisfied(balance) {
 export function treasuryMmfApprovalSatisfied(allowance) {
   // Any prior MAX approve leaves allowance at or near MAX_UINT256.
   return allowance >= MAX_UINT256 / 2n;
+}
+
+/**
+ * Resolve the treasury private key for an MMF add-on approve, binding it to the
+ * overlay treasury address. Prefers an inline overlay key (source of truth for
+ * the recorded address); falls back to env. A key that derives a different
+ * address fails closed — approving from the wrong wallet while merging the
+ * overlay would leave park() talking to an unapproved treasury (T5-5).
+ *
+ * @param {{ address?: string, privateKey?: string, privateKeyEnv?: string } | null | undefined} treasuryAccount
+ * @param {Record<string, string | undefined>} [envBag]
+ * @returns {{ ok: true, key: string, address: string } | { ok: false, message: string }}
+ */
+export function resolveAddonTreasuryKey(treasuryAccount, envBag = process.env) {
+  if (!treasuryAccount?.address) {
+    return { ok: false, message: "Overlay missing treasury account — cannot approve MMF" };
+  }
+  const envName = treasuryAccount.privateKeyEnv || "TREASURY_PRIVATE_KEY";
+  const key = treasuryAccount.privateKey || envBag[envName];
+  if (!key) {
+    return {
+      ok: false,
+      message: `Overlay treasury has no privateKey and ${envName} is not set`,
+    };
+  }
+  let derived;
+  try {
+    derived = privateKeyToAccount(/** @type {`0x${string}`} */ (key)).address;
+  } catch {
+    return { ok: false, message: "Treasury private key is malformed" };
+  }
+  if (derived.toLowerCase() !== treasuryAccount.address.toLowerCase()) {
+    return {
+      ok: false,
+      message:
+        `Treasury key does not match overlay treasury address ${treasuryAccount.address} ` +
+        `(derived ${derived})`,
+    };
+  }
+  return { ok: true, key, address: treasuryAccount.address };
 }
 
 function artifact(name) {
@@ -441,17 +483,13 @@ async function runMmfAddon({
   // last step, so an abort after the fund deploys leaves the overlay without a
   // TokenizedMMF entry and a re-run would deploy a second, orphaned fund. Every
   // check that can fail without a chain must run while nothing has been spent.
+  // Bind the key to the overlay treasury address (T5-5) — a mismatched env key
+  // must not approve from a stranger wallet while the merge still succeeds.
   const treasuryAccount = networkOverlay.accounts?.treasury;
-  if (!treasuryAccount?.address) fail("Overlay missing treasury account — cannot approve MMF");
-
-  let treasuryKey = process.env.TREASURY_PRIVATE_KEY;
-  if (!treasuryKey) {
-    if (!treasuryAccount.privateKey) {
-      fail("Overlay treasury has no privateKey and TREASURY_PRIVATE_KEY is not set");
-    }
-    treasuryKey = treasuryAccount.privateKey;
-  }
-  const treasuryAddr = treasuryAccount.address;
+  const treasuryResolved = resolveAddonTreasuryKey(treasuryAccount);
+  if (!treasuryResolved.ok) fail(treasuryResolved.message);
+  const treasuryKey = treasuryResolved.key;
+  const treasuryAddr = treasuryResolved.address;
 
   async function send(fn, label) {
     const hash = await fn();

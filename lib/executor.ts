@@ -64,6 +64,11 @@ interface ExecutorTestHooks {
    */
   afterDestinationPayoutSubmitted?: () => void | Promise<void>;
   /**
+   * Throws after the payout hash is known in memory but before the DB persist
+   * of destinationTxHash — proves catch can still reconcile when the write fails.
+   */
+  beforeDestinationTxHashPersist?: () => void | Promise<void>;
+  /**
    * Throws *after* the destination payout has already landed (recipient paid,
    * destinationTxHash written and receipt confirmed) but before the settlement
    * is recorded — the path that must complete forward, never compensate, or the
@@ -452,6 +457,11 @@ async function runExecution(claimed: PaymentWithParties, leaseId: string): Promi
         recipientWallet.address as Address,
         settledUnits
       );
+      // Remember the attempt on the in-memory row *before* any further I/O so a
+      // failed DB persist still lets the catch path reconcile (T5-3). Without
+      // this, catch sees a null hash and compensates while the dest tx may mine.
+      payment = { ...payment, destinationTxHash: bridgeTx.hash };
+      await executorTestHooks.beforeDestinationTxHashPersist?.();
       payment = {
         ...payment,
         ...(await prisma.payment.update({
@@ -766,9 +776,11 @@ export async function stuckPayments(): Promise<StuckPayment[]> {
     where: {
       OR: [
         { status: "COMPENSATION_PENDING" },
-        // PAYOUT_PENDING with a persisted attempt hash: receipt outcome may be
-        // unknown — keep visible until an operator or a retry resolves it.
-        { status: "PAYOUT_PENDING", destinationTxHash: { not: null } },
+        // Any PAYOUT_PENDING: escrow is already released at this status, so the
+        // sender's funds are at risk whether or not destinationTxHash landed
+        // (process death between the status write and the hash persist left
+        // hash-less rows invisible — T5-4). Keep visible until resolved.
+        { status: "PAYOUT_PENDING" },
         // A FAILED payment attempted escrow iff it has a reservation row: the
         // reservation is created immediately before initiatePayment, and the
         // earlier failures (rejected quote, insufficient liquidity, failed
@@ -799,12 +811,13 @@ export async function stuckPayments(): Promise<StuckPayment[]> {
   // same as fine, so keep it. NONE (a reservation that never escrowed — the tx
   // reverted before mining) and REFUNDED (the sender already has it back, only the
   // REFUNDED transition missing) are done. COMPENSATION_PENDING is always kept —
-  // the sender is owed a transfer regardless of escrow state. PAYOUT_PENDING with
-  // an attempt hash is always kept — the destination receipt may be unresolved.
+  // the sender is owed a transfer regardless of escrow state. PAYOUT_PENDING is
+  // always kept — destination may be unresolved, or the attempt hash never
+  // persisted after the escrow released.
   return rows.filter(
     (r) =>
       r.payment.status === "COMPENSATION_PENDING" ||
-      (r.payment.status === "PAYOUT_PENDING" && r.payment.destinationTxHash !== null) ||
+      r.payment.status === "PAYOUT_PENDING" ||
       r.escrowState === "INITIATED" ||
       r.escrowState === "SETTLED" ||
       r.escrowState === null

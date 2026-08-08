@@ -15,6 +15,7 @@ import {
   networkContracts,
   replicaLagRetries,
   tokenBalance,
+  transactionOutcome,
 } from "@/lib/chain";
 import { verifyAuditChain } from "@/lib/audit";
 import { createApprovedPayment } from "../helpers/payments";
@@ -39,6 +40,7 @@ async function assertAuditIntact(): Promise<void> {
 
 afterEach(() => {
   delete executorTestHooks.beforeDestinationPayout;
+  delete executorTestHooks.beforeDestinationTxHashPersist;
   delete executorTestHooks.afterDestinationPayoutSubmitted;
   delete executorTestHooks.afterDestinationPayout;
   delete executorTestHooks.afterLedgerCredit;
@@ -236,6 +238,117 @@ describe("T1-1 — destination payout receipt loss after mine", () => {
       "COMPENSATION_PENDING"
     );
     await assertAuditIntact();
+  });
+
+  it("repairCompensation refuses when destination payout outcome is unknown", async () => {
+    const senderBefore = await walletBalance("base-local", "mockUSDC", senderWallet("base-local"));
+
+    const payment = await createApprovedPayment({
+      amount: "3200.00",
+      sourceNetwork: "base-local",
+      destinationNetwork: "polygon-local",
+    });
+
+    executorTestHooks.beforeDestinationPayout = () => {
+      throw new Error("payout failed");
+    };
+    executorTestHooks.beforeCompensationTransfer = () => {
+      throw new Error("treasury signer unavailable");
+    };
+    const stuck = await executePayment(payment.id);
+    delete executorTestHooks.beforeDestinationPayout;
+    delete executorTestHooks.beforeCompensationTransfer;
+    expect(stuck.status).toBe("COMPENSATION_PENDING");
+    const short = await walletBalance("base-local", "mockUSDC", senderWallet("base-local"));
+    expect(short).toBeLessThan(senderBefore);
+
+    await prisma.payment.update({
+      where: { id: payment.id },
+      data: { destinationTxHash: "0xbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef" },
+    });
+    executorTestHooks.destinationPayoutOutcome = "unknown";
+
+    // Unknown must move no money — repairing would risk paying the sender while
+    // a still-unreadable destination attempt might yet confirm.
+    await expect(repairCompensation(payment.id)).rejects.toThrow(/outcome unresolved/);
+    expect(await walletBalance("base-local", "mockUSDC", senderWallet("base-local"))).toBe(short);
+    expect((await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } })).status).toBe(
+      "COMPENSATION_PENDING"
+    );
+    await assertAuditIntact();
+  });
+
+  it("completes forward when destinationTxHash persist fails after broadcast (T5-3)", async () => {
+    const recipient = accountsFor("polygon-local").entityWallets.ent_tokyo_supplier.address as Address;
+    const senderBefore = await walletBalance("base-local", "mockUSDC", senderWallet("base-local"));
+    const recipientJpyBefore = await walletBalance("polygon-local", "mockJPY", recipient);
+
+    const payment = await createApprovedPayment({
+      amount: "2800.00",
+      sourceNetwork: "base-local",
+      destinationNetwork: "polygon-local",
+    });
+
+    // Hash is known in memory; DB write never lands. Catch must still reconcile
+    // the mined destination payout instead of compensating the sender.
+    executorTestHooks.beforeDestinationTxHashPersist = () => {
+      throw new Error("db unavailable writing destinationTxHash");
+    };
+
+    const result = await executePayment(payment.id);
+
+    expect(result.status).toBe("SETTLED");
+    expect(result.compensationTxHash).toBeNull();
+    expect(await walletBalance("polygon-local", "mockJPY", recipient)).toBeGreaterThan(recipientJpyBefore);
+    expect(await walletBalance("base-local", "mockUSDC", senderWallet("base-local"))).toBeLessThan(
+      senderBefore
+    );
+
+    const actions = await auditActions(payment.id);
+    expect(actions).toContain("payment.settlement_recovered");
+    expect(actions).not.toContain("payment.compensation_transfer");
+    await assertAuditIntact();
+  });
+
+  it("lists hash-less PAYOUT_PENDING in stuckPayments (T5-4)", async () => {
+    const payment = await createApprovedPayment({
+      amount: "2100.00",
+      sourceNetwork: "base-local",
+      destinationNetwork: "polygon-local",
+    });
+
+    // Process death between PAYOUT_PENDING and hash persist: escrow released,
+    // no destinationTxHash. Must stay visible — T4's hash-gated candidacy hid it.
+    await prisma.payment.update({
+      where: { id: payment.id },
+      data: { status: "PAYOUT_PENDING", destinationTxHash: null },
+    });
+    await prisma.liquidityReservation.create({
+      data: {
+        paymentId: payment.id,
+        network: "polygon-local",
+        asset: "mockJPY",
+        amount: "1000",
+        status: "RESERVED",
+      },
+    });
+
+    const listed = await stuckPayments();
+    expect(listed.some((s) => s.payment.id === payment.id)).toBe(true);
+  });
+});
+
+describe("R4 — transactionOutcome missing-receipt mapping", () => {
+  it("maps a missing receipt (viem throw) to unknown, not absent", async () => {
+    // viem throws TransactionReceiptNotFoundError rather than returning null.
+    // Mapping that throw to "absent" would reintroduce the T1-1 double-pay:
+    // catch compensates on absent while a mempool tx may still mine.
+    const outcome = await transactionOutcome(
+      "base-local",
+      "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    );
+    expect(outcome).toBe("unknown");
+    expect(outcome).not.toBe("absent");
   });
 });
 
