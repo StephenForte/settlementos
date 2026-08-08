@@ -304,9 +304,23 @@ describe("T1-1 — destination payout receipt loss after mine", () => {
       senderBefore
     );
 
+    // The persist is what failed, so bridge.destination_payout_submitted never
+    // ran — the recovery is the only chance to record the destination tx. A
+    // SETTLED cross-chain row with a null hash tells reconciliation and the
+    // payment detail that no destination leg happened, when one did.
+    expect(result.destinationTxHash).toMatch(/^0x[0-9a-f]{64}$/);
+    const persisted = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(persisted.destinationTxHash).toBe(result.destinationTxHash);
+
     const actions = await auditActions(payment.id);
     expect(actions).toContain("payment.settlement_recovered");
     expect(actions).not.toContain("payment.compensation_transfer");
+    // The recovery event names the hash it decided on, so the audit chain is a
+    // durable record of the payout even when the row write lost the race.
+    const recovered = await prisma.auditEvent.findFirst({
+      where: { paymentId: payment.id, action: "payment.settlement_recovered" },
+    });
+    expect(JSON.parse(recovered!.detail).destinationTxHash).toBe(result.destinationTxHash);
     await assertAuditIntact();
   });
 

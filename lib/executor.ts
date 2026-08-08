@@ -641,11 +641,22 @@ async function completeSettledPayout(
       // why a payment settled forward instead of compensating.
       branch: "forward_complete",
       evidence,
+      // The hash the recovery was decided on. When the payout persist is what
+      // failed, this event is the FIRST durable record of the destination tx —
+      // bridge.destination_payout_submitted never ran.
+      destinationTxHash: payment.destinationTxHash,
       recoveredFrom: reason.slice(0, 200),
     },
     payment.id
   );
-  return await setStatus(payment, "SETTLED");
+  // The in-memory row can carry a payout hash the DB never received, because the
+  // persist is exactly what failed on this path. Writing it alongside the terminal
+  // status is the last chance to keep it: a SETTLED cross-chain row whose
+  // destinationTxHash is null tells reconciliation and the payment detail that no
+  // destination leg happened, when one did and the recipient holds the money.
+  // Same-chain routes never set the hash, so this is a no-op for them.
+  const carryHash = payment.destinationTxHash ? { destinationTxHash: payment.destinationTxHash } : {};
+  return await setStatus(payment, "SETTLED", carryHash);
 }
 
 interface CompensationContext {
