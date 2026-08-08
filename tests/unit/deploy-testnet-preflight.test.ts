@@ -3,6 +3,7 @@
 
 import { describe, it, expect } from "vitest";
 import { parseEther } from "viem";
+import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import {
   NETWORK_CONFIGS,
   MMF_YIELD_BUFFER,
@@ -17,6 +18,7 @@ import {
   describePlannedActions,
   mmfYieldBufferSatisfied,
   treasuryMmfApprovalSatisfied,
+  resolveAddonTreasuryKey,
 } from "../../scripts/deploy-testnet.mjs";
 
 const FORTEL2 = "fortel2-sepolia";
@@ -226,6 +228,8 @@ describe("describePlannedActions", () => {
     expect(lines.some((l) => l.includes("Reuse existing PaymentSettlement"))).toBe(true);
     expect(lines.some((l) => l.includes("Deploy TokenizedMMF only"))).toBe(true);
     expect(lines.some((l) => l.includes("Merge TokenizedMMF"))).toBe(true);
+    // Must not claim per-step idempotency the helpers do not deliver (T2-2 / R3).
+    expect(lines.some((l) => /if not already/i.test(l))).toBe(false);
   });
 
   it("states no-op when fund already present", () => {
@@ -247,5 +251,49 @@ describe("MMF add-on idempotency helpers", () => {
     expect(treasuryMmfApprovalSatisfied(MMF_YIELD_BUFFER)).toBe(false);
     expect(treasuryMmfApprovalSatisfied(MAX_UINT256 / 2n)).toBe(true);
     expect(treasuryMmfApprovalSatisfied(MAX_UINT256)).toBe(true);
+  });
+});
+
+describe("resolveAddonTreasuryKey (T5-5)", () => {
+  it("prefers the overlay inline key and binds it to the recorded address", () => {
+    const pk = generatePrivateKey();
+    const address = privateKeyToAccount(pk).address;
+    const envPk = generatePrivateKey();
+    const resolved = resolveAddonTreasuryKey(
+      { address, privateKey: pk },
+      { TREASURY_PRIVATE_KEY: envPk }
+    );
+    expect(resolved).toEqual({ ok: true, key: pk, address });
+  });
+
+  it("falls back to env when the overlay has only privateKeyEnv", () => {
+    const pk = generatePrivateKey();
+    const address = privateKeyToAccount(pk).address;
+    const resolved = resolveAddonTreasuryKey(
+      { address, privateKeyEnv: "TREASURY_PRIVATE_KEY" },
+      { TREASURY_PRIVATE_KEY: pk }
+    );
+    expect(resolved).toEqual({ ok: true, key: pk, address });
+  });
+
+  it("fails closed when the env key does not derive the overlay treasury address", () => {
+    const overlayPk = generatePrivateKey();
+    const address = privateKeyToAccount(overlayPk).address;
+    const wrongPk = generatePrivateKey();
+    const resolved = resolveAddonTreasuryKey(
+      { address, privateKeyEnv: "TREASURY_PRIVATE_KEY" },
+      { TREASURY_PRIVATE_KEY: wrongPk }
+    );
+    expect(resolved.ok).toBe(false);
+    if (!resolved.ok) expect(resolved.message).toMatch(/does not match overlay treasury address/);
+  });
+
+  it("fails closed when no key is available", () => {
+    const resolved = resolveAddonTreasuryKey(
+      { address: "0x6666666666666666666666666666666666666666" },
+      {}
+    );
+    expect(resolved.ok).toBe(false);
+    if (!resolved.ok) expect(resolved.message).toMatch(/TREASURY_PRIVATE_KEY is not set/);
   });
 });

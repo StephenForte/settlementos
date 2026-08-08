@@ -1,9 +1,10 @@
 # ForteL2 hardening review — 2026-08-08 (T5)
 
 **Baseline:** `origin/main` @ `312f096` (PR #40 live-session results).  
-**Status:** Findings + residual rulings. No R4 “cleanup”; no automated action on
-unknown destination evidence. No deploy-script code change in this review
-commit (P1 treasury-key binding left OPEN for integrator ack).
+**Status:** Findings + residual rulings + low-risk fixes (T5-3, T5-4, T5-5,
+preflight wording, R4 regression test). No R4 “cleanup”; no automated action on
+unknown destination evidence. Larger items (compensation receipt-loss T5-2,
+execute-time recall T5-6, R1 operator re-reconcile) remain OPEN.
 
 Two complementary passes make up this document:
 
@@ -21,7 +22,8 @@ P1 = wrong money or silent wrong mode under plausible failure/misconfig;
 P2 = demo/ops footgun, stale docs, vacuous coverage, accepted residual;
 OK = checked and sound.
 
-**Counts (combined):** P0 **0** · P1 **3** · P2 **11** · R1–R4 ruled below.
+**Counts (combined):** P0 **0** · P1 **3** (1 fixed in-branch, 2 OPEN) ·
+P2 **11** (several fixed/narrowed in-branch) · R1–R4 ruled below.
 
 ---
 
@@ -105,17 +107,19 @@ after compensation submit / before confirm.
 
 **Not fixed here** — design choice required first (see decisions log T5-2).
 
-### P1 — `destinationTxHash` persist failure after broadcast → catch compensates while recipient may be paid
+### P1 — `destinationTxHash` persist failure after broadcast → catch compensates while recipient may be paid — **FIXED**
 
-**Where:** `lib/executor.ts:449-461` then catch `530-562`.
+**Where:** `lib/executor.ts` bridge payout leg (in-memory hash before persist).
 
 **Failure scenario:** Cross-chain payout broadcast returns `H`; DB update
 throws; in-memory hash stays null; catch compensates; `H` mines → **treasury
 double-pay**.
 
-**Remediation:** On persist failure, keep `H` on the in-memory payment before
-rethrow so catch reconciles; best-effort retry + audit. Process kill before
-persist remains harder (pairs with stuck candidacy P2).
+**Fix landed:** assign `destinationTxHash` on the in-memory payment *before*
+the Prisma update / audit; catch reconciles via that hash. Regression:
+`beforeDestinationTxHashPersist` hook + test in
+`tests/integration/executor-rpc-resilience.test.ts`. Process kill before
+persist remains a separate visibility concern (T5-4, also fixed below).
 
 ### P1 — Unresolved `PAYOUT_PENDING` has no resolution path (R1), stuck UI cannot act
 
@@ -140,14 +144,16 @@ still safe via column; audit missing attempt event.
 **Ruling:** accept with caveat — audit consistency gap, not demonstrated
 double-pay.
 
-### P2 — `PAYOUT_PENDING` without `destinationTxHash` omitted from `stuckPayments`
+### P2 — `PAYOUT_PENDING` without `destinationTxHash` omitted from `stuckPayments` — **FIXED**
 
-**Where:** `lib/executor.ts:767-771, 804-811`.
+**Where:** `lib/executor.ts` `stuckPayments` candidacy + filter.
 
 **Failure scenario:** Status `PAYOUT_PENDING`, killed before hash persist →
 absent from stuck view, no execute/repair → stranded and invisible.
 
-**Remediation:** Candidate all `PAYOUT_PENDING` (or reservation-backed).
+**Fix landed:** candidate and keep all `PAYOUT_PENDING` (hash optional).
+Regression test plants a hash-less `PAYOUT_PENDING` and asserts listing.
+Operator still cannot auto-resolve (R1) — visibility only.
 
 ### P2 — `repairCompensation` refuses confirmed destination but does not complete forward
 
@@ -170,8 +176,12 @@ absent from stuck view, no execute/repair → stranded and invisible.
 | repair refuses confirmed | **Yes** |
 | `replicaLagRetries` | **Yes but shallow** |
 
-**Gaps:** repair-refuses-unknown; `transactionOutcome` NotFound→unknown unit
-test; compensation receipt-loss; do **not** add production NotFound→absent.
+**Gaps closed in T5:** repair-refuses-unknown; `transactionOutcome` missing
+receipt → unknown (not absent); T5-3 persist-fail forward; T5-4 hash-less
+stuck listing.
+
+**Still open:** compensation receipt-loss (T5-2); do **not** add production
+NotFound→absent.
 
 ## A. OK items
 
@@ -196,9 +206,9 @@ test; compensation receipt-loss; do **not** add production NotFound→absent.
 
 ## B. Findings
 
-### P1 — Add-on path prefers `TREASURY_PRIVATE_KEY` without binding it to the overlay treasury address
+### P1 — Add-on path prefers `TREASURY_PRIVATE_KEY` without binding it to the overlay treasury address — **FIXED**
 
-**Where:** `scripts/deploy-testnet.mjs:447-454`, approve `:515-525`.
+**Where:** `scripts/deploy-testnet.mjs` `resolveAddonTreasuryKey` + `runMmfAddon`.
 
 **Failure scenario:** Overlay treasury `{ address: A, privateKey: pkA }`;
 `.env` has `TREASURY_PRIVATE_KEY=pkB`. Add-on checks allowance for **A**,
@@ -207,10 +217,9 @@ via `ensureTreasuryAllowance` when overlay has inline `pkA`; if overlay uses
 `privateKeyEnv: "TREASURY_PRIVATE_KEY"` with address A while env holds pkB,
 park/subscribe signs wrong → reverts until repaired.
 
-**Remediation:** Require
-`privateKeyToAccount(treasuryKey).address` matches overlay treasury address;
-prefer overlay inline key when present. Unit-test a pure resolver helper.
-Left OPEN (decisions T5-5) — small fix, deferred for integrator ack.
+**Fix landed:** pure `resolveAddonTreasuryKey` prefers overlay inline key,
+falls back to env / `privateKeyEnv`, fails closed on address mismatch.
+Unit tests in `tests/unit/deploy-testnet-preflight.test.ts`.
 
 ### P2 — R3: crash between fund deploy and overlay merge orphans TokenizedMMF (yield buffer unrecoverable)
 
@@ -265,12 +274,12 @@ move overlay aside, orphaning live escrow + the 2026-08-07 fund.
 
 **Remediation:** I6 — flip §0 F4/F7; rewrite runbook around `mmf_addon`/`noop`.
 
-### P2 — `describePlannedActions` overclaims per-step idempotency on add-on
+### P2 — `describePlannedActions` overclaims per-step idempotency on add-on — **FIXED**
 
-**Where:** `scripts/deploy-testnet.mjs:284-285` vs T2-2.
+**Where:** `scripts/deploy-testnet.mjs` `describePlannedActions` mmf_addon case.
 
-**Remediation:** Drop "if not already funded/approved" wording until a heal
-path exists.
+**Fix landed:** wording no longer claims "if not already funded/approved";
+unit test asserts the phrase is absent.
 
 ### P2 — Corrupt overlay JSON treated as "no overlay" → plans `full`
 
@@ -352,10 +361,10 @@ overclaimed.
 
 # Recommended next commits (priority)
 
-1. **P1 (money)** Persist/reconcile compensation attempt like T4 bridge (T5-2).
-2. **P1 (money)** In-memory/retry `destinationTxHash` if DB persist fails after broadcast (T5-3).
-3. **P1 (deploy)** Bind addon treasury key to overlay address (T5-5).
+1. **P1 (money)** Persist/reconcile compensation attempt like T4 bridge (T5-2) — still OPEN.
+2. ~~In-memory `destinationTxHash` if DB persist fails (T5-3).~~ **done**
+3. ~~Bind addon treasury key to overlay address (T5-5).~~ **done**
 4. **R1 ops** Operator re-reconcile destination API.
-5. **P2** Widen `stuckPayments` to all `PAYOUT_PENDING`; execute-time recall when free short (T5-6).
+5. ~~Widen `stuckPayments` to all `PAYOUT_PENDING`.~~ **done** — still need execute-time recall when free short (T5-6).
 6. **I6 docs** Refresh §0 + MMF redeploy runbook (T5-7).
-7. **Tests** repair-refuses-unknown; `transactionOutcome` NotFound→unknown; trim vacuous T3 constant echoes.
+7. ~~repair-refuses-unknown; `transactionOutcome` NotFound→unknown.~~ **done** — trim vacuous T3 constant echoes optional.

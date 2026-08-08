@@ -169,3 +169,27 @@ Entry format:
 - Type: residual-ruling
 - Detail: Supersedes the shallow "out of money-path scope" half of T5-1's R3 note with a full deploy-surface read. Confirmed: crash between fund deploy and overlay merge re-detects mmf_addon and deploys a second fund; `mmfYieldBufferSatisfied`/`treasuryMmfApprovalSatisfied` never help (fresh address is empty); TokenizedMMF has no rescue so a minted 50k buffer on the orphan is stranded. Accept for mock-asset testnet; optional follow-up early overlay write + noop heal. Documented in Part B of `tasks/fortel2-hardening-review-2026-08.md`.
 - Resolution: ACCEPT; no code change in T5.
+
+### T5-9: Fix T5-3 — in-memory destinationTxHash before DB persist
+- Status: APPROVED
+- Type: design-choice
+- Detail: SUPERSEDES T5-3. Low-risk same-process fix: set `payment.destinationTxHash` from `bridgeTx.hash` before the Prisma update so a persist throw still lets catch reconcile. Added test-only `beforeDestinationTxHashPersist` hook + regression proving SETTLED (not COMPENSATED) when persist fails after broadcast. No schema change.
+- Resolution: landed on T5 branch with regression test.
+
+### T5-10: Fix T5-4 — stuckPayments candidates all PAYOUT_PENDING
+- Status: APPROVED
+- Type: design-choice
+- Detail: SUPERSEDES T5-4. Widen candidacy/filter from `PAYOUT_PENDING`+hash to every `PAYOUT_PENDING` so a process death between status write and hash persist cannot hide a released escrow. Visibility only — still no automated resolution (R1). Regression plants a hash-less row and asserts listing.
+- Resolution: landed on T5 branch with regression test.
+
+### T5-11: Fix T5-5 — resolveAddonTreasuryKey binds key to overlay address
+- Status: APPROVED
+- Type: design-choice
+- Detail: SUPERSEDES T5-5. Extracted pure `resolveAddonTreasuryKey` in `scripts/deploy-testnet.mjs`: prefer overlay inline privateKey, else env/`privateKeyEnv`; fail closed when derived address ≠ overlay treasury address. `runMmfAddon` uses it before any tx. Unit tests cover prefer-inline, env fallback, mismatch, missing key. Also dropped "if not already funded/approved" from `describePlannedActions` mmf_addon wording (R3 honesty).
+- Resolution: landed on T5 branch with unit tests.
+
+### T5-12: R4 regression — missing receipt maps to unknown
+- Status: APPROVED
+- Type: design-choice
+- Detail: Hermetic test calls `transactionOutcome` with a nonexistent hash on the fixture chain; expects `"unknown"` (viem throw path), not `"absent"`. Documents the trap: do not "fix" NotFound→absent. No production code change.
+- Resolution: landed in `tests/integration/executor-rpc-resilience.test.ts`.
