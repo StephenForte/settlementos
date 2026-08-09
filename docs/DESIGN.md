@@ -535,3 +535,21 @@ The brand uses illustrative SVGs of zaps / workflows + product screenshots insid
 - Don't render CTAs as pills. The brand's button is 12 px rounded rectangle.
 - Don't introduce a second chromatic accent. Orange + cream + coffee is the entire palette.
 - Don't substitute Degular Display with a cool geometric sans (e.g., generic Helvetica) — the brand's display face has warm proportions that the substitute doesn't capture.
+
+## Deviations from the source spec
+
+SettlementOS is a settlement console, not a marketing site. The following departures were forced by measurement or product constraints during the light restyle.
+
+1. **Inter for everything (no Degular Display).** Degular Display is proprietary. The spec's own "Note on Font Substitutes" recommends Inter weight 500 at hero scale. Loaded once via `next/font/google` (self-hosted; no Google Fonts `<link>`, no CSP change). Geist Mono retained for `font-mono` code/hash surfaces.
+
+2. **Primary CTA label is ink `#201515` on orange `#ff4f00`, not cream on orange.** Spec `button-primary` uses `{colors.on-primary}` (`#fffefb`) on `{colors.primary}` — measured **3.27:1**, below the 4.5:1 AA floor for normal text (`button-md` is 18px/600, under the large-text threshold of 18.66px bold). Ink on orange measures **5.40:1** and passes. Cream remains `{colors.on-primary}` for ink-filled secondary surfaces (17.65:1).
+
+3. **`{colors.body-mid}` and `{colors.mute}` are not used for body/UI text.** On canvas `#fffefb`: body `#605d52` = **6.54:1** (pass); body-mid `#939084` = **3.17:1** (fail AA); mute `#c5c0b1` = **1.80:1** (non-text only). Former `text-slate-500` call sites map to `{colors.body}` or darker. Mute is reserved for borders, dividers, and decorative separators.
+
+4. **Semantic status palette retained and retuned for cream.** The spec says not to introduce a second chromatic accent on marketing chrome. A settlement console must keep SETTLED / FAILED / MANUAL_REVIEW distinguishable. Status badges use tinted soft backgrounds with darker foregrounds, each ≥4.5:1 on its own surface (see handoff measurements).
+
+5. **Light-only; dead `prefers-color-scheme: dark` block removed.** The prior theme variables were unreachable under hardcoded slate layout classes. Dark mode is out of scope; the unreachable query was deleted so readers do not assume a dark variant exists.
+
+6. **Testnet warning uses amber warning tokens, not brand orange.** Disclosure must stay loud on cream: `#92400e` on `#fef3c7` = **6.37:1**. Brand orange is reserved for primary CTAs.
+
+7. **Destructive / secondary chromatic actions use tinted surfaces, not solid fills with ink labels.** Ink on solid `#0284c7` (quote) = 4.35:1 and on `#e11d48` (reject) = 3.79:1 — both fail AA. Those controls use `*-bg` + `*-fg` pairs that pass (≥6.6:1).
