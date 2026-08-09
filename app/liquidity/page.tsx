@@ -127,7 +127,7 @@ export default async function LiquidityPage() {
   if (!isChainReady()) {
     return (
       <Card title="Liquidity & Treasury">
-        <p className="text-sm text-amber-300">
+        <p className="text-sm text-warning-fg">
           Chains not set up. Run <code className="font-mono">npm run chain</code>,{" "}
           <code className="font-mono">npm run chain:polygon</code>, then{" "}
           <code className="font-mono">npm run setup</code>.
@@ -221,8 +221,8 @@ export default async function LiquidityPage() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-2xl font-semibold text-white">Liquidity & Treasury</h1>
-        <p className="mt-1 text-sm text-slate-400">
+        <h1 className="text-2xl font-semibold text-ink">Liquidity & Treasury</h1>
+        <p className="mt-1 text-sm text-body">
           Settlement treasury balances across {networkSections.length} EVM networks.
         </p>
       </header>
@@ -230,8 +230,8 @@ export default async function LiquidityPage() {
       {networkSections.map((section) => (
         <div key={section.networkId}>
           <div className="mb-3 flex items-baseline gap-3">
-            <h2 className="text-sm font-semibold text-white">{section.info.label}</h2>
-            <span className="text-xs text-slate-500">
+            <h2 className="text-sm font-semibold text-ink">{section.info.label}</h2>
+            <span className="text-xs text-body">
               chainId {section.info.chainId} ·{" "}
               {section.info.simulates ? `simulates ${section.info.simulates}` : "public testnet"} ·
               settlement{" "}
@@ -240,7 +240,7 @@ export default async function LiquidityPage() {
                   href={explorerAddressUrl(section.networkId, section.settlement)!}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="font-mono text-sky-300 underline decoration-sky-500/40 underline-offset-2 hover:text-sky-200"
+                  className="font-mono text-info-fg underline decoration-info-border underline-offset-2 hover:text-ink"
                 >
                   {section.settlement.slice(0, 10)}… ↗
                 </a>
@@ -250,32 +250,32 @@ export default async function LiquidityPage() {
             </span>
           </div>
           {section.unreachable && (
-            <p className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+            <p className="mb-3 rounded-md border border-warning-border bg-warning-bg px-3 py-2 text-xs text-warning-fg">
               RPC unreachable — balances unavailable right now.
             </p>
           )}
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             {section.tokens.map((t) => (
               <Card key={t.symbol}>
-                <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">{t.symbol}</p>
-                <p className="mt-2 text-2xl font-semibold text-white">
+                <p className="text-xs font-semibold uppercase tracking-widest text-body">{t.symbol}</p>
+                <p className="mt-2 text-2xl font-semibold text-ink">
                   {Number(t.balance).toLocaleString("en-US")}
                 </p>
                 <dl className="mt-3 space-y-1 text-xs">
                   <div className="flex justify-between">
-                    <dt className="text-slate-500">Reserved</dt>
-                    <dd className={Number(t.reserved) > 0 ? "text-indigo-300" : "text-slate-400"}>
+                    <dt className="text-body">Reserved</dt>
+                    <dd className={Number(t.reserved) > 0 ? "text-status-indigo-fg" : "text-body"}>
                       {Number(t.reserved).toLocaleString("en-US")}
                     </dd>
                   </div>
                   <div className="flex justify-between">
-                    <dt className="text-slate-500">Available</dt>
-                    <dd className={t.available.startsWith("-") ? "text-rose-300" : "text-emerald-300"}>
+                    <dt className="text-body">Available</dt>
+                    <dd className={t.available.startsWith("-") ? "text-danger-fg" : "text-success-fg"}>
                       {Number(t.available).toLocaleString("en-US")}
                     </dd>
                   </div>
                 </dl>
-                <p className="mt-3 truncate font-mono text-[10px] text-slate-600" title={t.address}>
+                <p className="mt-3 truncate font-mono text-[10px] text-body" title={t.address}>
                   {t.address}
                 </p>
               </Card>
@@ -286,9 +286,9 @@ export default async function LiquidityPage() {
             {section.mmf ? (
               <MmfCard {...section.mmf} />
             ) : (
-              <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 px-5 py-4">
-                <p className="text-sm font-semibold text-slate-300">Tokenized MMF</p>
-                <p className="mt-1 text-xs text-slate-500">
+              <div className="rounded-md border border-dashed border-mute bg-canvas px-5 py-4">
+                <p className="text-sm font-semibold text-ink-mid">Tokenized MMF</p>
+                <p className="mt-1 text-xs text-body">
                   {section.hasFund
                     ? "Fund deployed but unreachable right now — live values unavailable."
                     : "Not deployed on this network. Idle-balance parking is available where a fund exists."}
@@ -302,15 +302,15 @@ export default async function LiquidityPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Pending Outgoing Payments">
           {pendingOut.length === 0 ? (
-            <p className="text-sm text-slate-500">None in flight.</p>
+            <p className="text-sm text-body">None in flight.</p>
           ) : (
             <ul className="space-y-2 text-sm">
               {pendingOut.map((p) => (
                 <li key={p.id} className="flex justify-between">
-                  <span className="text-slate-300">
+                  <span className="text-ink-mid">
                     <span className="font-mono text-xs">{p.id}</span> → {p.recipient.name}
                   </span>
-                  <span className="text-slate-400">
+                  <span className="text-body">
                     {Number(p.amount).toLocaleString("en-US")} {p.sourceCurrency} · {p.status}
                   </span>
                 </li>
@@ -321,13 +321,13 @@ export default async function LiquidityPage() {
 
         <Card title="Active Liquidity Reservations">
           {activeReservations.length === 0 ? (
-            <p className="text-sm text-slate-500">No active reservations.</p>
+            <p className="text-sm text-body">No active reservations.</p>
           ) : (
             <ul className="space-y-2 text-sm">
               {activeReservations.map((r) => (
                 <li key={r.id} className="flex justify-between">
-                  <span className="font-mono text-xs text-slate-300">{r.paymentId}</span>
-                  <span className="text-indigo-300">
+                  <span className="font-mono text-xs text-ink-mid">{r.paymentId}</span>
+                  <span className="text-status-indigo-fg">
                     {Number(r.amount).toLocaleString("en-US")} {r.asset} · {r.network}
                   </span>
                 </li>
