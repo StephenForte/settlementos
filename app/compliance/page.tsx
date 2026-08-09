@@ -45,16 +45,16 @@ export default async function CompliancePage() {
     <div className="space-y-6">
       <header className="flex items-end justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-white">Compliance Queue</h1>
-          <p className="mt-1 text-sm text-slate-400">
+          <h1 className="text-2xl font-semibold text-ink">Compliance Queue</h1>
+          <p className="mt-1 text-sm text-body">
             Manual review queue, screening results, and the immutable audit log.
           </p>
         </div>
         <span
-          className={`rounded-full border px-3 py-1 text-xs font-medium ${
+          className={`rounded-pill border px-3 py-1 text-xs font-medium ${
             integrity.valid
-              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
-              : "border-rose-500/40 bg-rose-500/10 text-rose-300"
+              ? "border-success-border bg-success-bg text-success-fg"
+              : "border-danger-border bg-danger-bg text-danger-fg"
           }`}
         >
           Audit chain: {auditChainLabel(integrity)}
@@ -63,21 +63,21 @@ export default async function CompliancePage() {
 
       <Card title={`Manual Review Queue (${queue.length})`}>
         {queue.length === 0 ? (
-          <p className="text-sm text-slate-500">No payments awaiting review.</p>
+          <p className="text-sm text-body">No payments awaiting review.</p>
         ) : (
-          <ul className="divide-y divide-slate-800/60">
+          <ul className="divide-y divide-mute">
             {queue.map((p) => {
               const flags = p.complianceChecks.filter((c) => c.status !== "PASS");
               return (
                 <li key={p.id} className="flex items-center justify-between py-3">
                   <div>
-                    <span className="font-mono text-sm text-white">{p.id}</span>
-                    <p className="text-xs text-slate-400">
+                    <span className="font-mono text-sm text-ink">{p.id}</span>
+                    <p className="text-xs text-body">
                       {p.sender.name} → {p.recipient.name} ·{" "}
                       {formatAmount(p.amount, p.sourceCurrency)} {p.sourceCurrency} →{" "}
                       {p.destinationCurrency}
                     </p>
-                    <p className="mt-1 text-xs text-amber-300">
+                    <p className="mt-1 text-xs text-warning-fg">
                       {flags
                         .map((f) => `${f.checkType}: ${JSON.parse(f.reasonCodes).join("/") || f.status}`)
                         .join(" · ")}
@@ -85,7 +85,7 @@ export default async function CompliancePage() {
                   </div>
                   <Link
                     href={`/payments/${p.id}`}
-                    className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-medium text-amber-950 hover:bg-amber-400"
+                    className="rounded-md bg-warning-border px-3 py-1.5 text-xs font-semibold text-ink hover:opacity-90"
                   >
                     Review
                   </Link>
@@ -98,10 +98,10 @@ export default async function CompliancePage() {
 
       <Card title="Recent Screening Results">
         {recentChecks.length === 0 ? (
-          <p className="text-sm text-slate-500">No checks run yet.</p>
+          <p className="text-sm text-body">No checks run yet.</p>
         ) : (
           <table className="w-full text-left text-sm">
-            <thead className="text-xs uppercase tracking-wider text-slate-500">
+            <thead className="text-xs uppercase tracking-wider text-body">
               <tr>
                 <th className="pb-2 pr-4">Payment</th>
                 <th className="pb-2 pr-4">Check</th>
@@ -110,20 +110,20 @@ export default async function CompliancePage() {
                 <th className="pb-2">Score</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/60">
+            <tbody className="divide-y divide-mute">
               {recentChecks.map((c) => (
                 <tr key={c.id}>
                   <td className="py-2 pr-4">
-                    <Link href={`/payments/${c.paymentId}`} className="font-mono text-xs text-emerald-400 hover:underline">
+                    <Link href={`/payments/${c.paymentId}`} className="font-mono text-xs text-primary hover:underline">
                       {c.paymentId}
                     </Link>
                   </td>
-                  <td className="py-2 pr-4 text-slate-300">{c.checkType.replaceAll("_", " ")}</td>
-                  <td className="py-2 pr-4 font-mono text-xs text-slate-400">{c.provider}</td>
+                  <td className="py-2 pr-4 text-ink-mid">{c.checkType.replaceAll("_", " ")}</td>
+                  <td className="py-2 pr-4 font-mono text-xs text-body">{c.provider}</td>
                   <td className="py-2 pr-4">
                     <StatusBadge status={c.status} />
                   </td>
-                  <td className="py-2 text-slate-300">{c.score}</td>
+                  <td className="py-2 text-ink-mid">{c.score}</td>
                 </tr>
               ))}
             </tbody>
@@ -135,22 +135,22 @@ export default async function CompliancePage() {
         <ol className="space-y-1.5">
           {auditEvents.map((e) => (
             <li key={e.id} className="flex items-baseline gap-3 text-xs">
-              <span className="shrink-0 font-mono text-slate-600">#{e.id}</span>
-              <span className="shrink-0 font-mono text-slate-500">
+              <span className="shrink-0 font-mono text-body">#{e.id}</span>
+              <span className="shrink-0 font-mono text-body">
                 {new Date(e.createdAt).toLocaleTimeString()}
               </span>
-              <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 font-mono text-slate-300">
+              <span className="shrink-0 rounded-sm bg-canvas px-1.5 py-0.5 font-mono text-ink-mid">
                 {e.action}
               </span>
               {e.paymentId && (
-                <Link href={`/payments/${e.paymentId}`} className="shrink-0 font-mono text-emerald-500 hover:underline">
+                <Link href={`/payments/${e.paymentId}`} className="shrink-0 font-mono text-primary hover:underline">
                   {e.paymentId}
                 </Link>
               )}
-              <span className="truncate text-slate-500" title={e.detail}>
+              <span className="truncate text-body" title={e.detail}>
                 {e.detail !== "{}" ? e.detail : ""}
               </span>
-              <span className="ml-auto shrink-0 font-mono text-[10px] text-slate-600">
+              <span className="ml-auto shrink-0 font-mono text-[10px] text-body">
                 {e.hash.slice(0, 8)}
               </span>
             </li>
