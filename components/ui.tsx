@@ -51,7 +51,7 @@ export function Card({
   className?: string;
 }) {
   return (
-    <section className={`rounded-md border border-mute bg-canvas-soft p-xl ${className}`}>
+    <section className={`rounded-md border border-mute bg-canvas-soft p-6 ${className}`}>
       {title && (
         <h2 className="mb-4 text-xs font-semibold uppercase tracking-widest text-body">{title}</h2>
       )}
@@ -62,7 +62,7 @@ export function Card({
 
 export function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
-    <div className="rounded-md border border-mute bg-canvas-soft p-xl">
+    <div className="rounded-md border border-mute bg-canvas-soft p-6">
       <p className="text-xs font-medium uppercase tracking-widest text-body">{label}</p>
       <p className="mt-2 text-2xl font-semibold text-ink">{value}</p>
       {sub && <p className="mt-1 text-xs text-body">{sub}</p>}

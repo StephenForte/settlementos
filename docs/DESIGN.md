@@ -553,3 +553,5 @@ SettlementOS is a settlement console, not a marketing site. The following depart
 6. **Testnet warning uses amber warning tokens, not brand orange.** Disclosure must stay loud on cream: `#92400e` on `#fef3c7` = **6.37:1**. Brand orange is reserved for primary CTAs.
 
 7. **Destructive / secondary chromatic actions use tinted surfaces, not solid fills with ink labels.** Ink on solid `#0284c7` (quote) = 4.35:1 and on `#e11d48` (reject) = 3.79:1 — both fail AA. Those controls use `*-bg` + `*-fg` pairs that pass (≥6.6:1).
+
+8. **Spacing tokens are `:root` CSS variables (`--space-*`), not `@theme --spacing-*`.** Tailwind v4 resolves `max-w-{sm,md,lg,xl,2xl…}` against `--spacing-*` before `--container-*`. Registering `--spacing-md: 12px` made `max-w-md` compute to 12px and crushed the login column (measured live: login `maxWidth: 12px`). Card padding uses Tailwind `p-6` (= 24px = `{spacing.xl}`).

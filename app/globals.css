@@ -67,6 +67,17 @@
   --status-cyan-fg: #155e75;
   --status-cyan-bg: #cffafe;
   --status-cyan-border: #67e8f9;
+
+  /* Spacing scale (CSS vars only — see @theme note on max-w collision) */
+  --space-xxs: 2px;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-2xl: 32px;
+  --space-3xl: 48px;
+  --space-4xl: 64px;
 }
 
 @theme inline {
@@ -153,16 +164,12 @@
   --text-button-sm: 14.4px;
   --text-button-sm--line-height: 14.4px;
 
-  /* Spacing */
-  --spacing-xxs: 2px;
-  --spacing-xs: 4px;
-  --spacing-sm: 8px;
-  --spacing-md: 12px;
-  --spacing-lg: 16px;
-  --spacing-xl: 24px;
-  --spacing-2xl: 32px;
-  --spacing-3xl: 48px;
-  --spacing-4xl: 64px;
+  /*
+   * Spacing tokens live on :root as --space-* (below), NOT in this @theme
+   * block. Tailwind v4 resolves max-w-{sm,md,lg,xl,2xl…} against --spacing-*
+   * before --container-*, so registering --spacing-md: 12px made max-w-md
+   * compute to 12px and crushed every constrained page column.
+   */
 
   /* Radius — canonical card/button is 12px */
   --radius-sm: 6px;
