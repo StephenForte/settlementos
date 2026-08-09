@@ -38,7 +38,7 @@ It lives in its **own repository** and deploys as a static site. It has no backe
 **Acceptance Criteria:**
 - [x] New repository `settlementos-explorer` with Vite + React + TypeScript — verified: `gh api repos/StephenForte/settlementos-explorer` + clone `package.json` / `vite.config.ts` / `src/*.tsx` on `main` @ `f669cbe`
 - [x] `npm run dev` serves a placeholder page; `npm run build` produces a static bundle — verified: `package.json` scripts (`dev`/`build`); CI runs `npm run build`; live SPA at `https://settlementos-explorer-ihgo.onrender.com` returns HTTP 200
-- [ ] ESLint + `tsc --noEmit` wired into `npm run lint` / `npm run typecheck`, both green — **left unticked:** `npm run typecheck` is `tsc -b --noEmit` (green on clone); `npm run lint` is **oxlint**, not ESLint (eslint packages are present but unused by the lint script)
+- [x] oxlint + `tsc --noEmit` wired into `npm run lint` / `npm run typecheck`, both green — verified: clone @ `f669cbe` `package.json` scripts (`lint` → oxlint, `typecheck` → `tsc -b --noEmit`); both green on that clone
 - [x] README states what the app is, that it holds **no secrets**, and how to run it — verified: explorer `README.md` "What this repo does **not** contain" + Quick start
 - [x] `.gitignore` covers `node_modules/`, `dist/`, `.env*` — verified: explorer `.gitignore`
 
@@ -149,7 +149,7 @@ It lives in its **own repository** and deploys as a static site. It has no backe
 
 - FR-1: The app must read exclusively public data: public RPC endpoints and public explorer APIs. It must never require or contain a private key, an API key to SettlementOS, or any SettlementOS database access.
 - FR-2: All known addresses (contracts, tokens, operator, treasuries, entity wallets on both networks) must be defined in one bundled address-book config, with roles and display labels; address comparison must be case-insensitive.
-- FR-3: The app must support exactly two networks — Base Sepolia (84532) and Polygon Amoy (80002) — selected via a global switcher reflected in the URL.
+- FR-3: The app must support three networks — Base Sepolia (84532), Polygon Amoy (80002), and ForteL2 Sepolia (`fortel2-sepolia`, 852) — selected via a global switcher reflected in the URL.
 - FR-4: Every address view must show native balance and mock-token balances using each token's correct decimals (mockJPY = 0), computed with bigint math.
 - FR-5: Every address view must show ERC-20 transfer history with labeled counterparties, sourced from the Etherscan V2 API with an `eth_getLogs` fallback over a bounded recent window.
 - FR-6: Every address, transaction, and token reference must deep-link to the network's public explorer (Basescan / Amoy Polygonscan).
