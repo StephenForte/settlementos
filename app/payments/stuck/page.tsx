@@ -16,9 +16,9 @@ export default async function StuckPaymentsPage() {
   if (principal?.role !== "OPERATOR") {
     return (
       <Card title="Needs Attention">
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-body">
           Operator access required.{" "}
-          <Link href="/login" className="text-emerald-400 hover:underline">
+          <Link href="/login" className="text-primary hover:underline">
             Sign in
           </Link>{" "}
           with an operator key to view stuck payments.
@@ -48,8 +48,8 @@ export default async function StuckPaymentsPage() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-2xl font-semibold text-white">Needs Attention</h1>
-        <p className="mt-1 text-sm text-slate-400">
+        <h1 className="text-2xl font-semibold text-ink">Needs Attention</h1>
+        <p className="mt-1 text-sm text-body">
           Payments whose funds are neither delivered nor returned — a compensation transfer that
           failed, or an escrow that was never resolved on-chain. Escrow state is read live from the
           source network.
@@ -58,7 +58,7 @@ export default async function StuckPaymentsPage() {
       <Card>
         <RepairList payments={payments} />
       </Card>
-      <Link href="/payments" className="text-sm text-slate-400 underline-offset-4 hover:text-white hover:underline">
+      <Link href="/payments" className="text-sm text-body underline-offset-4 hover:text-ink hover:underline">
         ← All payments
       </Link>
     </div>
