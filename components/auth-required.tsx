@@ -11,9 +11,9 @@ import { Card } from "@/components/ui";
 export function AuthRequired({ message }: { message: string }) {
   return (
     <Card title="Sign in required">
-      <p className="text-sm text-slate-400">
+      <p className="text-sm text-body">
         {message}{" "}
-        <Link href="/login" className="text-emerald-400 hover:underline">
+        <Link href="/login" className="text-primary hover:underline">
           Sign in
         </Link>
         .
