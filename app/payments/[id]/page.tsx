@@ -68,7 +68,7 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
   }
 
   if (!payment) {
-    return <p className="text-sm text-slate-500">Loading payment…</p>;
+    return <p className="text-sm text-body">Loading payment…</p>;
   }
 
   const routes: any[] = payment.quoteJson ? JSON.parse(payment.quoteJson) : [];
@@ -84,22 +84,22 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
       <header className="flex items-start justify-between">
         <div>
           <div className="flex items-center gap-3">
-            <h1 className="font-mono text-xl font-semibold text-white">{payment.id}</h1>
+            <h1 className="font-mono text-xl font-semibold text-ink">{payment.id}</h1>
             <StatusBadge status={status} />
           </div>
-          <p className="mt-1 text-sm text-slate-400">
+          <p className="mt-1 text-sm text-body">
             {payment.sender.name} ({payment.sender.country}) → {payment.recipient.name} (
             {payment.recipient.country}) · {payment.referenceId || "no reference"} ·{" "}
             {payment.purpose?.replaceAll("_", " ") || "unspecified purpose"}
           </p>
         </div>
         <div className="text-right">
-          <p className="text-2xl font-semibold text-white">
+          <p className="text-2xl font-semibold text-ink">
             {fmt(payment.amount, payment.sourceCurrency)}{" "}
-            <span className="text-base text-slate-400">{payment.sourceCurrency}</span>
+            <span className="text-base text-body">{payment.sourceCurrency}</span>
           </p>
           {payment.destinationAmount && (
-            <p className="text-sm text-emerald-300">
+            <p className="text-sm text-success-fg">
               → {fmt(payment.destinationAmount, payment.destinationCurrency)} {payment.destinationCurrency}
             </p>
           )}
@@ -115,25 +115,25 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
             return (
               <li key={s} className="flex items-center">
                 <span
-                  className={`rounded-full px-2 py-0.5 text-[10px] font-medium tracking-wide ${
+                  className={`rounded-pill px-2 py-0.5 text-[10px] font-medium tracking-wide ${
                     isCurrent
-                      ? "bg-emerald-500 text-emerald-950"
+                      ? "bg-primary text-ink"
                       : reached
-                        ? "bg-emerald-500/20 text-emerald-300"
-                        : "bg-slate-800 text-slate-500"
+                        ? "bg-success-bg text-success-fg"
+                        : "bg-canvas-soft text-body"
                   }`}
                 >
                   {s.replaceAll("_", " ")}
                 </span>
                 {i < LIFECYCLE.length - 1 && (
-                  <span className={`mx-1 h-px w-3 ${reached && lifecycleIdx > i ? "bg-emerald-500/50" : "bg-slate-700"}`} />
+                  <span className={`mx-1 h-px w-3 ${reached && lifecycleIdx > i ? "bg-success-border" : "bg-mute"}`} />
                 )}
               </li>
             );
           })}
         </ol>
         {isTerminalBad && (
-          <p className="mt-3 text-sm text-rose-300">
+          <p className="mt-3 text-sm text-danger-fg">
             Terminal state: {status}
             {payment.failureReason ? ` — ${payment.failureReason}` : ""}
           </p>
@@ -147,7 +147,7 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
             <button
               onClick={() => action("quote", `/api/payments/${id}/quote`)}
               disabled={!!busy}
-              className="rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium text-sky-950 hover:bg-sky-400 disabled:opacity-50"
+              className="rounded-md bg-info-border px-4 py-2 text-sm font-semibold text-ink hover:opacity-90 disabled:opacity-50"
             >
               {busy === "quote" ? "Quoting…" : "Get Route Quote"}
             </button>
@@ -156,7 +156,7 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
             <button
               onClick={() => action("execute", `/api/payments/${id}/execute`, { route_id: selectedRoute })}
               disabled={!!busy}
-              className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-emerald-950 hover:bg-emerald-400 disabled:opacity-50"
+              className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-ink hover:opacity-90 disabled:opacity-50"
             >
               {busy === "execute" ? "Running compliance + settlement…" : "Run Compliance & Execute"}
             </button>
@@ -165,7 +165,7 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
             <button
               onClick={() => action("execute", `/api/payments/${id}/execute`)}
               disabled={!!busy}
-              className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-emerald-950 hover:bg-emerald-400 disabled:opacity-50"
+              className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-ink hover:opacity-90 disabled:opacity-50"
             >
               {busy === "execute" ? "Settling on-chain…" : "Execute Settlement"}
             </button>
@@ -175,14 +175,14 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
               <button
                 onClick={() => action("approve", `/api/payments/${id}/review`, { decision: "approve" })}
                 disabled={!!busy}
-                className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-emerald-950 hover:bg-emerald-400 disabled:opacity-50"
+                className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-ink hover:opacity-90 disabled:opacity-50"
               >
                 Approve (Compliance Reviewer)
               </button>
               <button
                 onClick={() => action("reject", `/api/payments/${id}/review`, { decision: "reject" })}
                 disabled={!!busy}
-                className="rounded-lg bg-rose-500 px-4 py-2 text-sm font-medium text-rose-950 hover:bg-rose-400 disabled:opacity-50"
+                className="rounded-md bg-danger-border px-4 py-2 text-sm font-semibold text-ink hover:opacity-90 disabled:opacity-50"
               >
                 Reject
               </button>
@@ -192,7 +192,7 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
             <button
               onClick={() => action("cancel", `/api/payments/${id}/cancel`)}
               disabled={!!busy}
-              className="rounded-lg border border-slate-600 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+              className="rounded-md border border-mute px-4 py-2 text-sm text-ink-mid hover:bg-canvas-soft disabled:opacity-50"
             >
               Cancel Payment
             </button>
@@ -200,14 +200,14 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
           {status === "SETTLED" && (
             <a
               href="/api/reconciliation"
-              className="rounded-lg border border-slate-600 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800"
+              className="rounded-md border border-mute px-4 py-2 text-sm text-ink-mid hover:bg-canvas-soft"
             >
               Export Reconciliation CSV
             </a>
           )}
         </div>
         {error && (
-          <p className="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">
+          <p className="mt-3 rounded-md border border-danger-border bg-danger-bg px-3 py-2 text-sm text-danger-fg">
             {error}
           </p>
         )}
@@ -226,27 +226,27 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
                   type="button"
                   disabled={!selectable}
                   onClick={() => setSelectedRoute(r.route_id)}
-                  className={`rounded-xl border p-4 text-left transition-colors ${
-                    selected ? "border-emerald-500 bg-emerald-500/5" : "border-slate-700 bg-slate-900/40"
-                  } ${selectable ? "cursor-pointer hover:border-emerald-400" : "cursor-default"}`}
+                  className={`rounded-md border p-4 text-left transition-colors ${
+                    selected ? "border-primary bg-primary/5" : "border-mute bg-canvas"
+                  } ${selectable ? "cursor-pointer hover:border-primary" : "cursor-default"}`}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-semibold text-white">
+                    <span className="text-sm font-semibold text-ink">
                       {r.strategy.replaceAll("_", " ")}
                     </span>
                     {r.recommended && (
-                      <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-300">
+                      <span className="rounded-pill bg-success-bg px-2 py-0.5 text-[10px] font-medium text-success-fg">
                         RECOMMENDED
                       </span>
                     )}
                   </div>
-                  <p className="mt-1 text-xs leading-relaxed text-slate-400">{r.description}</p>
+                  <p className="mt-1 text-xs leading-relaxed text-body">{r.description}</p>
                   {r.hops && (
                     <div className="mt-2 flex flex-wrap items-center gap-1">
                       {r.hops.map((hop: string, i: number) => (
                         <Fragment key={i}>
-                          {i > 0 && <span className="text-slate-600">→</span>}
-                          <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300">
+                          {i > 0 && <span className="text-body">→</span>}
+                          <span className="rounded bg-canvas-soft px-1.5 py-0.5 text-[10px] text-ink-mid">
                             {hop}
                           </span>
                         </Fragment>
@@ -254,32 +254,32 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
                     </div>
                   )}
                   <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                    <dt className="text-slate-500">FX rate</dt>
-                    <dd className="text-slate-200">
+                    <dt className="text-body">FX rate</dt>
+                    <dd className="text-ink">
                       {Number(r.estimated_fx_rate).toFixed(4)}{" "}
-                      <span className="text-slate-500">(mid {Number(r.mid_market_rate).toFixed(4)})</span>
+                      <span className="text-body">(mid {Number(r.mid_market_rate).toFixed(4)})</span>
                     </dd>
-                    <dt className="text-slate-500">Destination amount</dt>
-                    <dd className="text-slate-200">
+                    <dt className="text-body">Destination amount</dt>
+                    <dd className="text-ink">
                       {fmt(r.estimated_destination_amount, payment.destinationCurrency)}{" "}
                       {payment.destinationCurrency}
                     </dd>
-                    <dt className="text-slate-500">Est. gas</dt>
-                    <dd className="text-slate-200">${r.estimated_gas_usd}</dd>
-                    <dt className="text-slate-500">Est. time</dt>
-                    <dd className="text-slate-200">
+                    <dt className="text-body">Est. gas</dt>
+                    <dd className="text-ink">${r.estimated_gas_usd}</dd>
+                    <dt className="text-body">Est. time</dt>
+                    <dd className="text-ink">
                       {r.estimated_time_seconds < 60
                         ? `${r.estimated_time_seconds}s`
                         : `${Math.round(r.estimated_time_seconds / 3600)}h`}
                     </dd>
-                    <dt className="text-slate-500">Liquidity</dt>
+                    <dt className="text-body">Liquidity</dt>
                     <dd
                       className={
                         !r.liquidity_available
-                          ? "text-rose-300"
+                          ? "text-danger-fg"
                           : r.recall_required
-                            ? "text-amber-300"
-                            : "text-emerald-300"
+                            ? "text-warning-fg"
+                            : "text-success-fg"
                       }
                     >
                       {!r.liquidity_available
@@ -288,16 +288,16 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
                           ? "Available — MMF recall (T+0)"
                           : "Available"}
                     </dd>
-                    <dt className="text-slate-500">Route</dt>
-                    <dd className="text-slate-200">
+                    <dt className="text-body">Route</dt>
+                    <dd className="text-ink">
                       {r.source_network === r.destination_network
                         ? r.source_network
                         : `${r.source_network} → ${r.destination_network}`}
                     </dd>
                     {r.bridge_fee_bps > 0 && (
                       <>
-                        <dt className="text-slate-500">Bridge fee</dt>
-                        <dd className="text-slate-200">{r.bridge_fee_bps} bps</dd>
+                        <dt className="text-body">Bridge fee</dt>
+                        <dd className="text-ink">{r.bridge_fee_bps} bps</dd>
                       </>
                     )}
                   </dl>
@@ -306,8 +306,8 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
             })}
           </div>
           {fees && (
-            <div className="mt-4 rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-400">
-              <span className="font-medium text-slate-300">Fee breakdown:</span> platform fee{" "}
+            <div className="mt-4 rounded-md border border-mute bg-canvas-soft p-3 text-xs text-body">
+              <span className="font-medium text-ink-mid">Fee breakdown:</span> platform fee{" "}
               {fmt(fees.platform_fee, payment.sourceCurrency)} {payment.sourceCurrency} (
               {fees.platform_fee_bps} bps) · FX spread {fees.fx_spread_bps} bps · slippage est.{" "}
               {fees.slippage_bps} bps · network gas ≈ ${fees.estimated_gas_usd}
@@ -320,7 +320,7 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
       {payment.complianceChecks.length > 0 && (
         <Card title="Compliance Checks">
           <table className="w-full text-left text-sm">
-            <thead className="text-xs uppercase tracking-wider text-slate-500">
+            <thead className="text-xs uppercase tracking-wider text-body">
               <tr>
                 <th className="pb-2 pr-4">Check</th>
                 <th className="pb-2 pr-4">Provider</th>
@@ -329,16 +329,16 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
                 <th className="pb-2">Reason Codes</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/60">
+            <tbody className="divide-y divide-mute">
               {payment.complianceChecks.map((c: any) => (
                 <tr key={c.id}>
-                  <td className="py-2 pr-4 text-slate-200">{c.checkType.replaceAll("_", " ")}</td>
-                  <td className="py-2 pr-4 font-mono text-xs text-slate-400">{c.provider}</td>
+                  <td className="py-2 pr-4 text-ink">{c.checkType.replaceAll("_", " ")}</td>
+                  <td className="py-2 pr-4 font-mono text-xs text-body">{c.provider}</td>
                   <td className="py-2 pr-4">
                     <StatusBadge status={c.status} />
                   </td>
-                  <td className="py-2 pr-4 text-slate-300">{c.score}</td>
-                  <td className="py-2 text-xs text-slate-400">
+                  <td className="py-2 pr-4 text-ink-mid">{c.score}</td>
+                  <td className="py-2 text-xs text-body">
                     {JSON.parse(c.reasonCodes).join(", ") || "—"}
                   </td>
                 </tr>
@@ -351,52 +351,52 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
       {/* Settlement detail */}
       <Card title="Settlement Detail">
         <dl className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm md:grid-cols-3">
-          <dt className="text-slate-500">Source asset</dt>
-          <dd className="md:col-span-2 text-slate-200">
+          <dt className="text-body">Source asset</dt>
+          <dd className="md:col-span-2 text-ink">
             {payment.sourceAsset} on {payment.sourceNetwork}
           </dd>
-          <dt className="text-slate-500">Destination asset</dt>
-          <dd className="md:col-span-2 text-slate-200">
+          <dt className="text-body">Destination asset</dt>
+          <dd className="md:col-span-2 text-ink">
             {payment.destinationAsset} on {payment.destinationNetwork} → {payment.destinationCurrency}{" "}
             ledger credit
           </dd>
-          <dt className="text-slate-500">Escrow tx</dt>
+          <dt className="text-body">Escrow tx</dt>
           <dd className="md:col-span-2">
             <Hash value={payment.txHash} href={explorerTxUrl(payment.sourceNetwork, payment.txHash)} />
-            {payment.txHash && <span className="ml-2 text-xs text-slate-500">{payment.sourceNetwork}</span>}
+            {payment.txHash && <span className="ml-2 text-xs text-body">{payment.sourceNetwork}</span>}
           </dd>
-          <dt className="text-slate-500">Settlement tx</dt>
+          <dt className="text-body">Settlement tx</dt>
           <dd className="md:col-span-2">
             <Hash
               value={payment.settleTxHash}
               href={explorerTxUrl(payment.sourceNetwork, payment.settleTxHash)}
             />
             {payment.settleTxHash && (
-              <span className="ml-2 text-xs text-slate-500">{payment.sourceNetwork}</span>
+              <span className="ml-2 text-xs text-body">{payment.sourceNetwork}</span>
             )}
           </dd>
           {payment.destinationTxHash && (
             <>
-              <dt className="text-slate-500">Bridge payout tx</dt>
+              <dt className="text-body">Bridge payout tx</dt>
               <dd className="md:col-span-2">
                 <Hash
                   value={payment.destinationTxHash}
                   href={explorerTxUrl(payment.destinationNetwork, payment.destinationTxHash)}
                 />
-                <span className="ml-2 text-xs text-cyan-300">{payment.destinationNetwork}</span>
+                <span className="ml-2 text-xs text-status-cyan-fg">{payment.destinationNetwork}</span>
               </dd>
             </>
           )}
-          <dt className="text-slate-500">On-chain payment ID</dt>
+          <dt className="text-body">On-chain payment ID</dt>
           <dd className="md:col-span-2">
             <Hash value={payment.onchainPaymentId} />
           </dd>
-          <dt className="text-slate-500">FX rate applied</dt>
-          <dd className="md:col-span-2 text-slate-200">{payment.fxRate ?? "—"}</dd>
+          <dt className="text-body">FX rate applied</dt>
+          <dd className="md:col-span-2 text-ink">{payment.fxRate ?? "—"}</dd>
           {payment.reservation && (
             <>
-              <dt className="text-slate-500">Liquidity reservation</dt>
-              <dd className="md:col-span-2 text-slate-200">
+              <dt className="text-body">Liquidity reservation</dt>
+              <dd className="md:col-span-2 text-ink">
                 {fmt(payment.reservation.amount, payment.destinationCurrency)} {payment.reservation.asset} ·{" "}
                 {payment.reservation.status}
               </dd>
@@ -404,8 +404,8 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
           )}
           {payment.ledgerCredits.map((c: any) => (
             <Fragment key={c.id}>
-              <dt className="text-slate-500">Ledger credit</dt>
-              <dd className="md:col-span-2 text-emerald-300">
+              <dt className="text-body">Ledger credit</dt>
+              <dd className="md:col-span-2 text-success-fg">
                 {fmt(c.amount, c.currency)} {c.currency} credited to {payment.recipient.name}
               </dd>
             </Fragment>
@@ -416,21 +416,21 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
       {/* Audit trail */}
       <Card title="Audit Trail">
         {payment.auditEvents.length === 0 ? (
-          <p className="text-sm text-slate-500">No events yet.</p>
+          <p className="text-sm text-body">No events yet.</p>
         ) : (
           <ol className="space-y-2">
             {payment.auditEvents.map((e: any) => (
               <li key={e.id} className="flex items-baseline gap-3 text-sm">
-                <span className="shrink-0 font-mono text-[11px] text-slate-500">
+                <span className="shrink-0 font-mono text-[11px] text-body">
                   {new Date(e.createdAt).toLocaleTimeString()}
                 </span>
-                <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[11px] text-slate-300">
+                <span className="shrink-0 rounded bg-canvas-soft px-1.5 py-0.5 font-mono text-[11px] text-ink-mid">
                   {e.action}
                 </span>
-                <span className="truncate text-xs text-slate-400" title={e.detail}>
+                <span className="truncate text-xs text-body" title={e.detail}>
                   {e.detail !== "{}" ? e.detail : ""}
                 </span>
-                <span className="ml-auto shrink-0 font-mono text-[10px] text-slate-600" title={`hash ${e.hash}`}>
+                <span className="ml-auto shrink-0 font-mono text-[10px] text-body" title={`hash ${e.hash}`}>
                   #{e.hash.slice(0, 8)}
                 </span>
               </li>
