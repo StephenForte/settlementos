@@ -51,14 +51,14 @@ export default async function DashboardHome() {
     <div className="space-y-6">
       <header className="flex items-end justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-white">Settlement Dashboard</h1>
-          <p className="mt-1 text-sm text-slate-400">
+          <h1 className="text-2xl font-semibold text-ink">Settlement Dashboard</h1>
+          <p className="mt-1 text-sm text-body">
             Cross-border B2B stablecoin settlement · local EVM network (Base Sepolia–compatible)
           </p>
         </div>
         <Link
           href="/payments/new"
-          className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-emerald-950 hover:bg-emerald-400"
+          className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-ink hover:opacity-90"
         >
           New Payment
         </Link>
@@ -78,11 +78,11 @@ export default async function DashboardHome() {
       {stuck.length > 0 && (
         <Card title="Needs Attention">
           <div className="flex items-center justify-between text-sm">
-            <span className="text-rose-300">
+            <span className="text-danger-fg">
               {stuck.length} payment{stuck.length === 1 ? "" : "s"} holding funds that were neither
               delivered nor returned
             </span>
-            <Link href="/payments/stuck" className="text-emerald-400 hover:underline">
+            <Link href="/payments/stuck" className="text-primary hover:underline">
               Repair →
             </Link>
           </div>
@@ -94,11 +94,11 @@ export default async function DashboardHome() {
           <ul className="space-y-2">
             {inReview.map((p) => (
               <li key={p.id} className="flex items-center justify-between text-sm">
-                <span className="text-amber-300">
+                <span className="text-warning-fg">
                   {p.id} — {p.sender.name} → {p.recipient.name} ({p.sourceCurrency}{" "}
                   {formatAmount(p.amount, p.sourceCurrency)}) requires manual review
                 </span>
-                <Link href={`/payments/${p.id}`} className="text-emerald-400 hover:underline">
+                <Link href={`/payments/${p.id}`} className="text-primary hover:underline">
                   Review →
                 </Link>
               </li>
@@ -109,16 +109,16 @@ export default async function DashboardHome() {
 
       <Card title="Recent Payments">
         {recent.length === 0 ? (
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-body">
             No payments yet.{" "}
-            <Link href="/payments/new" className="text-emerald-400 hover:underline">
+            <Link href="/payments/new" className="text-primary hover:underline">
               Create the first one
             </Link>
             .
           </p>
         ) : (
           <table className="w-full text-left text-sm">
-            <thead className="text-xs uppercase tracking-wider text-slate-500">
+            <thead className="text-xs uppercase tracking-wider text-body">
               <tr>
                 <th className="pb-2 pr-4">Payment</th>
                 <th className="pb-2 pr-4">Corridor</th>
@@ -128,24 +128,24 @@ export default async function DashboardHome() {
                 <th className="pb-2" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/60">
+            <tbody className="divide-y divide-mute">
               {recent.map((p) => (
                 <tr key={p.id}>
                   <td className="py-2.5 pr-4">
                     <span className="font-mono text-xs">{p.id}</span>
-                    <div className="text-xs text-slate-500">
+                    <div className="text-xs text-body">
                       {p.sender.name} → {p.recipient.name}
                     </div>
                   </td>
-                  <td className="py-2.5 pr-4 text-slate-300">
+                  <td className="py-2.5 pr-4 text-ink-mid">
                     {p.sourceCurrency} → {p.destinationCurrency}
-                    <div className="text-[10px] text-slate-500">
+                    <div className="text-[10px] text-body">
                       {p.sourceNetwork === p.destinationNetwork
                         ? p.sourceNetwork
                         : `${p.sourceNetwork} ⇢ ${p.destinationNetwork}`}
                     </div>
                   </td>
-                  <td className="py-2.5 pr-4 text-slate-200">
+                  <td className="py-2.5 pr-4 text-ink">
                     {formatAmount(p.amount, p.sourceCurrency)} {p.sourceCurrency}
                   </td>
                   <td className="py-2.5 pr-4">
@@ -155,7 +155,7 @@ export default async function DashboardHome() {
                     <Hash value={p.txHash} href={explorerTxUrl(p.sourceNetwork, p.txHash)} />
                   </td>
                   <td className="py-2.5 text-right">
-                    <Link href={`/payments/${p.id}`} className="text-emerald-400 hover:underline">
+                    <Link href={`/payments/${p.id}`} className="text-primary hover:underline">
                       View
                     </Link>
                   </td>
@@ -167,11 +167,13 @@ export default async function DashboardHome() {
       </Card>
 
       <div className="flex gap-3 text-sm">
-        <a href="/api/reconciliation" className="text-slate-400 underline-offset-4 hover:text-white hover:underline">
+        <a href="/api/reconciliation" className="text-body underline-offset-4 hover:text-ink hover:underline">
           Export reconciliation CSV
         </a>
-        <span className="text-slate-700">·</span>
-        <Link href="/liquidity" className="text-slate-400 underline-offset-4 hover:text-white hover:underline">
+        <span className="text-mute" aria-hidden>
+          ·
+        </span>
+        <Link href="/liquidity" className="text-body underline-offset-4 hover:text-ink hover:underline">
           Liquidity dashboard
         </Link>
       </div>
