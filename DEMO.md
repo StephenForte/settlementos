@@ -266,10 +266,21 @@ as onto Base Sepolia, and nothing here touches the sequencer. For infra
 questions see ForteL2's `tasks/coordination-settlementos.md` and
 `tasks/prd-money-rail.md`.
 
+ForteL2 is operated on the operator's Mac — a personal, best-effort L2 with
+**no uptime SLA**. Base Sepolia and Polygon Amoy are public testnets run by
+real operators; ForteL2 is one person's stack. A demo against 852 only works
+while that sequencer is up. An optional Render read replica can back
+balance/display reads, but it is read-only, not a substitute for the
+sequencer, and has OOM'd on catch-up on small instances (see
+[`tasks/fortel2-l2-prereqs.md`](tasks/fortel2-l2-prereqs.md) § "Replica OOM on
+catch-up").
+
 ### One-time setup (on the machine running the ForteL2 sequencer)
 
 1. **Preflight** — `cast chain-id --rpc-url http://127.0.0.1:9545` must print
    `852` (the write RPC is the sequencer's loopback; no public exposure).
+   The sequencer must be running on this machine for Part E — there is no
+   public write RPC.
 2. **Fund the deployer on L2** — no faucet exists: send ~0.05 Sepolia L1 ETH
    from the deployer to ForteL2's `OptimismPortalProxy` (address in ForteL2
    `deployments/rail-interface.json`); the deposit mints the same amount on 852.
