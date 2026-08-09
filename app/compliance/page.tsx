@@ -85,7 +85,7 @@ export default async function CompliancePage() {
                   </div>
                   <Link
                     href={`/payments/${p.id}`}
-                    className="rounded-md bg-warning-border px-3 py-1.5 text-xs font-semibold text-ink hover:opacity-90"
+                    className="rounded-md border border-warning-border bg-warning-bg px-3 py-1.5 text-xs font-semibold text-warning-fg hover:opacity-90"
                   >
                     Review
                   </Link>

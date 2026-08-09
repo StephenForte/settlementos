@@ -147,7 +147,7 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
             <button
               onClick={() => action("quote", `/api/payments/${id}/quote`)}
               disabled={!!busy}
-              className="rounded-md bg-info-border px-4 py-2 text-sm font-semibold text-ink hover:opacity-90 disabled:opacity-50"
+              className="rounded-md border border-info-border bg-info-bg px-4 py-2 text-sm font-semibold text-info-fg hover:opacity-90 disabled:opacity-50"
             >
               {busy === "quote" ? "Quoting…" : "Get Route Quote"}
             </button>
@@ -182,7 +182,7 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
               <button
                 onClick={() => action("reject", `/api/payments/${id}/review`, { decision: "reject" })}
                 disabled={!!busy}
-                className="rounded-md bg-danger-border px-4 py-2 text-sm font-semibold text-ink hover:opacity-90 disabled:opacity-50"
+                className="rounded-md border border-danger-border bg-danger-bg px-4 py-2 text-sm font-semibold text-danger-fg hover:opacity-90 disabled:opacity-50"
               >
                 Reject
               </button>
