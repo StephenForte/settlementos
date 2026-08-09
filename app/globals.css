@@ -1,26 +1,178 @@
 @import "tailwindcss";
 
+/*
+ * SettlementOS design tokens — Zapier-inspired warm cream system.
+ * Hex literals live ONLY in this file. Components/pages consume via
+ * Tailwind theme utilities (bg-canvas, text-ink, rounded-md, …).
+ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Brand */
+  --canvas: #fffefb;
+  --canvas-soft: #f8f4f0;
+  --ink: #201515;
+  --ink-soft: #2f2a26;
+  --ink-mid: #36342e;
+  --body: #605d52;
+  --body-mid: #939084;
+  --mute: #c5c0b1;
+  --primary: #ff4f00;
+  /* Cream — for ink surfaces (secondary CTA). Not for primary CTA label. */
+  --on-primary: #fffefb;
+
+  /* Warning disclosure (testnet banner) — amber-800 on amber-100 */
+  --warning-fg: #92400e;
+  --warning-bg: #fef3c7;
+  --warning-border: #d97706;
+
+  /* Feedback surfaces */
+  --danger-fg: #9f1239;
+  --danger-bg: #ffe4e6;
+  --danger-border: #e11d48;
+  --success-fg: #065f46;
+  --success-bg: #d1fae5;
+  --success-border: #059669;
+  --info-fg: #0c4a6e;
+  --info-bg: #e0f2fe;
+  --info-border: #0284c7;
+
+  /* Semantic status badges — retuned for cream ≥4.5:1 */
+  --status-neutral-fg: #44403c;
+  --status-neutral-bg: #f0ebe3;
+  --status-neutral-border: #a8a29e;
+  --status-info-fg: #0c4a6e;
+  --status-info-bg: #e0f2fe;
+  --status-info-border: #7dd3fc;
+  --status-warn-fg: #92400e;
+  --status-warn-bg: #fef3c7;
+  --status-warn-border: #fcd34d;
+  --status-ok-fg: #065f46;
+  --status-ok-bg: #d1fae5;
+  --status-ok-border: #6ee7b7;
+  --status-danger-fg: #9f1239;
+  --status-danger-bg: #ffe4e6;
+  --status-danger-border: #fda4af;
+  --status-progress-fg: #5b21b6;
+  --status-progress-bg: #ede9fe;
+  --status-progress-border: #c4b5fd;
+  --status-comp-fg: #9a3412;
+  --status-comp-bg: #ffedd5;
+  --status-comp-border: #fdba74;
+  --status-teal-fg: #115e59;
+  --status-teal-bg: #ccfbf1;
+  --status-teal-border: #5eead4;
+  --status-indigo-fg: #3730a3;
+  --status-indigo-bg: #e0e7ff;
+  --status-indigo-border: #a5b4fc;
+  --status-cyan-fg: #155e75;
+  --status-cyan-bg: #cffafe;
+  --status-cyan-border: #67e8f9;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --color-canvas: var(--canvas);
+  --color-canvas-soft: var(--canvas-soft);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-mid: var(--ink-mid);
+  --color-body: var(--body);
+  --color-body-mid: var(--body-mid);
+  --color-mute: var(--mute);
+  --color-primary: var(--primary);
+  --color-on-primary: var(--on-primary);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-warning-fg: var(--warning-fg);
+  --color-warning-bg: var(--warning-bg);
+  --color-warning-border: var(--warning-border);
+  --color-danger-fg: var(--danger-fg);
+  --color-danger-bg: var(--danger-bg);
+  --color-danger-border: var(--danger-border);
+  --color-success-fg: var(--success-fg);
+  --color-success-bg: var(--success-bg);
+  --color-success-border: var(--success-border);
+  --color-info-fg: var(--info-fg);
+  --color-info-bg: var(--info-bg);
+  --color-info-border: var(--info-border);
+
+  --color-status-neutral-fg: var(--status-neutral-fg);
+  --color-status-neutral-bg: var(--status-neutral-bg);
+  --color-status-neutral-border: var(--status-neutral-border);
+  --color-status-info-fg: var(--status-info-fg);
+  --color-status-info-bg: var(--status-info-bg);
+  --color-status-info-border: var(--status-info-border);
+  --color-status-warn-fg: var(--status-warn-fg);
+  --color-status-warn-bg: var(--status-warn-bg);
+  --color-status-warn-border: var(--status-warn-border);
+  --color-status-ok-fg: var(--status-ok-fg);
+  --color-status-ok-bg: var(--status-ok-bg);
+  --color-status-ok-border: var(--status-ok-border);
+  --color-status-danger-fg: var(--status-danger-fg);
+  --color-status-danger-bg: var(--status-danger-bg);
+  --color-status-danger-border: var(--status-danger-border);
+  --color-status-progress-fg: var(--status-progress-fg);
+  --color-status-progress-bg: var(--status-progress-bg);
+  --color-status-progress-border: var(--status-progress-border);
+  --color-status-comp-fg: var(--status-comp-fg);
+  --color-status-comp-bg: var(--status-comp-bg);
+  --color-status-comp-border: var(--status-comp-border);
+  --color-status-teal-fg: var(--status-teal-fg);
+  --color-status-teal-bg: var(--status-teal-bg);
+  --color-status-teal-border: var(--status-teal-border);
+  --color-status-indigo-fg: var(--status-indigo-fg);
+  --color-status-indigo-bg: var(--status-indigo-bg);
+  --color-status-indigo-border: var(--status-indigo-border);
+  --color-status-cyan-fg: var(--status-cyan-fg);
+  --color-status-cyan-bg: var(--status-cyan-bg);
+  --color-status-cyan-border: var(--status-cyan-border);
+
+  /* Inter via next/font (--font-inter on <html>); Geist Mono kept for code */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  /* Type scale (Inter throughout — Degular Display is proprietary) */
+  --text-display-xl: 56px;
+  --text-display-xl--line-height: 56px;
+  --text-display-lg: 48px;
+  --text-display-lg--line-height: 48px;
+  --text-display-md: 32px;
+  --text-display-md--line-height: 36px;
+  --text-display-sub-sm: 24px;
+  --text-display-sub-sm--line-height: 30px;
+  --text-display-xs: 20px;
+  --text-display-xs--line-height: 25px;
+  --text-body-lg: 20px;
+  --text-body-lg--line-height: 30px;
+  --text-body-md: 18px;
+  --text-body-md--line-height: 27px;
+  --text-body-sm: 16px;
+  --text-body-sm--line-height: 24px;
+  --text-caption: 14px;
+  --text-caption--line-height: 21px;
+  --text-button-md: 18px;
+  --text-button-md--line-height: 27px;
+  --text-button-sm: 14.4px;
+  --text-button-sm--line-height: 14.4px;
+
+  /* Spacing */
+  --spacing-xxs: 2px;
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 24px;
+  --spacing-2xl: 32px;
+  --spacing-3xl: 48px;
+  --spacing-4xl: 64px;
+
+  /* Radius — canonical card/button is 12px */
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-pill: 9999px;
+  --radius-full: 9999px;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
 }
