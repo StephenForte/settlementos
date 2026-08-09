@@ -117,23 +117,23 @@ export function MmfCard(props: MmfCardProps) {
     );
 
   const inputClass =
-    "w-40 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-500 focus:outline-none disabled:opacity-50";
+    "w-40 rounded-md border border-mute bg-canvas px-3 py-2 text-sm text-ink focus:border-primary focus:outline-none disabled:opacity-50";
 
   return (
     <Card>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-sm font-semibold text-white">Tokenized MMF</p>
-          <p className="mt-1 text-xs text-slate-400">
+          <p className="text-sm font-semibold text-ink">Tokenized MMF</p>
+          <p className="mt-1 text-xs text-body">
             Overnight parking of idle {props.asset} at {apy}% APY. Redeemable T+0 — the route engine
             auto-recalls when a payment needs the liquidity.
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap gap-2">
-          <span className="rounded-full border border-slate-600 bg-slate-800 px-3 py-1 text-[11px] text-slate-300">
+          <span className="rounded-pill border border-mute bg-canvas-soft px-3 py-1 text-[11px] text-ink-mid">
             Institutional only
           </span>
-          <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 text-[11px] text-amber-300">
+          <span className="rounded-pill border border-warning-border bg-warning-bg px-3 py-1 text-[11px] text-warning-fg">
             Simulated yield — testnet only
           </span>
         </div>
@@ -141,26 +141,26 @@ export function MmfCard(props: MmfCardProps) {
 
       <dl className="mt-4 grid grid-cols-2 gap-4 md:grid-cols-4">
         <div>
-          <dt className="text-xs text-slate-500">Parked value</dt>
-          <dd className="mt-1 text-xl font-semibold text-white">{fmtAmount(props.parkedValue)}</dd>
+          <dt className="text-xs text-body">Parked value</dt>
+          <dd className="mt-1 text-xl font-semibold text-ink">{fmtAmount(props.parkedValue)}</dd>
         </div>
         <div>
-          <dt className="text-xs text-slate-500">Accrued yield</dt>
-          <dd className="mt-1 text-xl font-semibold text-emerald-300">
+          <dt className="text-xs text-body">Accrued yield</dt>
+          <dd className="mt-1 text-xl font-semibold text-success-fg">
             {props.accruedYield == null ? "—" : `+${fmtAmount(props.accruedYield)}`}
           </dd>
         </div>
         <div>
-          <dt className="text-xs text-slate-500">Share index</dt>
-          <dd className="mt-1 font-mono text-xl text-slate-200">{fmtIndex(props.currentIndex)}</dd>
+          <dt className="text-xs text-body">Share index</dt>
+          <dd className="mt-1 font-mono text-xl text-ink">{fmtIndex(props.currentIndex)}</dd>
         </div>
         <div>
-          <dt className="text-xs text-slate-500">Free to park</dt>
-          <dd className="mt-1 text-xl font-semibold text-slate-200">{fmtAmount(props.freeBalance)}</dd>
+          <dt className="text-xs text-body">Free to park</dt>
+          <dd className="mt-1 text-xl font-semibold text-ink">{fmtAmount(props.freeBalance)}</dd>
         </div>
       </dl>
 
-      <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-slate-800 pt-4">
+      <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-mute pt-4">
         <input
           className={inputClass}
           value={amount}
@@ -172,21 +172,21 @@ export function MmfCard(props: MmfCardProps) {
         <button
           onClick={park}
           disabled={!eligible || busy !== null}
-          className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-emerald-950 hover:bg-emerald-400 disabled:opacity-50"
+          className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-ink hover:opacity-90 disabled:opacity-50"
         >
           {busy === "park" ? "Parking…" : `Park ${props.asset}`}
         </button>
         <button
           onClick={accrue}
           disabled={busy !== null}
-          className="rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+          className="rounded-md border border-ink bg-canvas px-4 py-2 text-sm font-medium text-ink hover:bg-canvas-soft disabled:opacity-50"
         >
           {busy === "accrue" ? "Accruing…" : "Accrue 1 day"}
         </button>
-        <span className="text-xs text-slate-500">
+        <span className="text-xs text-body">
           {eligible ? (
             <>
-              Parking as <span className="text-slate-300">{props.entityName}</span> · fund{" "}
+              Parking as <span className="text-ink-mid">{props.entityName}</span> · fund{" "}
               {props.fundUrl ? (
                 <Hash value={props.fundAddress} href={props.fundUrl} />
               ) : (
@@ -194,7 +194,7 @@ export function MmfCard(props: MmfCardProps) {
               )}
             </>
           ) : (
-            <span className="text-amber-300">
+            <span className="text-warning-fg">
               No institution is MMF-eligible and opted in — parking is disabled.
             </span>
           )}
@@ -202,26 +202,26 @@ export function MmfCard(props: MmfCardProps) {
       </div>
 
       {error && (
-        <p className="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">
+        <p className="mt-3 rounded-md border border-danger-border bg-danger-bg px-3 py-2 text-sm text-danger-fg">
           {error}
         </p>
       )}
       {notice && (
-        <p className="mt-3 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
+        <p className="mt-3 rounded-md border border-success-border bg-success-bg px-3 py-2 text-sm text-success-fg">
           {notice}
         </p>
       )}
 
       <div className="mt-4">
-        <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-body">
           Positions ({active.length} active)
         </p>
         {props.positions.length === 0 ? (
-          <p className="text-sm text-slate-500">Nothing parked on this network.</p>
+          <p className="text-sm text-body">Nothing parked on this network.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="text-slate-500">
+              <thead className="text-body">
                 <tr>
                   <th className="pb-2 pr-4 font-medium">Position</th>
                   <th className="pb-2 pr-4 font-medium">Principal</th>
@@ -232,14 +232,14 @@ export function MmfCard(props: MmfCardProps) {
                   <th className="pb-2 font-medium" />
                 </tr>
               </thead>
-              <tbody className="text-slate-300">
+              <tbody className="text-ink-mid">
                 {props.positions.map((p) => (
-                  <tr key={p.positionId} className="border-t border-slate-800">
+                  <tr key={p.positionId} className="border-t border-mute">
                     <td className="py-2 pr-4 font-mono text-[11px]">{p.positionId}</td>
                     <td className="py-2 pr-4">{fmtAmount(p.amountIn)}</td>
                     <td className="py-2 pr-4 font-mono text-[11px]">{p.shares}</td>
                     <td className="py-2 pr-4">{fmtAmount(p.currentValue)}</td>
-                    <td className="py-2 pr-4 text-emerald-300">
+                    <td className="py-2 pr-4 text-success-fg">
                       {p.accruedYield == null ? "—" : `+${fmtAmount(p.accruedYield)}`}
                     </td>
                     <td className="py-2 pr-4">
@@ -250,12 +250,12 @@ export function MmfCard(props: MmfCardProps) {
                         <button
                           onClick={() => recall(p.positionId)}
                           disabled={busy !== null}
-                          className="rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1 text-[11px] font-medium text-sky-300 hover:bg-sky-500/20 disabled:opacity-50"
+                          className="rounded-md border border-info-border bg-info-bg px-3 py-1 text-[11px] font-medium text-info-fg hover:bg-info-bg disabled:opacity-50"
                         >
                           {busy === "recall" ? "Recalling…" : "Recall T+0"}
                         </button>
                       ) : (
-                        <span className="text-slate-600">recalled</span>
+                        <span className="text-body">recalled</span>
                       )}
                     </td>
                   </tr>
