@@ -98,15 +98,22 @@ which independently verifies the F3 claim that could not be checked from git.
 
 ## F7 / US-F008 — simulated bridge with a live ForteL2 leg ✅
 
-The cross-chain work initially looked blocked: this machine has no
+The cross-chain work initially looked blocked: this machine had no
 `deployments.base-sepolia.json` / `deployments.polygon-amoy.json` (absent and
-never committed — correct, they hold generated wallet private keys), so those
-networks' treasury/entity **signing keys are unrecoverable** and Base Sepolia
-cannot originate or receive a payment from here. Stephen's call was to
+never committed — correct, they hold generated wallet private keys). At the
+time we treated Base Sepolia as unusable and Stephen's call was to
 `npm run setup` — wiping the local DB to restore `base-local` / `polygon-local`
 as the second leg — after this session's evidence was preserved on-chain and
 committed. The reset left the ForteL2 overlay (including the new
 `TokenizedMMF`) untouched and re-registered all four ForteL2 entity wallets.
+
+**Correction (2026-08-10):** what was lost was narrower than "signing keys
+unrecoverable." The **generated treasury/entity keys** in the overlay were
+gone, but the contracts and `DEPLOYER_PRIVATE_KEY` (on-chain operator) in
+`.env` survived. Base Sepolia is adoptable without redeploy — see
+`tasks/runbooks/adopt-base-sepolia.md` and `scripts/deploy-testnet.mjs --adopt`.
+A fresh full deploy would still break the same-address property; adopt is the
+path that preserves it.
 
 **Forward — `base-local` → `fortel2-sepolia`** (`pay_6f678a415d2b`):
 
@@ -168,10 +175,11 @@ path, so the test would not isolate what it claims to.
   CLAUDE "live-sequencer run pending", DEMO ForteL2 treasury + bridge beats).
 - **Back up `chain/deployments.fortel2-sepolia.json` offline.** It is the only
   copy of ForteL2's generated treasury and entity wallet keys, gitignored by
-  design. Losing it costs exactly what losing Base Sepolia's overlay cost here:
-  the contracts stay live and unusable. This session's copy is in the session
-  scratchpad, which is not durable.
-- Base Sepolia / Polygon Amoy remain unusable from this machine. Restoring
-  either means a fresh deploy with new addresses, which breaks the documented
-  "same address on every network" property and orphans the existing demo
-  history — a deliberate decision, not a cleanup task.
+  design. Losing it costs the generated wallets — not the contracts or the
+  deployer/operator key in `.env`. Base Sepolia's overlay loss is the worked
+  example: adopt (`--adopt`) regenerates wallets against the live contracts.
+  This session's ForteL2 copy is in the session scratchpad, which is not durable.
+- Base Sepolia is adoptable (J1 / `tasks/runbooks/adopt-base-sepolia.md`).
+  Polygon Amoy is the same class of loss and is not yet adopted. A **full
+  redeploy** of either would still break the documented "same address on every
+  network" property and orphan demo history — prefer `--adopt`.

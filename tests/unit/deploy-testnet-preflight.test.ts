@@ -1,16 +1,22 @@
 // T2: unit coverage for scripts/deploy-testnet.mjs preflight helpers and the
-// auto-detected deploy-mode decision (full / mmf_addon / noop). No live RPC.
+// auto-detected deploy-mode decision (full / mmf_addon / noop). J1 extends the
+// same file for --adopt helpers (registry, bytecode gate, plan). No live RPC.
 
 import { describe, it, expect } from "vitest";
 import { parseEther } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import {
   NETWORK_CONFIGS,
+  ADOPTABLE_NETWORKS,
   MMF_YIELD_BUFFER,
   MAX_UINT256,
   parseDeployArgs,
   readNetworkOverlay,
   decideDeployMode,
+  listAdoptContractAddresses,
+  evaluateAdoptBytecode,
+  adoptNeedsMmf,
+  decideAdoptPlan,
   validateDeployerKey,
   validateChainId,
   validateDeployerBalance,
@@ -22,11 +28,14 @@ import {
 } from "../../scripts/deploy-testnet.mjs";
 
 const FORTEL2 = "fortel2-sepolia";
+const BASE = "base-sepolia";
 const CFG = NETWORK_CONFIGS[FORTEL2];
 const DEPLOYER = "0x5128889F20Ec13e0Be38b2BeBC568594159B652d";
 const SETTLEMENT = "0x1111111111111111111111111111111111111111";
 const MMF = "0x2222222222222222222222222222222222222222";
 const USDC = "0x3333333333333333333333333333333333333333";
+const JPY = "0x4444444444444444444444444444444444444444";
+const SGD = "0x5555555555555555555555555555555555555555";
 
 function overlayJson({ withMmf }: { withMmf: boolean }) {
   const contracts: Record<string, unknown> = {
@@ -55,6 +64,7 @@ describe("parseDeployArgs", () => {
     expect(parseDeployArgs(["node", "script", "fortel2-sepolia"])).toEqual({
       networkId: "fortel2-sepolia",
       preflightOnly: false,
+      adopt: false,
     });
   });
 
@@ -62,6 +72,7 @@ describe("parseDeployArgs", () => {
     expect(parseDeployArgs(["node", "script", "fortel2-sepolia", "--preflight-only"])).toEqual({
       networkId: "fortel2-sepolia",
       preflightOnly: true,
+      adopt: false,
     });
   });
 
@@ -69,6 +80,25 @@ describe("parseDeployArgs", () => {
     expect(parseDeployArgs(["node", "script", "--preflight-only", "base-sepolia"])).toEqual({
       networkId: "base-sepolia",
       preflightOnly: true,
+      adopt: false,
+    });
+  });
+
+  it("parses --adopt with optional --preflight-only in either order", () => {
+    expect(parseDeployArgs(["node", "script", "base-sepolia", "--adopt"])).toEqual({
+      networkId: "base-sepolia",
+      preflightOnly: false,
+      adopt: true,
+    });
+    expect(parseDeployArgs(["node", "script", "--adopt", "base-sepolia", "--preflight-only"])).toEqual({
+      networkId: "base-sepolia",
+      preflightOnly: true,
+      adopt: true,
+    });
+    expect(parseDeployArgs(["node", "script", "--preflight-only", "--adopt", "base-sepolia"])).toEqual({
+      networkId: "base-sepolia",
+      preflightOnly: true,
+      adopt: true,
     });
   });
 });
@@ -237,6 +267,16 @@ describe("describePlannedActions", () => {
     const lines = describePlannedActions("noop", FORTEL2, slice);
     expect(lines.some((l) => l.includes("no transactions"))).toBe(true);
   });
+
+  it("lists adopt steps without redeploying escrow/tokens", () => {
+    const adoptable = ADOPTABLE_NETWORKS[BASE];
+    const lines = describePlannedActions("adopt", BASE, null, { needsMmf: true, adoptable });
+    expect(lines[0]).toBe("Deploy mode: adopt");
+    expect(lines.some((l) => l.includes("Do NOT deploy PaymentSettlement or MockERC20"))).toBe(true);
+    expect(lines.some((l) => l.includes("Generate NEW treasury"))).toBe(true);
+    expect(lines.some((l) => l.includes("Deploy TokenizedMMF (adopted registry has none)"))).toBe(true);
+    expect(lines.some((l) => /Deploy MockERC20 tokens/.test(l))).toBe(false);
+  });
 });
 
 describe("MMF add-on idempotency helpers", () => {
@@ -295,5 +335,129 @@ describe("resolveAddonTreasuryKey (T5-5)", () => {
     );
     expect(resolved.ok).toBe(false);
     if (!resolved.ok) expect(resolved.message).toMatch(/TREASURY_PRIVATE_KEY is not set/);
+  });
+});
+
+describe("adopt mode helpers (J1)", () => {
+  const baseAdoptable = ADOPTABLE_NETWORKS[BASE];
+
+  it("registers Base Sepolia adoptable addresses (inherited settlement + tokens)", () => {
+    expect(baseAdoptable.operator.toLowerCase()).toBe(DEPLOYER.toLowerCase());
+    expect(baseAdoptable.contracts.PaymentSettlement).toBe(
+      "0x9d8b8b7c476ab02306046f3da719d380fa0456aa"
+    );
+    expect(baseAdoptable.contracts.tokens.mockUSDC.decimals).toBe(6);
+    expect(baseAdoptable.contracts.tokens.mockJPY.decimals).toBe(0);
+    expect(baseAdoptable.contracts.TokenizedMMF).toBeUndefined();
+  });
+
+  it("lists contract addresses to bytecode-verify (excludes operator EOA)", () => {
+    const listed = listAdoptContractAddresses(baseAdoptable);
+    expect(listed.map((e) => e.label).sort()).toEqual(
+      ["PaymentSettlement", "mockJPY", "mockSGD", "mockUSDC"].sort()
+    );
+    expect(listed.every((e) => e.address.startsWith("0x"))).toBe(true);
+  });
+
+  it("includes TokenizedMMF in the verify list when the registry carries one", () => {
+    const withMmf = {
+      operator: DEPLOYER,
+      contracts: {
+        PaymentSettlement: SETTLEMENT,
+        TokenizedMMF: MMF,
+        tokens: { mockUSDC: { address: USDC, decimals: 6 } },
+      },
+    };
+    expect(listAdoptContractAddresses(withMmf).some((e) => e.label === "TokenizedMMF")).toBe(true);
+    expect(adoptNeedsMmf(withMmf)).toBe(false);
+  });
+
+  it("detects pre-F4 registries need an MMF add-on", () => {
+    expect(adoptNeedsMmf(baseAdoptable)).toBe(true);
+    expect(adoptNeedsMmf({ contracts: { TokenizedMMF: MMF } })).toBe(false);
+  });
+
+  it("evaluateAdoptBytecode aborts on empty code and names the address", () => {
+    const result = evaluateAdoptBytecode(
+      [
+        { label: "PaymentSettlement", address: SETTLEMENT, code: "0x60806040" },
+        { label: "mockJPY", address: JPY, code: "0x" },
+        { label: "mockSGD", address: SGD, code: null },
+      ],
+      BASE
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toMatch(/mockJPY/);
+      expect(result.message).toMatch(/mockSGD/);
+      expect(result.message).toMatch(/Adopt aborted/);
+    }
+    expect(result.results.find((r) => r.label === "PaymentSettlement")?.bytes).toBe(4);
+  });
+
+  it("evaluateAdoptBytecode passes when every address has code", () => {
+    const result = evaluateAdoptBytecode(
+      [
+        { label: "PaymentSettlement", address: SETTLEMENT, code: "0x" + "ab".repeat(100) },
+        { label: "mockUSDC", address: USDC, code: "0x" + "cd".repeat(50) },
+      ],
+      BASE
+    );
+    expect(result.ok).toBe(true);
+    expect(result.results.every((r) => r.bytes > 0)).toBe(true);
+  });
+
+  it("decideAdoptPlan refuses unknown networks and existing overlays", () => {
+    expect(
+      decideAdoptPlan({
+        networkId: FORTEL2,
+        overlayExists: false,
+        deployerAddress: DEPLOYER,
+        adoptable: null,
+      }).ok
+    ).toBe(false);
+
+    const existing = decideAdoptPlan({
+      networkId: BASE,
+      overlayExists: true,
+      deployerAddress: DEPLOYER,
+      adoptable: baseAdoptable,
+    });
+    expect(existing.ok).toBe(false);
+    if (!existing.ok) expect(existing.message).toMatch(/already exists/);
+  });
+
+  it("decideAdoptPlan refuses a deployer that is not the recorded operator", () => {
+    const wrong = decideAdoptPlan({
+      networkId: BASE,
+      overlayExists: false,
+      deployerAddress: "0x0000000000000000000000000000000000000001",
+      adoptable: baseAdoptable,
+    });
+    expect(wrong.ok).toBe(false);
+    if (!wrong.ok) expect(wrong.message).toMatch(/not the on-chain operator/);
+  });
+
+  it("decideAdoptPlan selects adopt + needsMmf for Base Sepolia", () => {
+    expect(
+      decideAdoptPlan({
+        networkId: BASE,
+        overlayExists: false,
+        deployerAddress: DEPLOYER,
+        adoptable: baseAdoptable,
+      })
+    ).toEqual({
+      ok: true,
+      mode: "adopt",
+      needsMmf: true,
+      reason:
+        "adopt known contracts + generate new wallets; TokenizedMMF missing — MMF add-on after overlay",
+    });
+  });
+
+  it("without --adopt, missing overlay still decides full (the redeploy trap)", () => {
+    // Guardrail: adopt is opt-in. Auto-detect must keep choosing full when
+    // there is no overlay — that is why --adopt exists.
+    expect(decideDeployMode(null).mode).toBe("full");
   });
 });

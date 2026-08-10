@@ -133,16 +133,20 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
     cross-chain payment, `bridge.destination_payout_submitted` then
     `bridge.destination_payout`. Audit INTACT throughout.
   - Second bridge leg is `base-local`, **not** Base Sepolia: this machine's
-    `deployments.base-sepolia.json` / `.polygon-amoy.json` are gone and were
-    never committed (they hold wallet keys), so those networks' signing keys
-    are unrecoverable — contracts live, unusable from here. Restoring one
-    means a fresh deploy with new addresses (breaks the documented
-    same-address property). `npm run setup` was run to restore the local
-    chains, after this session's evidence was committed; the ForteL2 overlay
-    and its MMF survived.
+    `deployments.base-sepolia.json` / `.polygon-amoy.json` were gone and were
+    never committed (they hold generated wallet keys). An earlier note claimed
+    those networks' signing keys were wholly unrecoverable — that was too
+    broad. What was lost is the **generated treasury/entity keys in the
+    overlay**; what survived is the live contracts plus `DEPLOYER_PRIVATE_KEY`
+    in `.env` (the on-chain operator). Base Sepolia is adoptable via
+    `scripts/deploy-testnet.mjs --adopt` (J1) without redeploying escrow/tokens
+    or breaking the same-address property. Polygon Amoy remains without an
+    overlay (same class of loss; not yet adopted). `npm run setup` was run to
+    restore the local chains after this session's evidence was committed; the
+    ForteL2 overlay and its MMF survived.
   - **`chain/deployments.fortel2-sepolia.json` is the only copy of ForteL2's
-    generated wallet keys — back it up offline.** Base Sepolia is the worked
-    example of what losing it costs.
+    generated wallet keys — back it up offline.** Losing an overlay costs the
+    generated wallets, not the contracts or the deployer/operator key.
   - Not run: 3 of T4's 4 live checks (staged receipt-loss timing needs the
     test-only `executorTestHooks`); hermetic tests cover them.
 - NEXT: dispatch T5 (hardening review — its brief should fold in the live
@@ -155,7 +159,12 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
 - Deployed 2026-07-07, verified with a real settled payment.
   PaymentSettlement: 0x9d8b8b7c476ab02306046f3da719d380fa0456aa; first settled
   payment tx 0xdbf963150f5c1c90e3a007cc474c3fd42255fd3d019e3d71a6d821528fe258c5.
-- Deployer/operator 0x5128889F20Ec13e0Be38b2BeBC568594159B652d (key in .env),
-  ~0.078 ETH gas remaining — deploys cost ~0.002, settlements <0.0001, so no
-  refill needed for many demos. Faucet lessons are in auto-memory
-  (base-sepolia-faucet-lessons).
+- Deployer/operator 0x5128889F20Ec13e0Be38b2BeBC568594159B652d (key in .env).
+  Verified 2026-08-10: contracts still live (PaymentSettlement 4270 bytes,
+  mockUSDC/mockJPY/mockSGD each with code); deployer balance ~2.048 ETH,
+  nonce 24. Overlay was lost earlier; adopt via
+  `node --env-file=.env scripts/deploy-testnet.mjs base-sepolia --adopt`
+  (see `tasks/runbooks/adopt-base-sepolia.md`) regenerates treasury/entity
+  wallets and adds TokenizedMMF (pre-F4 deploy had none) without redeploying
+  escrow/tokens.
+- Faucet lessons are in auto-memory (base-sepolia-faucet-lessons).

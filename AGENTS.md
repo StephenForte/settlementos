@@ -507,6 +507,25 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   a transaction — run it before any live deploy. Add-on idempotency is
   **mode-level only**: a run that dies between the fund deploy and the overlay
   merge leaves an orphaned fund a re-run won't reuse (decisions log T2-2).
+- **`--adopt` is the escape hatch when the overlay is gone but the contracts and
+  `DEPLOYER_PRIVATE_KEY` survived.** Auto-detect would choose `full` and
+  redeploy — never run a bare `deploy:*` against a network whose escrow is
+  already live at the documented address. Adopt is explicit
+  (`node --env-file=.env scripts/deploy-testnet.mjs <network> --adopt`): it
+  bytecode-verifies every address in `ADOPTABLE_NETWORKS`, generates **new**
+  treasury/entity wallets, mints demo balances, runs the MMF add-on when the
+  registry has no fund, and writes a fresh overlay. See
+  [tasks/runbooks/adopt-base-sepolia.md](tasks/runbooks/adopt-base-sepolia.md).
+
+### Where addresses come from, and when they change
+
+| Kind | Source | Changes when |
+|---|---|---|
+| `PaymentSettlement`, mockUSDC / mockJPY / mockSGD | Deployed once per network by `deploy-testnet.mjs` (full mode). Same deployer nonce sequence → **same addresses across Base Sepolia / Amoy / ForteL2** — a documented property, not a coincidence. | A **full redeploy** (new deployer nonce history, or a different key) invalidates them and orphans every cited tx hash / explorer link. |
+| Operator | `DEPLOYER_PRIVATE_KEY` in `.env` — the EOA that deployed the contracts is the on-chain operator. | Re-keying needs an **on-chain grant**, not a config edit. Adopt keeps this address. |
+| Treasury + entity wallets | `generatePrivateKey()` at deploy/adopt time; private keys live only in the gitignored `chain/deployments.<network>.json` overlay (or `TREASURY_PRIVATE_KEY` in `.env`). | Losing the overlay loses **only these keys**. Contracts and the operator key are unaffected. `--adopt` generates replacements; do not reuse or sweep the old addresses. |
+| `TokenizedMMF` | Per-network; added by full deploy or MMF add-on / adopt when missing (Base Sepolia's 2026-07-07 deploy predates F4). | A new fund address on add-on/adopt; escrow/tokens stay put. |
+| ForteL2 Phase 7/8 **re-genesis** | Wipes the L2 state. Every ForteL2 contract address above expires, including the backed-up overlay's contract entries. The settlementos-explorer repo's address book (**11 ForteL2 rows**) becomes wrong on a public site and must be republished. After re-genesis: deploy or `--adopt` with a new `ADOPTABLE_NETWORKS` entry, then update the explorer book. Generated wallet keys in any old ForteL2 overlay backup are then worthless for signing on the new chain even if the files survive. |
 - A test that drives `initiatePayment` **directly** (rather than through the executor)
   must approve the sender's tokens itself — no fixture wallet carries a standing
   allowance any more. See `approveAmount()` in tests/integration/contract.test.ts.
