@@ -28,10 +28,14 @@
 // registry has no TokenizedMMF the existing MMF add-on path runs afterward.
 //
 //   node scripts/deploy-testnet.mjs <network> [--preflight-only] [--adopt]
+//                                              [--force-full-deploy]
 //
 // --preflight-only runs RPC/chain-id/balance checks and prints the planned mode
 // and actions without sending any transactions. With --adopt it also fetches
 // bytecode for every registered address and aborts on empty code.
+// A bare full deploy against a network in ADOPTABLE_NETWORKS with no overlay is
+// refused (those contracts are already live) — use --adopt, or type
+// --force-full-deploy deliberately if a genuine fresh deploy is intended.
 //
 // Run: npm run deploy:base-sepolia | deploy:polygon-amoy | deploy:fortel2-sepolia
 //      (all load .env via node --env-file)
@@ -153,16 +157,17 @@ export const ADOPTABLE_NETWORKS = {
 /** @typedef {"full" | "mmf_addon" | "noop" | "adopt"} DeployMode */
 
 /**
- * Parse argv for network id, --preflight-only, and --adopt.
+ * Parse argv for network id, --preflight-only, --adopt, and --force-full-deploy.
  * @param {string[]} argv process.argv
  */
 export function parseDeployArgs(argv) {
   const rest = argv.slice(2);
-  const flags = new Set(["--preflight-only", "--adopt"]);
+  const flags = new Set(["--preflight-only", "--adopt", "--force-full-deploy"]);
   const preflightOnly = rest.includes("--preflight-only");
   const adopt = rest.includes("--adopt");
+  const forceFullDeploy = rest.includes("--force-full-deploy");
   const networkId = rest.find((a) => !flags.has(a));
-  return { networkId, preflightOnly, adopt };
+  return { networkId, preflightOnly, adopt, forceFullDeploy };
 }
 
 /**
@@ -290,6 +295,41 @@ export function evaluateAdoptBytecode(entries, networkId) {
 export function adoptNeedsMmf(adoptable) {
   const mmf = adoptable?.contracts?.TokenizedMMF;
   return !(typeof mmf === "string" && mmf.length > 0);
+}
+
+/**
+ * Refuse a bare full deploy on a network whose contracts are already live and
+ * registered in ADOPTABLE_NETWORKS when no overlay exists. Auto-detect would
+ * otherwise choose mode:"full" and redeploy escrow/tokens at new addresses —
+ * the irreversible outcome --adopt exists to prevent. Escape hatch:
+ * --force-full-deploy (must be typed deliberately).
+ *
+ * @param {{
+ *   networkId: string,
+ *   overlayExists: boolean,
+ *   forceFullDeploy: boolean,
+ *   adoptableNetworks?: Record<string, AdoptableNetwork>
+ * }} input
+ * @returns {{ ok: true } | { ok: false, message: string }}
+ */
+export function assertAdoptableFullDeployAllowed({
+  networkId,
+  overlayExists,
+  forceFullDeploy,
+  adoptableNetworks = ADOPTABLE_NETWORKS,
+}) {
+  if (overlayExists) return { ok: true };
+  if (forceFullDeploy) return { ok: true };
+  if (!adoptableNetworks[networkId]) return { ok: true };
+  return {
+    ok: false,
+    message:
+      `${networkId} is registered in ADOPTABLE_NETWORKS and has no overlay — ` +
+      `a bare full deploy would redeploy PaymentSettlement and tokens at NEW addresses, ` +
+      `breaking the same-address property.\n` +
+      `Use --adopt to re-home the live contracts into a fresh overlay, or pass ` +
+      `--force-full-deploy if you deliberately intend a destructive fresh deploy.`,
+  };
 }
 
 /**
@@ -553,11 +593,13 @@ function fail(msg) {
 }
 
 async function main() {
-  const { networkId: NETWORK_ID, preflightOnly, adopt } = parseDeployArgs(process.argv);
+  const { networkId: NETWORK_ID, preflightOnly, adopt, forceFullDeploy } = parseDeployArgs(
+    process.argv
+  );
   const CFG = NETWORK_CONFIGS[NETWORK_ID];
   if (!CFG) {
     console.error(
-      `Usage: node scripts/deploy-testnet.mjs <network> [--preflight-only] [--adopt]\nSupported: ${Object.keys(NETWORK_CONFIGS).join(", ")}`
+      `Usage: node scripts/deploy-testnet.mjs <network> [--preflight-only] [--adopt] [--force-full-deploy]\nSupported: ${Object.keys(NETWORK_CONFIGS).join(", ")}`
     );
     process.exit(1);
   }
@@ -639,6 +681,15 @@ async function main() {
     }
     if (!codeCheck.ok) fail(codeCheck.message);
   } else {
+    // Before auto-detect: an adoptable network with no overlay must not fall
+    // through to mode:"full" (redeploy). --force-full-deploy is the only escape.
+    const fullGuard = assertAdoptableFullDeployAllowed({
+      networkId: NETWORK_ID,
+      overlayExists,
+      forceFullDeploy,
+    });
+    if (!fullGuard.ok) fail(fullGuard.message);
+
     const decided = decideDeployMode(networkOverlay);
     mode = decided.mode;
     reason = decided.reason;

@@ -17,6 +17,7 @@ import {
   evaluateAdoptBytecode,
   adoptNeedsMmf,
   decideAdoptPlan,
+  assertAdoptableFullDeployAllowed,
   validateDeployerKey,
   validateChainId,
   validateDeployerBalance,
@@ -65,6 +66,7 @@ describe("parseDeployArgs", () => {
       networkId: "fortel2-sepolia",
       preflightOnly: false,
       adopt: false,
+      forceFullDeploy: false,
     });
   });
 
@@ -73,6 +75,7 @@ describe("parseDeployArgs", () => {
       networkId: "fortel2-sepolia",
       preflightOnly: true,
       adopt: false,
+      forceFullDeploy: false,
     });
   });
 
@@ -81,6 +84,7 @@ describe("parseDeployArgs", () => {
       networkId: "base-sepolia",
       preflightOnly: true,
       adopt: false,
+      forceFullDeploy: false,
     });
   });
 
@@ -89,16 +93,28 @@ describe("parseDeployArgs", () => {
       networkId: "base-sepolia",
       preflightOnly: false,
       adopt: true,
+      forceFullDeploy: false,
     });
     expect(parseDeployArgs(["node", "script", "--adopt", "base-sepolia", "--preflight-only"])).toEqual({
       networkId: "base-sepolia",
       preflightOnly: true,
       adopt: true,
+      forceFullDeploy: false,
     });
     expect(parseDeployArgs(["node", "script", "--preflight-only", "--adopt", "base-sepolia"])).toEqual({
       networkId: "base-sepolia",
       preflightOnly: true,
       adopt: true,
+      forceFullDeploy: false,
+    });
+  });
+
+  it("parses --force-full-deploy", () => {
+    expect(parseDeployArgs(["node", "script", "base-sepolia", "--force-full-deploy"])).toEqual({
+      networkId: "base-sepolia",
+      preflightOnly: false,
+      adopt: false,
+      forceFullDeploy: true,
     });
   });
 });
@@ -457,8 +473,55 @@ describe("adopt mode helpers (J1)", () => {
   });
 
   it("without --adopt, missing overlay still decides full (the redeploy trap)", () => {
-    // Guardrail: adopt is opt-in. Auto-detect must keep choosing full when
-    // there is no overlay — that is why --adopt exists.
+    // decideDeployMode itself still returns full — assertAdoptableFullDeployAllowed
+    // is what blocks the bare npm script before that path can spend gas.
     expect(decideDeployMode(null).mode).toBe("full");
+  });
+});
+
+describe("assertAdoptableFullDeployAllowed (J1 follow-up)", () => {
+  it("refuses adoptable network + no overlay + no --force-full-deploy", () => {
+    const result = assertAdoptableFullDeployAllowed({
+      networkId: BASE,
+      overlayExists: false,
+      forceFullDeploy: false,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toMatch(/ADOPTABLE_NETWORKS/);
+      expect(result.message).toMatch(/--adopt/);
+      expect(result.message).toMatch(/--force-full-deploy/);
+      expect(result.message).toMatch(/NEW addresses/);
+    }
+  });
+
+  it("allows adoptable network + no overlay + --force-full-deploy", () => {
+    expect(
+      assertAdoptableFullDeployAllowed({
+        networkId: BASE,
+        overlayExists: false,
+        forceFullDeploy: true,
+      })
+    ).toEqual({ ok: true });
+  });
+
+  it("allows non-adoptable network + no overlay + no --force-full-deploy", () => {
+    expect(
+      assertAdoptableFullDeployAllowed({
+        networkId: FORTEL2,
+        overlayExists: false,
+        forceFullDeploy: false,
+      })
+    ).toEqual({ ok: true });
+  });
+
+  it("allows adoptable network + existing overlay (mode logic unchanged)", () => {
+    expect(
+      assertAdoptableFullDeployAllowed({
+        networkId: BASE,
+        overlayExists: true,
+        forceFullDeploy: false,
+      })
+    ).toEqual({ ok: true });
   });
 });
