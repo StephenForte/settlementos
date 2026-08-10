@@ -17,6 +17,7 @@ import {
   evaluateAdoptBytecode,
   adoptNeedsMmf,
   decideAdoptPlan,
+  diagnoseAdoptableOverlayFinding,
   assertAdoptableFullDeployAllowed,
   validateDeployerKey,
   validateChainId,
@@ -479,49 +480,219 @@ describe("adopt mode helpers (J1)", () => {
   });
 });
 
-describe("assertAdoptableFullDeployAllowed (J1 follow-up)", () => {
-  it("refuses adoptable network + no overlay + no --force-full-deploy", () => {
-    const result = assertAdoptableFullDeployAllowed({
-      networkId: BASE,
-      overlayExists: false,
-      forceFullDeploy: false,
-    });
+describe("assertAdoptableFullDeployAllowed (gates on resolved mode)", () => {
+  function completeSlice({ withMmf }: { withMmf: boolean }) {
+    const contracts: Record<string, unknown> = {
+      PaymentSettlement: SETTLEMENT,
+      tokens: {
+        mockUSDC: { address: USDC, decimals: 6 },
+        mockJPY: { address: JPY, decimals: 0 },
+        mockSGD: { address: SGD, decimals: 6 },
+      },
+    };
+    if (withMmf) contracts.TokenizedMMF = MMF;
+    return { chainId: 84532, contracts };
+  }
+
+  function guardFor({
+    networkId = BASE,
+    overlayFilePresent,
+    overlayJson,
+    forceFullDeploy = false,
+  }: {
+    networkId?: string;
+    overlayFilePresent: boolean;
+    overlayJson: string | null;
+    forceFullDeploy?: boolean;
+  }) {
+    const networkOverlay = readNetworkOverlay(overlayJson, networkId);
+    const { mode } = decideDeployMode(networkOverlay);
+    return {
+      mode,
+      networkOverlay,
+      result: assertAdoptableFullDeployAllowed({
+        networkId,
+        mode,
+        forceFullDeploy,
+        overlayFilePresent,
+        overlayJson,
+        networkOverlay,
+      }),
+    };
+  }
+
+  it("refuses when file absent (resolved mode full)", () => {
+    const { mode, result } = guardFor({ overlayFilePresent: false, overlayJson: null });
+    expect(mode).toBe("full");
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.message).toMatch(/ADOPTABLE_NETWORKS/);
+      expect(result.message).toMatch(/no overlay file present/);
       expect(result.message).toMatch(/--adopt/);
       expect(result.message).toMatch(/--force-full-deploy/);
       expect(result.message).toMatch(/NEW addresses/);
     }
   });
 
-  it("allows adoptable network + no overlay + --force-full-deploy", () => {
-    expect(
-      assertAdoptableFullDeployAllowed({
-        networkId: BASE,
-        overlayExists: false,
-        forceFullDeploy: true,
-      })
-    ).toEqual({ ok: true });
+  it("refuses when file present but malformed JSON", () => {
+    const { mode, result } = guardFor({
+      overlayFilePresent: true,
+      overlayJson: "{not json",
+    });
+    expect(mode).toBe("full");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toMatch(/unreadable \(malformed JSON\)/);
+      expect(result.message).toMatch(/NEW addresses/);
+    }
   });
 
-  it("allows non-adoptable network + no overlay + no --force-full-deploy", () => {
-    expect(
-      assertAdoptableFullDeployAllowed({
-        networkId: FORTEL2,
-        overlayExists: false,
-        forceFullDeploy: false,
-      })
-    ).toEqual({ ok: true });
+  it("refuses when file present, valid JSON, no networks[<id>]", () => {
+    const { mode, result } = guardFor({
+      overlayFilePresent: true,
+      overlayJson: JSON.stringify({ networks: { "polygon-amoy": completeSlice({ withMmf: true }) } }),
+    });
+    expect(mode).toBe("full");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toMatch(/missing networks\[base-sepolia\]/);
+    }
   });
 
-  it("allows adoptable network + existing overlay (mode logic unchanged)", () => {
+  it("refuses when slice missing PaymentSettlement", () => {
+    const slice = {
+      contracts: { tokens: { mockUSDC: { address: USDC, decimals: 6 } } },
+    };
+    const { mode, result } = guardFor({
+      overlayFilePresent: true,
+      overlayJson: JSON.stringify({ networks: { [BASE]: slice } }),
+    });
+    expect(mode).toBe("full");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toMatch(/missing PaymentSettlement/);
+    }
+  });
+
+  it("refuses when slice missing mockUSDC", () => {
+    const slice = {
+      contracts: { PaymentSettlement: SETTLEMENT, tokens: {} },
+    };
+    const { mode, result } = guardFor({
+      overlayFilePresent: true,
+      overlayJson: JSON.stringify({ networks: { [BASE]: slice } }),
+    });
+    expect(mode).toBe("full");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toMatch(/missing mockUSDC/);
+    }
+  });
+
+  it("allows complete slice without MMF (mmf_addon path)", () => {
+    const { mode, result } = guardFor({
+      overlayFilePresent: true,
+      overlayJson: JSON.stringify({ networks: { [BASE]: completeSlice({ withMmf: false }) } }),
+    });
+    expect(mode).toBe("mmf_addon");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("allows complete slice with MMF (noop path)", () => {
+    const { mode, result } = guardFor({
+      overlayFilePresent: true,
+      overlayJson: JSON.stringify({ networks: { [BASE]: completeSlice({ withMmf: true }) } }),
+    });
+    expect(mode).toBe("noop");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("allows --force-full-deploy for every full-mode finding", () => {
+    const fullCases: { overlayFilePresent: boolean; overlayJson: string | null }[] = [
+      { overlayFilePresent: false, overlayJson: null },
+      { overlayFilePresent: true, overlayJson: "{not json" },
+      {
+        overlayFilePresent: true,
+        overlayJson: JSON.stringify({ networks: {} }),
+      },
+      {
+        overlayFilePresent: true,
+        overlayJson: JSON.stringify({
+          networks: { [BASE]: { contracts: { tokens: { mockUSDC: { address: USDC } } } } },
+        }),
+      },
+      {
+        overlayFilePresent: true,
+        overlayJson: JSON.stringify({
+          networks: { [BASE]: { contracts: { PaymentSettlement: SETTLEMENT } } },
+        }),
+      },
+    ];
+    for (const c of fullCases) {
+      const { mode, result } = guardFor({ ...c, forceFullDeploy: true });
+      expect(mode).toBe("full");
+      expect(result).toEqual({ ok: true });
+    }
+  });
+
+  it("allows non-adoptable network for every full-mode finding", () => {
+    const fullCases: { overlayFilePresent: boolean; overlayJson: string | null }[] = [
+      { overlayFilePresent: false, overlayJson: null },
+      { overlayFilePresent: true, overlayJson: "{not json" },
+      { overlayFilePresent: true, overlayJson: JSON.stringify({ networks: {} }) },
+      {
+        overlayFilePresent: true,
+        overlayJson: JSON.stringify({
+          networks: { [FORTEL2]: { contracts: { PaymentSettlement: SETTLEMENT } } },
+        }),
+      },
+    ];
+    for (const c of fullCases) {
+      const { mode, result } = guardFor({ ...c, networkId: FORTEL2, forceFullDeploy: false });
+      expect(mode).toBe("full");
+      expect(result).toEqual({ ok: true });
+    }
+  });
+
+  it("diagnoseAdoptableOverlayFinding names each full-mode path", () => {
     expect(
-      assertAdoptableFullDeployAllowed({
+      diagnoseAdoptableOverlayFinding({
         networkId: BASE,
-        overlayExists: true,
-        forceFullDeploy: false,
+        overlayFilePresent: false,
+        overlayJson: null,
+        networkOverlay: null,
       })
-    ).toEqual({ ok: true });
+    ).toBe("no overlay file present");
+    expect(
+      diagnoseAdoptableOverlayFinding({
+        networkId: BASE,
+        overlayFilePresent: true,
+        overlayJson: "",
+        networkOverlay: null,
+      })
+    ).toMatch(/malformed JSON/);
+    expect(
+      diagnoseAdoptableOverlayFinding({
+        networkId: BASE,
+        overlayFilePresent: true,
+        overlayJson: "{}",
+        networkOverlay: null,
+      })
+    ).toBe("overlay file present but missing networks[base-sepolia]");
+    expect(
+      diagnoseAdoptableOverlayFinding({
+        networkId: BASE,
+        overlayFilePresent: true,
+        overlayJson: "{}",
+        networkOverlay: { contracts: { tokens: { mockUSDC: { address: USDC } } } },
+      })
+    ).toMatch(/missing PaymentSettlement/);
+    expect(
+      diagnoseAdoptableOverlayFinding({
+        networkId: BASE,
+        overlayFilePresent: true,
+        overlayJson: "{}",
+        networkOverlay: { contracts: { PaymentSettlement: SETTLEMENT } },
+      })
+    ).toMatch(/missing mockUSDC/);
   });
 });
