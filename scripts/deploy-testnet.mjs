@@ -218,9 +218,20 @@ export function decideDeployMode(networkOverlay) {
 }
 
 /**
+ * @typedef {{
+ *   operator: string,
+ *   contracts: {
+ *     PaymentSettlement?: string,
+ *     TokenizedMMF?: string,
+ *     tokens?: Record<string, { address?: string, decimals?: number }>
+ *   }
+ * }} AdoptableNetwork
+ */
+
+/**
  * Flatten an adoptable-network registry entry into labeled addresses that must
  * hold bytecode (operator is an EOA — verified separately, not for code).
- * @param {{ contracts: { PaymentSettlement?: string, TokenizedMMF?: string, tokens?: Record<string, { address?: string }> } }} adoptable
+ * @param {AdoptableNetwork} adoptable
  * @returns {{ label: string, address: string }[]}
  */
 export function listAdoptContractAddresses(adoptable) {
@@ -274,7 +285,7 @@ export function evaluateAdoptBytecode(entries, networkId) {
 /**
  * True when the adoptable registry has no TokenizedMMF — adopt must deploy one
  * via the MMF add-on path after the overlay is written.
- * @param {{ contracts?: { TokenizedMMF?: string } } | null | undefined} adoptable
+ * @param {AdoptableNetwork | { contracts?: { TokenizedMMF?: string } } | null | undefined} adoptable
  */
 export function adoptNeedsMmf(adoptable) {
   const mmf = adoptable?.contracts?.TokenizedMMF;
@@ -284,7 +295,7 @@ export function adoptNeedsMmf(adoptable) {
 /**
  * Gate --adopt before any transaction: registry present, no existing overlay
  * (would overwrite live keys), deployer is the on-chain operator.
- * @param {{ networkId: string, overlayExists: boolean, deployerAddress: string, adoptable: typeof ADOPTABLE_NETWORKS[string] | null | undefined }} input
+ * @param {{ networkId: string, overlayExists: boolean, deployerAddress: string, adoptable: AdoptableNetwork | null | undefined }} input
  * @returns {{ ok: true, mode: "adopt", needsMmf: boolean, reason: string } | { ok: false, message: string }}
  */
 export function decideAdoptPlan({ networkId, overlayExists, deployerAddress, adoptable }) {

@@ -348,7 +348,8 @@ describe("adopt mode helpers (J1)", () => {
     );
     expect(baseAdoptable.contracts.tokens.mockUSDC.decimals).toBe(6);
     expect(baseAdoptable.contracts.tokens.mockJPY.decimals).toBe(0);
-    expect(baseAdoptable.contracts.TokenizedMMF).toBeUndefined();
+    // Pre-F4: no fund in the registry (adoptNeedsMmf covers the consequence).
+    expect("TokenizedMMF" in baseAdoptable.contracts).toBe(false);
   });
 
   it("lists contract addresses to bytecode-verify (excludes operator EOA)", () => {
