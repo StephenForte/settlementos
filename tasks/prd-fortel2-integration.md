@@ -149,16 +149,17 @@ Sepolia-backed ForteL2 network entry — analogous to how `base-sepolia` arrived
 after local sims. **F1 and F2 delivered that directly:** `fortel2-sepolia`
 (chain ID 852) landed in the registry and deploy overlay in July 2026, before
 this story's criteria were ticked. The work was overtaken by events, not skipped.
-Three of four criteria are now satisfied; the explorer address book remains F6
-in a separate repo.
+All four criteria are now satisfied — the explorer address book closed in the
+separate [`settlementos-explorer`](https://github.com/StephenForte/settlementos-explorer)
+repo (F6a, PR #4 → `20f17ff`; F6a–F6q complete on `main` @ `f669cbe`).
 
 **Description:** As a public demo, I want `fortel2-sepolia` analogous to `base-sepolia`.
 
 **Acceptance Criteria:**
 - [x] Second network entry once ForteL2 publishes Sepolia-backed RPC + chain ID — **F1 (PR #21):** `fortel2-sepolia`, chainId 852, in [`lib/networks.ts`](../lib/networks.ts) (`69:76`)
 - [x] `deployments.fortel2-sepolia.json` overlay pattern — **F2 (PR #24):** overlay written 2026-07-24; **F4 add-on live 2026-08-07** added `TokenizedMMF` at `0xaed29387417dad9ab1993332e2c2b99d35ffe7ff` ([`tasks/runbooks/fortel2-live-session-2026-08-07.md`](runbooks/fortel2-live-session-2026-08-07.md) § F4)
-- [ ] settlementos-explorer address book updated (separate repo story) — **still F6.** The [`settlementos-explorer`](https://github.com/StephenForte/settlementos-explorer) repo exists and its `src/config/networks.ts` on main already lists `fortel2-sepolia` (852), but `src/config/address-book.ts` still labels Base Sepolia + Amoy contracts/wallets only — ForteL2 addresses are not in the book yet
-- [x] Best-effort uptime called out (personal L2, not SLA) — [`README.md`](../README.md) § ForteL2 (2026-08-08 truth-up)
+- [x] settlementos-explorer address book updated (separate repo story) — **F6a (explorer PR [#4](https://github.com/StephenForte/settlementos-explorer/pull/4) → `20f17ff`):** 11 ForteL2 rows + `mmf-contract` role in `src/config/address-book.ts`. Addresses confirmed out-of-band (F6c chain-852 liveness 2026-08-08; F6f against gitignored `chain/deployments.fortel2-sepolia.json`) — not by the explorer's tautological `EXPECTED` unit test (explorer `docs/PLAN.md` §6 trap 2). Tracking: explorer [`docs/PLAN.md`](https://github.com/StephenForte/settlementos-explorer/blob/main/docs/PLAN.md) §0
+- [x] Best-effort uptime called out (personal L2, not SLA) — [`README.md`](../README.md) § ForteL2 (2026-08-08 truth-up); mirrored in [`DEMO.md`](../DEMO.md) Part E and [`PRD.md`](../PRD.md) (2026-08-09)
 
 ### US-F008: Simulated bridge involving ForteL2 (optional)
 **Description:** As a demo, I may show Base Sepolia ↔ ForteL2 using the **existing simulated bridge** (escrow on A, treasury payout on B).

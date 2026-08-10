@@ -8,9 +8,11 @@ first three ready-to-paste prompts.
 
 ## 0. Verified state (read this before assigning anything)
 
-Checked against the repo on **2026-08-08** (origin/main @ `d5d9a50`), re-verified
+Checked against the repo on **2026-08-09** (origin/main @ `4513d96`), re-verified
 against [`tasks/runbooks/fortel2-live-session-2026-08-07.md`](runbooks/fortel2-live-session-2026-08-07.md)
-for every live ForteL2 claim — not just the PRD's checkboxes:
+for every live ForteL2 claim and against
+[`settlementos-explorer`](https://github.com/StephenForte/settlementos-explorer)
+`main` @ `f669cbe` for F6 — not just the PRD's checkboxes:
 
 | Claim | Verified | Evidence |
 |---|---|---|
@@ -18,10 +20,10 @@ for every live ForteL2 claim — not just the PRD's checkboxes:
 | F2 deploy script | **True** | `scripts/deploy-testnet.mjs` has a `fortel2-sepolia` `NETWORK_CONFIGS` entry; overlay at `chain/deployments.fortel2-sepolia.json` (gitignored, dated 2026-07-24) with `PaymentSettlement` + tokens + operator/treasury/entity wallets. F2 landed PR #24 |
 | F3 single-chain settle | **True (live-verified 2026-08-07)** | First settle `pay_8c318fcae804` (2026-07-24, PR #26) re-confirmed **SETTLED** in the DB during the live session — [`tasks/runbooks/fortel2-live-session-2026-08-07.md`](runbooks/fortel2-live-session-2026-08-07.md) § "Earlier ForteL2 history". Same session also settled a fresh $25k payment on 852 |
 | F4 MMF on ForteL2 | **True live (2026-08-07)** | Add-on deploy wrote `TokenizedMMF` **`0xaed29387417dad9ab1993332e2c2b99d35ffe7ff`** into the overlay; park→accrue→recall on 50k returned 50004.79452 with escrow untouched. Evidence: live-session runbook § F4. Hermetic wiring: `tests/unit/fortel2-mmf-wiring.test.ts` |
-| F5 docs | **True** | README/DEMO/AGENTS/PRD synced; ForteL2 uptime disclosure added README § ForteL2 (2026-08-08 truth-up) |
-| F6 explorer address book | **Partially done, out of repo** | [`settlementos-explorer`](https://github.com/StephenForte/settlementos-explorer) repo exists; `src/config/networks.ts` on main already carries `fortel2-sepolia` (852) with optional read-replica URL. **`src/config/address-book.ts` still labels Base Sepolia + Amoy only** — ForteL2 contract/wallet addresses are F6's remaining work in that repo |
+| F5 docs | **True** | README/DEMO/AGENTS/PRD synced; ForteL2 uptime disclosure in README § ForteL2 (2026-08-08), mirrored into DEMO Part E + PRD (2026-08-09) |
+| F6 explorer address book | **Done (out of repo)** | [`settlementos-explorer`](https://github.com/StephenForte/settlementos-explorer) `main` @ `f669cbe`. Address book + `mmf-contract` role: PR [#4](https://github.com/StephenForte/settlementos-explorer/pull/4) → `20f17ff` (11 ForteL2 rows). Design system: PR [#6](https://github.com/StephenForte/settlementos-explorer/pull/6) → `223d452`. F6a–F6q series complete; tracking doc is that repo's [`docs/PLAN.md`](https://github.com/StephenForte/settlementos-explorer/blob/main/docs/PLAN.md) §0. Address provenance is out-of-band (F6c chain-852 liveness + F6f against `chain/deployments.fortel2-sepolia.json`) — the explorer's `EXPECTED` unit test is a tautology (PLAN §6 trap 2), not the verification |
 | F7 bridge leg via ForteL2 | **True live (2026-08-07)** | Both directions settled with dual hashes: `base-local`→`fortel2-sepolia` (`pay_6f678a415d2b`, ~4.5s) and `fortel2-sepolia`→`base-local` (`pay_302fbe6a0541`, ~12.5s). Evidence: live-session runbook § F7. Hermetic quote math: `tests/db/fortel2-bridge-route.test.ts` (T1) |
-| US-F007 (Sepolia-backed overlay) | **Resolved (2026-08-08)** | F1/F2 delivered the overlay directly; three of four criteria ticked in [`tasks/prd-fortel2-integration.md`](prd-fortel2-integration.md) § US-F007. Explorer address book criterion stays open as F6 |
+| US-F007 (Sepolia-backed overlay) | **Resolved (2026-08-09)** | All four criteria ticked in [`tasks/prd-fortel2-integration.md`](prd-fortel2-integration.md) § US-F007 — including explorer address book (F6a PR #4 → `20f17ff`) |
 
 Two hard blockers that shaped this plan — **corrected 2026-08-08**:
 
@@ -37,7 +39,8 @@ Two hard blockers that shaped this plan — **corrected 2026-08-08**:
 Consequence for planning: hermetic tests and runbooks are the default for workers;
 **live 852 verification is ops work on the ForteL2 Mac** — done for F3/F4/F7 on
 2026-08-07 ([`tasks/runbooks/fortel2-live-session-2026-08-07.md`](runbooks/fortel2-live-session-2026-08-07.md)).
-Future live checks (F6 address book, F8 cutover) follow the same pattern.
+F6 address-book confirmation (F6c/F6f) is also done in the explorer repo; future
+live checks (F8 cutover, buffer top-ups) follow the same pattern.
 
 ## 1. Branching scheme: what you described is the wrong shape
 
@@ -105,10 +108,12 @@ Integration-only (not a parallel-agent task — you or one reviewer, not delegat
 └─ I6  Consolidate docs: CLAUDE.md/README/AGENTS/PRD state + checkbox updates
 ```
 
-F6 (explorer) is out of this repo's tree entirely — track it as a separate
-workstream against `settlementos-explorer` if/when that repo exists locally.
-F8 (canonical USDC) is explicitly a joint-later decision per the PRD — not
-plannable yet.
+F6 (explorer) is out of this repo's tree entirely and **complete** on
+[`settlementos-explorer`](https://github.com/StephenForte/settlementos-explorer)
+`main` @ `f669cbe` (F6a–F6q). Further explorer work is tracked in that repo's
+[`docs/PLAN.md`](https://github.com/StephenForte/settlementos-explorer/blob/main/docs/PLAN.md),
+not here. F8 (canonical USDC) is explicitly a joint-later decision per the PRD —
+not plannable yet.
 
 ### Task detail
 
@@ -392,6 +397,8 @@ risks exactly the rebase pain you're trying to avoid.
   a bridge settle through ForteL2** — **done 2026-08-07** on the operator's Mac
   ([`tasks/runbooks/fortel2-live-session-2026-08-07.md`](runbooks/fortel2-live-session-2026-08-07.md)).
   Still not a worker task: requires ForteL2 machine access. Future live ops
-  (F6 address book verification, buffer top-ups) follow the same pattern.
-- ~~**US-F007's ambiguity** (§0)~~ — **resolved 2026-08-08** (docs truth-up):
-  F1/F2 delivered the overlay; see [`tasks/prd-fortel2-integration.md`](prd-fortel2-integration.md) § US-F007.
+  (buffer top-ups, F8 cutover) follow the same pattern. F6 address-book
+  verification is done in the explorer repo (see §0 F6 row).
+- ~~**US-F007's ambiguity** (§0)~~ — **resolved 2026-08-09** (docs truth-up):
+  F1/F2 delivered the overlay; explorer address book closed by F6a
+  (PR #4 → `20f17ff`). See [`tasks/prd-fortel2-integration.md`](prd-fortel2-integration.md) § US-F007.

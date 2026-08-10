@@ -15,7 +15,7 @@ The MVP described in this PRD is **built and running**. Code: [github.com/Stephe
 | 7 | Second real testnet (Polygon Amoy) — public cross-chain demo | ✅ Done 2026-07-15 |
 | 8 | Tokenized MMF / overnight liquidity parking (JLTXX-inspired, see §24) | ✅ Done 2026-07-14 |
 | 9 | Production hardening (AUDIT.md remediation) + regulatory & partner package | 🔨 Track A ✅ Done 2026-07-16 (327→341 tests, merged #8); Track B drafts in `docs/regulatory/` |
-| ForteL2 | Home-rail integration (registry → deploy → settle → MMF → docs) | ✅ F1–F5 done — see [`tasks/prd-fortel2-integration.md`](tasks/prd-fortel2-integration.md); F4 live-MMF wiring PR #29 (2026-08-03); live-sequencer park/recall pending reachable RPC |
+| ForteL2 | Home-rail integration (registry → deploy → settle → MMF → docs) | ✅ F1–F5 + F7 done — see [`tasks/prd-fortel2-integration.md`](tasks/prd-fortel2-integration.md); F4 live-MMF wiring PR #29 (2026-08-03); **live-sequencer park→accrue→recall verified 2026-08-07** (50k → 50004.79452, escrow untouched — [`tasks/runbooks/fortel2-live-session-2026-08-07.md`](tasks/runbooks/fortel2-live-session-2026-08-07.md)); F6 explorer address book done in [`settlementos-explorer`](https://github.com/StephenForte/settlementos-explorer) (PR #4 → `20f17ff`) |
 
 Live on Base Sepolia (chainId 84532): `PaymentSettlement` at
 [`0x9d8b8b7c476ab02306046f3da719d380fa0456aa`](https://sepolia.basescan.org/address/0x9d8b8b7c476ab02306046f3da719d380fa0456aa);
@@ -27,7 +27,17 @@ Live on Polygon Amoy (chainId 80002): `PaymentSettlement` at
 ($25k USD→JPY, Base Sepolia escrow → Polygon Amoy payout, ~7s):
 escrow [`0x2857eb...15c8e`](https://sepolia.basescan.org/tx/0x2857eb40d9ec95e2672c36581ad578a29389fe1d8e98c50cf86074e483e15c8e),
 payout [`0xc2d075...c0bd69`](https://amoy.polygonscan.com/tx/0xc2d0750d86926918b40f454d17fd2b46ba0ffbaf90185f57ca4fd466e8c0bd69).
-Detailed phase notes in §29.
+Live on ForteL2 Sepolia (chainId 852): same `PaymentSettlement` address plus
+`TokenizedMMF` at `0xaed29387417dad9ab1993332e2c2b99d35ffe7ff` — park→accrue→recall
+and bridge legs verified 2026-08-07
+([`tasks/runbooks/fortel2-live-session-2026-08-07.md`](tasks/runbooks/fortel2-live-session-2026-08-07.md)).
+ForteL2 is a personal, best-effort L2 with **no uptime SLA** (operated on the
+operator's Mac); Base Sepolia and Polygon Amoy are public testnets run by real
+operators. A demo against 852 only works while that sequencer is up. An optional
+Render read replica can back balance/display reads, but it is read-only, not a
+substitute for the sequencer, and has OOM'd on catch-up on small instances (see
+[`tasks/fortel2-l2-prereqs.md`](tasks/fortel2-l2-prereqs.md) § "Replica OOM on
+catch-up"). Detailed phase notes in §29.
 
 ## 1. Product Name
 
@@ -1441,6 +1451,9 @@ agent loop (`scripts/ralph/`), 10 user stories:
   (50k parked → 50004.79452 recalled, +4.794520 = 3.5%/365 exactly; escrow
   balance delta 0). Evidence: `tasks/runbooks/fortel2-live-session-2026-08-07.md`.
   Details in [`tasks/prd-fortel2-integration.md`](tasks/prd-fortel2-integration.md).
+  Among those three live networks, ForteL2 is the personal, best-effort rail
+  with **no uptime SLA** — a demo against 852 only works while the operator's
+  sequencer is up (see README § ForteL2 / DEMO Part E).
 
 ### Phase 9: Production Hardening + Regulatory / Partner Package
 
