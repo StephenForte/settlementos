@@ -24,18 +24,30 @@ Local reproduction (this triage):
 
 - `semgrep scan --config auto` over the full git tree → **0 Code findings**
   (community registry; matches that the baseline is not a Code finding set).
-- Enumerating the Pro SCA four requires `SEMGREP_APP_TOKEN` / Semgrep Cloud
-  (`steve-labs` org). Without the token, the four were identified by correlating
-  the CI Supply Chain baseline with an OSV lockfile scan of the same tree: the
-  **four High** advisories below. Stable identifiers used here are the GHSA IDs
-  (Semgrep Cloud `check_id` strings live behind the App token).
+- Enumerating Semgrep Cloud's exact `check_id` strings requires
+  `SEMGREP_APP_TOKEN` / Semgrep Cloud (`steve-labs` org) and was **not** done.
+  Mapping Semgrep's "4 findings" / "4 Supply Chain rules" (from the CI log) onto
+  the four packages below is an **inference** from that log plus the lockfile
+  advisory set — not a reading of Semgrep's output, and not a claim about which
+  Semgrep rule or severity filter produced the count. Stable identifiers used
+  here are GHSA IDs from `npm audit --json`.
+- The table lists the four packages that carry **moderate-or-higher**
+  advisories, **deduped by package** (3 high + 1 moderate): `adm-zip` (high),
+  `serialize-javascript` (high RCE; also carries moderate CPU-DoS
+  `GHSA-qj8w-gfj5-8c6v`, listed once), `tmp` (high path traversal), and `uuid`
+  (moderate). These are **not** "four High" advisories. Five further distinct
+  advisories in the same lockfile — one additional moderate already noted on
+  `serialize-javascript`, plus four **low** (`cookie` `GHSA-pxg6-pf52-xh8x`,
+  `diff` `GHSA-73rr-hh4g-fpgx`, `elliptic` `GHSA-848j-6mx2-7j84`, and a second
+  `tmp` `GHSA-52f5-9888-hmc6`) — are equally transitive under `hardhat@2.29.0`
+  and are covered by the same accept decision (Dependency advisories section).
 
 | Advisory | Package (lockfile) | Location | Disposition |
 |---|---|---|---|
 | `GHSA-xcpc-8h2w-3j85` | `adm-zip@0.4.16` | `package-lock.json:3921` | **ACCEPTED** — transitive under `hardhat@2.29.0` (devDependency). Hostile ZIP → memory blow-up in the Hardhat toolchain; we compile our own contracts; never ships in the Next.js runtime. No non-breaking patch on Hardhat 2.x (see Dependency advisories section). |
-| `GHSA-5c6j-r48x-rmvq` | `serialize-javascript@6.0.2` | `package-lock.json:9052` | **ACCEPTED** — via `hardhat` → `mocha`. RCE requires feeding hostile input into mocha's serializer; not on the application attack surface. Fix path is Hardhat 3 (breaking). |
+| `GHSA-5c6j-r48x-rmvq` | `serialize-javascript@6.0.2` | `package-lock.json:9052` | **ACCEPTED** — via `hardhat` → `mocha`. RCE requires feeding hostile input into mocha's serializer; not on the application attack surface. Same package also has moderate `GHSA-qj8w-gfj5-8c6v` (CPU DoS); listed once. Fix path is Hardhat 3 (breaking). |
 | `GHSA-ph9p-34f9-6g65` | `tmp@0.0.33` | `package-lock.json:9799` | **ACCEPTED** — via `hardhat` → `solc`. Path traversal in a temp-dir helper used by the Solidity compiler toolchain; local/dev only. |
-| `GHSA-w5hq-g745-h8pq` | `uuid@8.3.2` | `package-lock.json:10171` | **ACCEPTED** — direct transitive of `hardhat`. Buffer bounds issue in unused v3/v5/v6 APIs of a devDependency; not imported by app/runtime code. |
+| `GHSA-w5hq-g745-h8pq` | `uuid@8.3.2` | `package-lock.json:10171` | **ACCEPTED** — direct transitive of `hardhat` (**moderate**, not high). Buffer bounds issue in unused v3/v5/v6 APIs of a devDependency; not imported by app/runtime code. |
 
 No `nosemgrep` suppressions were added. Remediation is the Hardhat 3 migration
 (deliberately deferred — see the Dependency advisories section below); do not
