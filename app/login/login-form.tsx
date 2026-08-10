@@ -1,11 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui";
 
 export function LoginForm() {
-  const router = useRouter();
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -26,10 +24,10 @@ export function LoginForm() {
         return;
       }
       setKey("");
-      // The cookie is set; refresh so the server-rendered shell picks up the
-      // new principal before we land on the dashboard.
-      router.refresh();
-      router.push("/");
+      // Cookie changed under the root layout's currentPrincipal() — a client
+      // navigation can serve a pre-cookie RSC payload for "/", leaving the
+      // shell anonymous. Full document load is the only reliable refresh.
+      window.location.assign("/");
     } catch {
       setError("Could not reach the server. Is the app running?");
     } finally {

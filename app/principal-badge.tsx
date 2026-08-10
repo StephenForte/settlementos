@@ -1,18 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 /** Plain props from the server layout — never copy these into state, or the badge
- *  goes stale after a sign-in (see AGENTS.md on the server-parent/client-child pattern). */
+ *  goes stale after a sign-in (see AGENTS.md on the server-parent/client-child pattern).
+ *  After login/logout the cookie itself changed under the root layout, so navigate
+ *  with a full document load — router.refresh()+push can reuse a pre-cookie RSC shell. */
 export interface PrincipalBadgeProps {
   label: string | null;
   role: string | null;
 }
 
 export function PrincipalBadge({ label, role }: PrincipalBadgeProps) {
-  const router = useRouter();
   const [busy, setBusy] = useState(false);
 
   if (!label || !role) {
@@ -30,8 +30,8 @@ export function PrincipalBadge({ label, role }: PrincipalBadgeProps) {
     setBusy(true);
     try {
       await fetch("/api/auth/logout", { method: "POST" });
-      router.refresh();
-      router.push("/login");
+      // Cookie cleared; full load so the shell cannot keep the old principal.
+      window.location.assign("/login");
     } finally {
       setBusy(false);
     }
