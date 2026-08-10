@@ -148,7 +148,7 @@ It lives in its **own repository** and deploys as a static site. It has no backe
 ## Functional Requirements
 
 - FR-1: The app must read exclusively public data: public RPC endpoints and public explorer APIs. It must never require or contain a private key, an API key to SettlementOS, or any SettlementOS database access.
-- FR-2: All known addresses (contracts, tokens, operator, treasuries, entity wallets on both networks) must be defined in one bundled address-book config, with roles and display labels; address comparison must be case-insensitive.
+- FR-2: All known addresses (contracts, tokens, operator, treasuries, entity wallets on all three networks) must be defined in one bundled address-book config, with roles and display labels; address comparison must be case-insensitive.
 - FR-3: The app must support three networks — Base Sepolia (84532), Polygon Amoy (80002), and ForteL2 Sepolia (`fortel2-sepolia`, 852) — selected via a global switcher reflected in the URL.
 - FR-4: Every address view must show native balance and mock-token balances using each token's correct decimals (mockJPY = 0), computed with bigint math.
 - FR-5: Every address view must show ERC-20 transfer history with labeled counterparties, sourced from the Etherscan V2 API with an `eth_getLogs` fallback over a bounded recent window.
