@@ -59,42 +59,42 @@ export function RepairList({ payments }: { payments: StuckPaymentView[] }) {
   }
 
   if (payments.length === 0) {
-    return <p className="text-sm text-slate-500">Nothing needs attention — no payment is holding funds.</p>;
+    return <p className="text-sm text-body">Nothing needs attention — no payment is holding funds.</p>;
   }
 
   return (
     <div className="space-y-3">
       {notice && (
-        <p className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+        <p className="rounded-md border border-success-border bg-success-bg px-3 py-2 text-xs text-success-fg">
           {notice}
         </p>
       )}
       {error && (
-        <p className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+        <p className="rounded-md border border-danger-border bg-danger-bg px-3 py-2 text-xs text-danger-fg">
           {error}
         </p>
       )}
       <ul className="space-y-3">
         {payments.map((p) => (
-          <li key={p.id} className="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+          <li key={p.id} className="rounded-md border border-mute bg-canvas p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
-                  <Link href={`/payments/${p.id}`} className="font-mono text-xs text-emerald-400 hover:underline">
+                  <Link href={`/payments/${p.id}`} className="font-mono text-xs text-primary hover:underline">
                     {p.id}
                   </Link>
                   <StatusBadge status={p.status} />
-                  <span className="rounded-full border border-slate-600 bg-slate-800 px-2.5 py-0.5 text-[11px] text-slate-300">
+                  <span className="rounded-pill border border-mute bg-canvas-soft px-2.5 py-0.5 text-[11px] text-ink-mid">
                     escrow {p.escrowState ?? "unknown"}
                   </span>
                 </div>
-                <p className="text-xs text-slate-400">
+                <p className="text-xs text-body">
                   {p.senderName} → {p.recipientName} · {p.amount} {p.sourceCurrency} on {p.sourceNetwork}
                 </p>
-                <p className="text-xs text-amber-300">{diagnosis(p)}</p>
-                {p.failureReason && <p className="text-xs text-slate-500">{p.failureReason}</p>}
+                <p className="text-xs text-warning-fg">{diagnosis(p)}</p>
+                {p.failureReason && <p className="text-xs text-body">{p.failureReason}</p>}
                 {p.settleTxHash && (
-                  <div className="text-xs text-slate-500">
+                  <div className="text-xs text-body">
                     Settlement tx <Hash value={p.settleTxHash} href={p.settleTxUrl} />
                   </div>
                 )}
@@ -103,7 +103,7 @@ export function RepairList({ payments }: { payments: StuckPaymentView[] }) {
                 <button
                   onClick={() => repair(p.id)}
                   disabled={busy !== null}
-                  className="shrink-0 rounded-lg bg-emerald-500 px-3 py-2 text-xs font-medium text-emerald-950 hover:bg-emerald-400 disabled:opacity-50"
+                  className="shrink-0 rounded-md bg-primary px-3 py-2 text-xs font-semibold text-ink hover:opacity-90 disabled:opacity-50"
                 >
                   {busy === p.id ? "Compensating…" : "Retry compensation"}
                 </button>

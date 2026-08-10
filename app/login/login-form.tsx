@@ -41,7 +41,7 @@ export function LoginForm() {
     <Card>
       <form onSubmit={submit} className="flex flex-col gap-4">
         <div>
-          <label htmlFor="api-key" className="text-xs font-medium uppercase tracking-widest text-slate-500">
+          <label htmlFor="api-key" className="text-xs font-medium uppercase tracking-widest text-body">
             API key
           </label>
           <input
@@ -52,19 +52,19 @@ export function LoginForm() {
             autoComplete="off"
             spellCheck={false}
             placeholder="sos_…"
-            className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-emerald-500 focus:outline-none disabled:opacity-50"
+            className="mt-2 w-full rounded-md border border-mute bg-canvas px-3 py-2 font-mono text-sm text-ink focus:border-primary focus:outline-none disabled:opacity-50"
             disabled={busy}
           />
         </div>
         <button
           type="submit"
           disabled={busy || key.trim() === ""}
-          className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-emerald-950 hover:bg-emerald-400 disabled:opacity-50"
+          className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-ink hover:opacity-90 disabled:opacity-50"
         >
           {busy ? "Signing in…" : "Sign in"}
         </button>
         {error && (
-          <p className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">
+          <p className="rounded-md border border-danger-border bg-danger-bg px-3 py-2 text-sm text-danger-fg">
             {error}
           </p>
         )}

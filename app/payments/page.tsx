@@ -56,20 +56,20 @@ export default async function PaymentsPage({
   return (
     <div className="space-y-6">
       <header className="flex items-end justify-between">
-        <h1 className="text-2xl font-semibold text-white">Payments</h1>
+        <h1 className="text-2xl font-semibold text-ink">Payments</h1>
         <Link
           href="/payments/new"
-          className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-emerald-950 hover:bg-emerald-400"
+          className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-ink hover:opacity-90"
         >
           New Payment
         </Link>
       </header>
       <Card>
         {payments.length === 0 ? (
-          <p className="text-sm text-slate-500">No payments yet.</p>
+          <p className="text-sm text-body">No payments yet.</p>
         ) : (
           <table className="w-full text-left text-sm">
-            <thead className="text-xs uppercase tracking-wider text-slate-500">
+            <thead className="text-xs uppercase tracking-wider text-body">
               <tr>
                 <th className="pb-2 pr-4">Payment</th>
                 <th className="pb-2 pr-4">Reference</th>
@@ -81,28 +81,28 @@ export default async function PaymentsPage({
                 <th className="pb-2" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/60">
+            <tbody className="divide-y divide-mute">
               {payments.map((p) => (
                 <tr key={p.id}>
                   <td className="py-2.5 pr-4">
                     <span className="font-mono text-xs">{p.id}</span>
-                    <div className="text-xs text-slate-500">
+                    <div className="text-xs text-body">
                       {p.sender.name} → {p.recipient.name}
                     </div>
                   </td>
-                  <td className="py-2.5 pr-4 text-slate-400">{p.referenceId || "—"}</td>
-                  <td className="py-2.5 pr-4 text-slate-300">
+                  <td className="py-2.5 pr-4 text-body">{p.referenceId || "—"}</td>
+                  <td className="py-2.5 pr-4 text-ink-mid">
                     {p.sourceCurrency} → {p.destinationCurrency}
-                    <div className="text-[10px] text-slate-500">
+                    <div className="text-[10px] text-body">
                       {p.sourceNetwork === p.destinationNetwork
                         ? p.sourceNetwork
                         : `${p.sourceNetwork} ⇢ ${p.destinationNetwork}`}
                     </div>
                   </td>
-                  <td className="py-2.5 pr-4 text-slate-200">
+                  <td className="py-2.5 pr-4 text-ink">
                     {formatAmount(p.amount, p.sourceCurrency)} {p.sourceCurrency}
                   </td>
-                  <td className="py-2.5 pr-4 text-slate-300">
+                  <td className="py-2.5 pr-4 text-ink-mid">
                     {p.destinationAmount
                       ? `${formatAmount(p.destinationAmount, p.destinationCurrency)} ${p.destinationCurrency}`
                       : "—"}
@@ -114,7 +114,7 @@ export default async function PaymentsPage({
                     <Hash value={p.txHash} href={explorerTxUrl(p.sourceNetwork, p.txHash)} />
                   </td>
                   <td className="py-2.5 text-right">
-                    <Link href={`/payments/${p.id}`} className="text-emerald-400 hover:underline">
+                    <Link href={`/payments/${p.id}`} className="text-primary hover:underline">
                       View
                     </Link>
                   </td>
@@ -127,7 +127,7 @@ export default async function PaymentsPage({
       {(hasMore || page.cursor) && (
         <div className="flex items-center justify-between text-sm">
           {page.cursor ? (
-            <Link href="/payments" className="text-slate-400 hover:text-white hover:underline">
+            <Link href="/payments" className="text-body hover:text-ink hover:underline">
               ← Newest
             </Link>
           ) : (
@@ -136,7 +136,7 @@ export default async function PaymentsPage({
           {hasMore && nextCursor && (
             <Link
               href={`/payments?cursor=${encodeURIComponent(nextCursor)}`}
-              className="text-emerald-400 hover:underline"
+              className="text-primary hover:underline"
             >
               Older →
             </Link>

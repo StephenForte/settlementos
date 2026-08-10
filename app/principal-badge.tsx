@@ -19,9 +19,9 @@ export function PrincipalBadge({ label, role }: PrincipalBadgeProps) {
     return (
       <Link
         href="/login"
-        className="block rounded-lg border border-slate-700 bg-slate-900/60 px-3 py-2 text-xs text-slate-400 transition-colors hover:border-slate-600 hover:text-slate-200"
+        className="block rounded-md border border-mute bg-canvas px-3 py-2 text-xs text-body transition-colors hover:border-ink hover:text-ink"
       >
-        Not signed in — <span className="text-emerald-400">sign in</span>
+        Not signed in — <span className="text-primary">sign in</span>
       </Link>
     );
   }
@@ -38,15 +38,15 @@ export function PrincipalBadge({ label, role }: PrincipalBadgeProps) {
   }
 
   return (
-    <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
-      <p className="truncate text-xs font-medium text-slate-200" title={label}>
+    <div className="rounded-md border border-mute bg-canvas p-3">
+      <p className="truncate text-xs font-medium text-ink" title={label}>
         {label}
       </p>
-      <p className="mt-0.5 text-[11px] uppercase tracking-widest text-slate-500">{role}</p>
+      <p className="mt-0.5 text-[11px] uppercase tracking-widest text-body">{role}</p>
       <button
         onClick={signOut}
         disabled={busy}
-        className="mt-2 text-[11px] text-slate-400 underline underline-offset-2 transition-colors hover:text-slate-200 disabled:opacity-50"
+        className="mt-2 text-[11px] text-body underline underline-offset-2 transition-colors hover:text-ink disabled:opacity-50"
       >
         {busy ? "Signing out…" : "Sign out"}
       </button>

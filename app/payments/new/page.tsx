@@ -101,14 +101,14 @@ export default function NewPaymentPage() {
   const recipients = entities.filter((e) => e.role !== "SENDER");
 
   const inputClass =
-    "w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-500 focus:outline-none";
-  const labelClass = "mb-1 block text-xs font-medium uppercase tracking-wider text-slate-500";
+    "w-full rounded-md border border-mute bg-canvas px-3 py-2 text-sm text-ink focus:border-primary focus:outline-none";
+  const labelClass = "mb-1 block text-xs font-medium uppercase tracking-wider text-body";
 
   return (
     <div className="max-w-2xl space-y-6">
       <header>
-        <h1 className="text-2xl font-semibold text-white">Create Payment</h1>
-        <p className="mt-1 text-sm text-slate-400">
+        <h1 className="text-2xl font-semibold text-ink">Create Payment</h1>
+        <p className="mt-1 text-sm text-body">
           Initiate a cross-border B2B settlement over EVM stablecoin rails.
         </p>
       </header>
@@ -163,7 +163,7 @@ export default function NewPaymentPage() {
                   <option key={c}>{c}</option>
                 ))}
               </select>
-              <p className="mt-1 text-[11px] text-slate-500">Settles as {ASSET_FOR[form.source_currency]}</p>
+              <p className="mt-1 text-[11px] text-body">Settles as {ASSET_FOR[form.source_currency]}</p>
             </div>
             <div>
               <label className={labelClass}>Destination Currency</label>
@@ -176,7 +176,7 @@ export default function NewPaymentPage() {
                   <option key={c}>{c}</option>
                 ))}
               </select>
-              <p className="mt-1 text-[11px] text-slate-500">
+              <p className="mt-1 text-[11px] text-body">
                 Recipient credited in {form.destination_currency}
               </p>
             </div>
@@ -213,12 +213,12 @@ export default function NewPaymentPage() {
                 ))}
               </select>
               {form.source_network !== form.destination_network && (
-                <p className="mt-1 text-[11px] text-cyan-300">Cross-chain route via simulated bridge</p>
+                <p className="mt-1 text-[11px] text-status-cyan-fg">Cross-chain route via simulated bridge</p>
               )}
               {networks.some(
                 (n) => n.live && [form.source_network, form.destination_network].includes(n.id)
               ) && (
-                <p className="mt-1 text-[11px] text-emerald-300">
+                <p className="mt-1 text-[11px] text-success-fg">
                   Real testnet — transactions get public Basescan links
                 </p>
               )}
@@ -252,7 +252,7 @@ export default function NewPaymentPage() {
           </div>
 
           {error && (
-            <p className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">
+            <p className="rounded-md border border-danger-border bg-danger-bg px-3 py-2 text-sm text-danger-fg">
               {error}
             </p>
           )}
@@ -260,11 +260,11 @@ export default function NewPaymentPage() {
           <button
             type="submit"
             disabled={submitting || !form.sender_id || !form.recipient_id}
-            className="rounded-lg bg-emerald-500 px-5 py-2.5 text-sm font-medium text-emerald-950 hover:bg-emerald-400 disabled:opacity-50"
+            className="rounded-md bg-primary px-5 py-2.5 text-sm font-semibold text-ink hover:opacity-90 disabled:opacity-50"
           >
             {submitting ? "Creating…" : "Create Draft Payment"}
           </button>
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-body">
             Creating a payment does not move funds. You will review a route quote and compliance results
             before execution.
           </p>
