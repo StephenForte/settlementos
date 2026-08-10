@@ -1,10 +1,20 @@
 # SettlementOS — Technical Architecture
 
+> **STATUS: FROZEN TEMPLATE (2026-08-10).**  
+> This memo is an **unreviewed draft**, frozen on this date. It is **illustrative
+> scaffolding** for a bank or licensed partner evaluating SettlementOS — not legal,
+> regulatory, or compliance advice, and not authoritative for any jurisdiction.  
+> An adopter is expected to **replace** this document with their own. Substitution
+> points use `[[ADOPTER: …]]` (see [README.md](README.md)).
+
 **Audience:** technical reviewers at prospective payment partners, banks, and
 fintechs; the technical annex to the regulator demo deck.
 **Status of the system:** testnet-only proof of concept. Mock assets, simulated
 FX and payout, no real customer funds. Every claim below is grounded in the
 running code ([AGENTS.md](../../AGENTS.md) is the engineering guide).
+**Adopter context:** [[ADOPTER: deploying legal entity / programme name]];
+networks and environments in your pack —
+[[ADOPTER: production / pilot network set (replace Base Sepolia, Polygon Amoy, locals)]].
 
 ---
 
@@ -32,8 +42,9 @@ Three tiers, each with a hard boundary:
   compliance checks, liquidity reservations, treasury positions, and the
   append-only audit log.
 - **Chain adapter** — a viem-based adapter to EVM networks: two local chains for
-  development plus real public testnets (Base Sepolia, Polygon Amoy). Contract
-  addresses and account roles are loaded per network.
+  development plus real public testnets
+  ([[ADOPTER: live testnet / mainnet targets — draft cites Base Sepolia, Polygon Amoy]]).
+  Contract addresses and account roles are loaded per network.
 
 Chain, key-custody, treasury, and executor modules are marked `server-only`: a
 client bundle that reaches them fails the build, so deployment records and key

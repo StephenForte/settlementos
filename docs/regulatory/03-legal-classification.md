@@ -1,5 +1,14 @@
 # SettlementOS — Legal Classification Memo
 
+> **STATUS: FROZEN TEMPLATE (2026-08-10).**  
+> This memo is an **unreviewed draft**, frozen on this date. It is **illustrative
+> scaffolding** for a bank or licensed partner evaluating SettlementOS — not legal,
+> regulatory, or compliance advice, and not authoritative for any jurisdiction.  
+> An adopter is expected to **replace** this document with their own. Substitution
+> points use `[[ADOPTER: …]]` (see [README.md](README.md)).  
+> **Do not resolve the open questions below in this repository** — answers belong
+> to qualified counsel, not to a software project.
+
 > **This is not legal advice.** It draws no legal conclusions. It is a structured
 > set of **issues and questions for qualified counsel and regulators**, grounded in
 > what the system does (see [technical architecture](01-technical-architecture.md)
@@ -7,7 +16,10 @@
 > confirmed, corrected, or ruled out by licensed counsel in the relevant
 > jurisdiction before any real-money operation.
 
-**Lead jurisdiction:** United States. Secondary: Singapore, Japan (live corridors).
+**Lead jurisdiction:** [[ADOPTER: lead jurisdiction — draft used United States]].
+Secondary: [[ADOPTER: secondary jurisdictions — draft used Singapore, Japan]]
+(live corridors).
+**Counsel:** [[ADOPTER: lead counsel / firm for classification analysis]].
 **Framing assumption to test first:** SettlementOS operates as **technology
 infrastructure** to a licensed, fund-holding partner, and does not itself touch
 customer funds. Much of the analysis below turns on whether that assumption holds
@@ -27,21 +39,24 @@ regulatory design memo and the pilot go/no-go gates.
   in the target model the licensed partner moves the funds, SettlementOS provides
   software.
 - **Question:** does SettlementOS's role constitute "money transmission" or
-  "receiving money for transmission" under FinCEN's BSA rules and state money-
-  transmitter statutes, or does the not-touching-funds / infrastructure posture
+  "receiving money for transmission" under
+  [[ADOPTER: lead-jurisdiction money-transmission / BSA (or equivalent) rules — draft cited FinCEN BSA + state MTL statutes]],
+  or does the not-touching-funds / infrastructure posture
   place it outside the definition (e.g. a payment-processor or agent-of-the-payee
   analysis)?
 - **For counsel:**
   - Does escrow via an operator-controlled smart contract count as SettlementOS
     "controlling" or "holding" funds, even on testnet-derived architecture?
-  - Federal FinCEN MSB registration: required, or avoided under the infrastructure
-    model?
-  - State MTLs: which states, and does an agent/partner model cover them?
+  - [[ADOPTER: federal / national registration question — draft cited FinCEN MSB]]:
+    required, or avoided under the infrastructure model?
+  - [[ADOPTER: sub-national licence footprint — draft cited US state MTLs]]:
+    which territories, and does an agent/partner model cover them?
   - Does the treasury account that receives released escrow change the analysis?
 
 ## 2. Stablecoin usage
 
-- **What the system does:** settles in mock ERC-20 stand-ins for USD/JPY/SGD
+- **What the system does:** settles in mock ERC-20 stand-ins for
+  [[ADOPTER: corridor currencies — draft used USD/JPY/SGD]]
   stablecoins; production would use real regulated stablecoins.
 - **Question:** classification and permissibility of the specific settlement
   stablecoins, and any issuer-imposed or regulatory constraints on using them for
@@ -106,7 +121,8 @@ regulatory design memo and the pilot go/no-go gates.
   satisfy originator/beneficiary information-sharing requirements?
 - **For counsel:** thresholds and applicability to on-chain B2B settlement; required
   data fields vs. what is captured; a Travel Rule messaging solution/provider; how
-  the requirement is met across the US/SG/JP corridors.
+  the requirement is met across the
+  [[ADOPTER: corridor jurisdiction set — draft used US/SG/JP]] corridors.
 
 ## 8. Data retention & privacy
 
@@ -131,12 +147,14 @@ regulatory design memo and the pilot go/no-go gates.
   onboarding controls needed to keep consumers out; disclosures if any consumer-
   adjacent use is possible.
 
-## 10. Cross-corridor (Singapore, Japan) — flag for local counsel
+## 10. Cross-corridor ([[ADOPTER: secondary jurisdictions — draft used Singapore, Japan]]) — flag for local counsel
 
-The same questions recur under **MAS** (Singapore Payment Services Act — cross-
-border money transfer / DPT services) and **JFSA** (Japan — funds-transfer and
-crypto-asset registration). Each corridor needs local counsel; this memo leads with
-US and flags SG/JP as parallel workstreams once the US position is set.
+The same questions recur under
+[[ADOPTER: secondary regulator / statute set — draft cited MAS (Singapore Payment Services Act — cross-border money transfer / DPT) and JFSA (Japan — funds-transfer and crypto-asset registration)]].
+Each corridor needs local counsel; this memo leads with
+[[ADOPTER: lead jurisdiction — draft used US]] and flags
+[[ADOPTER: secondary workstreams — draft used SG/JP]] as parallel workstreams once
+the lead position is set.
 
 ## 11. Priority questions (the ones that gate a real-money pilot)
 

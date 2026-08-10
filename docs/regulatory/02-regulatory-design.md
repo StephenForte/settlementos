@@ -1,13 +1,21 @@
 # SettlementOS — Regulatory Design Memo
 
+> **STATUS: FROZEN TEMPLATE (2026-08-10).**  
+> This memo is an **unreviewed draft**, frozen on this date. It is **illustrative
+> scaffolding** for a bank or licensed partner evaluating SettlementOS — not legal,
+> regulatory, or compliance advice, and not authoritative for any jurisdiction.  
+> An adopter is expected to **replace** this document with their own. Substitution
+> points use `[[ADOPTER: …]]` (see [README.md](README.md)).
+
 **Audience:** internal strategy, prospective regulated partners, and (in
 redacted form) informal regulator conversations.
 **Purpose:** describe, in regulator-legible terms, what SettlementOS does and does
 not do, who touches funds, where funds are held, which jurisdictions are in scope,
 and the licensing paths available — so that formal legal and regulatory engagement
 can begin from an accurate picture.
-**Lead jurisdiction:** United States, with Singapore and Japan as the live
-cross-border corridors (see [corridor strategy](05-corridor-strategy.md)).
+**Lead jurisdiction:** [[ADOPTER: lead jurisdiction — draft used United States]],
+with [[ADOPTER: secondary corridor jurisdictions — draft used Singapore and Japan]]
+as the live cross-border corridors (see [corridor strategy](05-corridor-strategy.md)).
 **Status:** the product is a testnet proof of concept. This memo describes the
 architecture's *intended* operating posture; where a capability is simulated or
 absent today, it says so. This memo is not legal advice; see the
@@ -22,7 +30,8 @@ stablecoin settlement workflows for businesses, fintechs, payment companies, and
 regulated partners. It orchestrates cross-border B2B payments over EVM stablecoin
 rails — route quoting, a compliance gate, on-chain escrow, FX, payout, and a
 tamper-evident audit trail — as software. In the operating model it is designed
-for, the **licensed partner** (a money transmitter, bank, or e-money/PSP licensee),
+for, the **licensed partner**
+([[ADOPTER: partner licence category — e.g. money transmitter, bank, e-money/PSP]]),
 not SettlementOS, is the entity that touches customer funds and holds the
 regulatory permissions.
 
@@ -83,7 +92,8 @@ approvals — so "who can move funds, and how much" is bounded by design.
 
 ## 6. Jurisdictions in scope
 
-Lead: **United States.** Live corridors also touch **Singapore** and **Japan**.
+Lead: **[[ADOPTER: lead jurisdiction — draft used United States]].** Live corridors
+also touch **[[ADOPTER: secondary jurisdictions — draft used Singapore and Japan]]**.
 The go-to-market assumption is that SettlementOS operates as infrastructure to a
 licensed entity in each jurisdiction rather than seeking to be the licensed entity
 itself at the outset. Jurisdiction-by-jurisdiction rollout is covered in the
@@ -95,13 +105,12 @@ Depending on the operating model chosen, one or more of the following may be
 implicated — **for the fund-holding entity**, which in the target model is the
 partner, not SettlementOS:
 
-- US **money transmission** — federal FinCEN MSB registration and state money
-  transmitter licenses (MTLs), or reliance on a licensed partner / agent model.
+- [[ADOPTER: lead-jurisdiction money-transmission / MSB / MTL (or equivalent) licence categories — draft cited US FinCEN MSB + state MTLs]],
+  or reliance on a licensed partner / agent model.
 - **Bank/trust or special-purpose** charters where custody or settlement finality
   is involved.
-- Singapore **Payment Services Act** (MAS) licensing for cross-border money
-  transfer / digital payment token services.
-- Japan **Funds Transfer / crypto-asset** registration (JFSA).
+- [[ADOPTER: secondary-jurisdiction payment / DPT licence categories — draft cited Singapore Payment Services Act (MAS)]].
+- [[ADOPTER: secondary-jurisdiction funds-transfer / crypto-asset registration — draft cited Japan JFSA]].
 
 Which of these attach — and whether SettlementOS-as-software avoids them by not
 touching funds — is the core question for the [legal classification
@@ -109,12 +118,14 @@ memo](03-legal-classification.md).
 
 ## 8. Licensed partners that may be used
 
-- A US money transmitter / MSB to be the fund-moving entity domestically.
-- A bank or e-money/PSP partner for fiat on/off ramps and settlement accounts.
-- A qualified **custodian** for on-chain assets.
-- Regulated **stablecoin issuers** for the settlement asset.
+- [[ADOPTER: named or candidate domestic fund-moving licensed partner (MT/MSB/bank)]].
+- [[ADOPTER: bank or e-money/PSP partner for fiat on/off ramps and settlement accounts]].
+- A qualified **custodian** for on-chain assets — [[ADOPTER: custodian counterparty]].
+- Regulated **stablecoin issuers** for the settlement asset —
+  [[ADOPTER: acceptable settlement stablecoin issuer(s)]].
 - Established **compliance vendors** for KYB, sanctions, wallet, and transaction
-  screening (the POC already integrates sanctions and wallet-screening sandboxes).
+  screening (the POC already integrates sanctions and wallet-screening sandboxes) —
+  [[ADOPTER: programme-of-record screening vendors]].
 
 ## 9. Regulatory design principles — and how each is enforced
 
@@ -129,10 +140,11 @@ architecture "something a regulator can understand."
 ## 10. Immediate next steps
 
 1. Confirm the **operating model** (SettlementOS-as-infrastructure to a licensed
-   partner) with counsel.
+   partner) with counsel ([[ADOPTER: counsel of record]]).
 2. Commission the [legal classification](03-legal-classification.md) analysis,
-   US-first.
-3. Identify a lead licensed partner per the [partner integration
+   [[ADOPTER: lead jurisdiction — draft used US]]-first.
+3. Identify a lead licensed partner
+   ([[ADOPTER: lead licensed partner]]) per the [partner integration
    memo](04-partner-integration.md).
 4. Scope a sandbox / licensed-partner pilot per the [pilot options
    memo](06-pilot-options.md).

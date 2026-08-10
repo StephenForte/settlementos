@@ -1,11 +1,20 @@
 # SettlementOS — Partner Integration Memo
 
+> **STATUS: FROZEN TEMPLATE (2026-08-10).**  
+> This memo is an **unreviewed draft**, frozen on this date. It is **illustrative
+> scaffolding** for a bank or licensed partner evaluating SettlementOS — not legal,
+> regulatory, or compliance advice, and not authoritative for any jurisdiction.  
+> An adopter is expected to **replace** this document with their own. Substitution
+> points use `[[ADOPTER: …]]` (see [README.md](README.md)).
+
 **Audience:** prospective partners — money transmitters, banks, PSPs/e-money
 licensees, custodians, stablecoin issuers, and compliance vendors.
 **Purpose:** describe how a partner integrates with SettlementOS, what each side
 owns, and the commercial models available.
 **Status:** testnet POC. Integration surfaces described here exist and run; fiat
 rails, real assets, and real licensing are the partner's contribution.
+**Lead partner (when named):** [[ADOPTER: primary licensed partner legal name]].
+**Commercial model:** [[ADOPTER: infrastructure / embedded / other commercial model]].
 
 ---
 
@@ -67,11 +76,14 @@ internal leakage, pagination on every list, and a hash-chained, signed audit tra
 ## 5. What a partner brings
 
 - A **license** in the relevant jurisdiction (or an agent relationship that covers
-  it).
+  it) — [[ADOPTER: exact licence(s) and issuing authority]].
 - **Funds and liquidity** for the corridors they want live (see [corridor
-  strategy](05-corridor-strategy.md)).
-- **Fiat rails** (bank accounts, on/off ramps).
-- Optionally: **custody**, a **compliance program**, or a **stablecoin**.
+  strategy](05-corridor-strategy.md)) —
+  [[ADOPTER: funded corridor list and inventory owner]].
+- **Fiat rails** (bank accounts, on/off ramps) —
+  [[ADOPTER: fiat rail / banking counterparties]].
+- Optionally: **custody**, a **compliance program**, or a **stablecoin** —
+  [[ADOPTER: custodian / AML programme owner / settlement asset issuer]].
 
 ## 6. Integration path
 
