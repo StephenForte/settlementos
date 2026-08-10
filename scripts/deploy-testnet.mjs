@@ -298,33 +298,91 @@ export function adoptNeedsMmf(adoptable) {
 }
 
 /**
- * Refuse a bare full deploy on a network whose contracts are already live and
- * registered in ADOPTABLE_NETWORKS when no overlay exists. Auto-detect would
- * otherwise choose mode:"full" and redeploy escrow/tokens at new addresses —
- * the irreversible outcome --adopt exists to prevent. Escape hatch:
- * --force-full-deploy (must be typed deliberately).
+ * Diagnose why an overlay resolves to a full-deploy state — file absent,
+ * unreadable JSON, missing networks[id], or an incomplete slice. Pure; does
+ * not change readNetworkOverlay. Used only to make refusal messages actionable.
  *
  * @param {{
  *   networkId: string,
- *   overlayExists: boolean,
+ *   overlayFilePresent: boolean,
+ *   overlayJson: string | null | undefined,
+ *   networkOverlay: Record<string, unknown> | null | undefined
+ * }} input
+ */
+export function diagnoseAdoptableOverlayFinding({
+  networkId,
+  overlayFilePresent,
+  overlayJson,
+  networkOverlay,
+}) {
+  if (!overlayFilePresent || overlayJson == null) {
+    return "no overlay file present";
+  }
+  try {
+    JSON.parse(overlayJson);
+  } catch {
+    return "overlay file present but unreadable (malformed JSON)";
+  }
+  if (networkOverlay == null) {
+    return `overlay file present but missing networks[${networkId}]`;
+  }
+  const contracts = /** @type {Record<string, unknown> | undefined} */ (networkOverlay.contracts);
+  const settlement = contracts?.PaymentSettlement;
+  const tokens = /** @type {Record<string, { address?: string }> | undefined} */ (contracts?.tokens);
+  const mockUsdc = tokens?.mockUSDC?.address;
+  if (!settlement && !mockUsdc) {
+    return "overlay slice present but incomplete (missing PaymentSettlement and mockUSDC)";
+  }
+  if (!settlement) {
+    return "overlay slice present but incomplete (missing PaymentSettlement)";
+  }
+  if (!mockUsdc) {
+    return "overlay slice present but incomplete (missing mockUSDC)";
+  }
+  return "overlay resolves to a full-deploy state";
+}
+
+/**
+ * Refuse a bare full deploy on a network in ADOPTABLE_NETWORKS when the
+ * *resolved* deploy mode would be "full". Gates on decideDeployMode's output —
+ * not file existence — so a present-but-unreadable / incomplete overlay cannot
+ * bypass the guard and redeploy live escrow/tokens at NEW addresses.
+ * Escape hatch: --force-full-deploy (must be typed deliberately).
+ *
+ * @param {{
+ *   networkId: string,
+ *   mode: DeployMode | string,
  *   forceFullDeploy: boolean,
+ *   overlayFilePresent?: boolean,
+ *   overlayJson?: string | null,
+ *   networkOverlay?: Record<string, unknown> | null,
  *   adoptableNetworks?: Record<string, AdoptableNetwork>
  * }} input
  * @returns {{ ok: true } | { ok: false, message: string }}
  */
 export function assertAdoptableFullDeployAllowed({
   networkId,
-  overlayExists,
+  mode,
   forceFullDeploy,
+  overlayFilePresent = false,
+  overlayJson = null,
+  networkOverlay = null,
   adoptableNetworks = ADOPTABLE_NETWORKS,
 }) {
-  if (overlayExists) return { ok: true };
   if (forceFullDeploy) return { ok: true };
   if (!adoptableNetworks[networkId]) return { ok: true };
+  if (mode !== "full") return { ok: true };
+
+  const finding = diagnoseAdoptableOverlayFinding({
+    networkId,
+    overlayFilePresent,
+    overlayJson,
+    networkOverlay,
+  });
   return {
     ok: false,
     message:
-      `${networkId} is registered in ADOPTABLE_NETWORKS and has no overlay — ` +
+      `${networkId} is registered in ADOPTABLE_NETWORKS (${finding}) — ` +
       `a bare full deploy would redeploy PaymentSettlement and tokens at NEW addresses, ` +
       `breaking the same-address property.\n` +
       `Use --adopt to re-home the live contracts into a fresh overlay, or pass ` +
@@ -681,16 +739,20 @@ async function main() {
     }
     if (!codeCheck.ok) fail(codeCheck.message);
   } else {
-    // Before auto-detect: an adoptable network with no overlay must not fall
-    // through to mode:"full" (redeploy). --force-full-deploy is the only escape.
+    // Resolve mode first, then refuse if an adoptable network would full-deploy.
+    // Gate on the resolved mode (not file existence) so a present-but-invalid
+    // overlay cannot bypass the guard. --force-full-deploy is the only escape.
+    const decided = decideDeployMode(networkOverlay);
     const fullGuard = assertAdoptableFullDeployAllowed({
       networkId: NETWORK_ID,
-      overlayExists,
+      mode: decided.mode,
       forceFullDeploy,
+      overlayFilePresent: overlayExists,
+      overlayJson,
+      networkOverlay,
     });
     if (!fullGuard.ok) fail(fullGuard.message);
 
-    const decided = decideDeployMode(networkOverlay);
     mode = decided.mode;
     reason = decided.reason;
   }
