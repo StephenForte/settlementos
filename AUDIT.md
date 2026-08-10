@@ -10,6 +10,37 @@ SettlementOS is suitable as a closed local demo, but is not safe to expose publi
 
 The project clearly labels itself as a testnet demo with mock assets. The findings below focus on the work needed to evolve it toward an operational site.
 
+## Semgrep baseline findings — reviewed and accepted (2026-08-10)
+
+CI's Semgrep job (`semgrep ci` with `SEMGREP_APP_TOKEN`, Pro Code + Supply Chain)
+reports **"Current version has 4 findings"** while still exiting green because
+PR runs are **diff scans** — "Findings: 0 (0 blocking)" means zero *new*
+findings in the changed files, not a clean project. The baseline four are
+**Supply Chain (SCA) reachability** findings on `package-lock.json`, not Code
+(SAST) rules: the same CI log re-scans the baseline with "4 Supply Chain rules"
+and "No code rules to run."
+
+Local reproduction (this triage):
+
+- `semgrep scan --config auto` over the full git tree → **0 Code findings**
+  (community registry; matches that the baseline is not a Code finding set).
+- Enumerating the Pro SCA four requires `SEMGREP_APP_TOKEN` / Semgrep Cloud
+  (`steve-labs` org). Without the token, the four were identified by correlating
+  the CI Supply Chain baseline with an OSV lockfile scan of the same tree: the
+  **four High** advisories below. Stable identifiers used here are the GHSA IDs
+  (Semgrep Cloud `check_id` strings live behind the App token).
+
+| Advisory | Package (lockfile) | Location | Disposition |
+|---|---|---|---|
+| `GHSA-xcpc-8h2w-3j85` | `adm-zip@0.4.16` | `package-lock.json:3921` | **ACCEPTED** — transitive under `hardhat@2.29.0` (devDependency). Hostile ZIP → memory blow-up in the Hardhat toolchain; we compile our own contracts; never ships in the Next.js runtime. No non-breaking patch on Hardhat 2.x (see Dependency advisories section). |
+| `GHSA-5c6j-r48x-rmvq` | `serialize-javascript@6.0.2` | `package-lock.json:9052` | **ACCEPTED** — via `hardhat` → `mocha`. RCE requires feeding hostile input into mocha's serializer; not on the application attack surface. Fix path is Hardhat 3 (breaking). |
+| `GHSA-ph9p-34f9-6g65` | `tmp@0.0.33` | `package-lock.json:9799` | **ACCEPTED** — via `hardhat` → `solc`. Path traversal in a temp-dir helper used by the Solidity compiler toolchain; local/dev only. |
+| `GHSA-w5hq-g745-h8pq` | `uuid@8.3.2` | `package-lock.json:10171` | **ACCEPTED** — direct transitive of `hardhat`. Buffer bounds issue in unused v3/v5/v6 APIs of a devDependency; not imported by app/runtime code. |
+
+No `nosemgrep` suppressions were added. Remediation is the Hardhat 3 migration
+(deliberately deferred — see the Dependency advisories section below); do not
+treat a green Semgrep diff check as "baseline reviewed" without this record.
+
 ## Findings
 
 ### P0 — API access permits data disclosure and settlement actions
