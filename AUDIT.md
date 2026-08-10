@@ -41,6 +41,40 @@ No `nosemgrep` suppressions were added. Remediation is the Hardhat 3 migration
 (deliberately deferred — see the Dependency advisories section below); do not
 treat a green Semgrep diff check as "baseline reviewed" without this record.
 
+## Dependency advisories — reviewed and accepted (2026-08-10)
+
+`npm audit` on this tree (2026-08-10) reports **17 vulnerabilities: 11 low,
+2 moderate, 4 high** (0 critical). Patchhog / similar "clean scan" statuses that
+pass when nothing is auto-fixable high/critical are not a substitute for this
+review.
+
+**Root cause (single):** every advisory is transitive under `hardhat@2.29.0`
+(a `devDependency`). Verified with `npm ls <pkg> --all` for representative
+leaves — `adm-zip`, `serialize-javascript`, `tmp`, `uuid`, `cookie` — each path
+roots at `hardhat`. Nothing in the tree reaches the Next.js runtime bundle.
+
+**Why there is no patch on the current major:** `hardhat@2.29.0` is the last 2.x
+release. npm's own remediation text is: fix available via
+`npm audit fix --force` / Will install `hardhat@3.12.0`, which is a breaking
+change. There is no 2.x bump that clears the graph.
+
+**Blast radius of the alternative (Hardhat 3 now):** Hardhat 3 is an ESM/TS-first
+rewrite. This repo's Hardhat surface is `hardhat.config.cjs` +
+`hardhat.config.polygon.cjs`, a vitest fixture that boots two nodes on
+9545/9546, and deploy scripts that read `chain/artifacts/`. Migrating as a
+security drive-by would put the full test suite and both deploy paths at risk
+for a toolchain that never ships.
+
+**Exposure being accepted:** a **dev-only** compile/test toolchain. Concrete
+highs include `serialize-javascript` RCE (requires hostile input into mocha)
+and `tmp` / `adm-zip` issues inside solc/Hardhat helpers — we compile our own
+contracts; untrusted artifact input is not an application threat model here.
+
+**Decision:** **accept; do not migrate now.** Do not run `npm audit fix` or
+`npm audit fix --force` for this class of finding. Revisit when Hardhat 3 is
+worth doing on its own merits (tooling/ESM migration), not as a security fix
+for a non-runtime dependency graph.
+
 ## Findings
 
 ### P0 — API access permits data disclosure and settlement actions
