@@ -19,10 +19,23 @@
 // merge TokenizedMMF into the existing overlay without touching escrow/tokens.
 // A re-run when TokenizedMMF is already present is a no-op.
 //
-//   node scripts/deploy-testnet.mjs <network> [--preflight-only]
+// --adopt re-homes a live network whose overlay (and therefore its generated
+// treasury/entity keys) was lost, while the contracts and DEPLOYER_PRIVATE_KEY
+// survived. It never deploys PaymentSettlement or MockERC20 — those addresses
+// come from ADOPTABLE_NETWORKS, and each is bytecode-verified on-chain before
+// any wallet is generated. New treasury + entity wallets are minted (the old
+// ones cannot sign), funded with gas dust, and demo-minted; if the adopted
+// registry has no TokenizedMMF the existing MMF add-on path runs afterward.
+//
+//   node scripts/deploy-testnet.mjs <network> [--preflight-only] [--adopt]
+//                                              [--force-full-deploy]
 //
 // --preflight-only runs RPC/chain-id/balance checks and prints the planned mode
-// and actions without sending any transactions.
+// and actions without sending any transactions. With --adopt it also fetches
+// bytecode for every registered address and aborts on empty code.
+// A bare full deploy against a network in ADOPTABLE_NETWORKS with no overlay is
+// refused (those contracts are already live) — use --adopt, or type
+// --force-full-deploy deliberately if a genuine fresh deploy is intended.
 //
 // Run: npm run deploy:base-sepolia | deploy:polygon-amoy | deploy:fortel2-sepolia
 //      (all load .env via node --env-file)
@@ -120,17 +133,41 @@ const ENTITY_PROFILES = {
   ent_osaka_parts: { label: "Osaka Parts wallet (unverified)", allowlisted: false, riskScore: 55 },
 };
 
-/** @typedef {"full" | "mmf_addon" | "noop"} DeployMode */
+/**
+ * Known live contract addresses that may be adopted when an overlay (and its
+ * generated wallet keys) was lost but the deployer/operator key survived.
+ * Network-generic: add an entry for a future ForteL2 re-genesis the same way.
+ * TokenizedMMF is omitted when the original deploy predates F4 — adopt then
+ * runs the MMF add-on path after writing the overlay.
+ */
+export const ADOPTABLE_NETWORKS = {
+  "base-sepolia": {
+    operator: "0x5128889F20Ec13e0Be38b2BeBC568594159B652d",
+    contracts: {
+      PaymentSettlement: "0x9d8b8b7c476ab02306046f3da719d380fa0456aa",
+      tokens: {
+        mockUSDC: { address: "0x2066738d535681d28d0841cc2503c1c531d4d6aa", decimals: 6 },
+        mockJPY: { address: "0x7d7b168cfab3dba1afc41f6160e886ffe9997e63", decimals: 0 },
+        mockSGD: { address: "0x0b6fa033c034d694e876b56f2dd8377a2be5691d", decimals: 6 },
+      },
+    },
+  },
+};
+
+/** @typedef {"full" | "mmf_addon" | "noop" | "adopt"} DeployMode */
 
 /**
- * Parse argv for network id and --preflight-only.
+ * Parse argv for network id, --preflight-only, --adopt, and --force-full-deploy.
  * @param {string[]} argv process.argv
  */
 export function parseDeployArgs(argv) {
   const rest = argv.slice(2);
+  const flags = new Set(["--preflight-only", "--adopt", "--force-full-deploy"]);
   const preflightOnly = rest.includes("--preflight-only");
-  const networkId = rest.find((a) => a !== "--preflight-only");
-  return { networkId, preflightOnly };
+  const adopt = rest.includes("--adopt");
+  const forceFullDeploy = rest.includes("--force-full-deploy");
+  const networkId = rest.find((a) => !flags.has(a));
+  return { networkId, preflightOnly, adopt, forceFullDeploy };
 }
 
 /**
@@ -182,6 +219,162 @@ export function decideDeployMode(networkOverlay) {
   return {
     mode: "mmf_addon",
     reason: "PaymentSettlement + tokens present, TokenizedMMF missing — MMF add-on",
+  };
+}
+
+/**
+ * @typedef {{
+ *   operator: string,
+ *   contracts: {
+ *     PaymentSettlement?: string,
+ *     TokenizedMMF?: string,
+ *     tokens?: Record<string, { address?: string, decimals?: number }>
+ *   }
+ * }} AdoptableNetwork
+ */
+
+/**
+ * Flatten an adoptable-network registry entry into labeled addresses that must
+ * hold bytecode (operator is an EOA — verified separately, not for code).
+ * @param {AdoptableNetwork} adoptable
+ * @returns {{ label: string, address: string }[]}
+ */
+export function listAdoptContractAddresses(adoptable) {
+  /** @type {{ label: string, address: string }[]} */
+  const out = [];
+  const contracts = adoptable?.contracts;
+  if (!contracts) return out;
+  if (typeof contracts.PaymentSettlement === "string") {
+    out.push({ label: "PaymentSettlement", address: contracts.PaymentSettlement });
+  }
+  if (typeof contracts.TokenizedMMF === "string") {
+    out.push({ label: "TokenizedMMF", address: contracts.TokenizedMMF });
+  }
+  const tokens = contracts.tokens ?? {};
+  for (const [symbol, meta] of Object.entries(tokens)) {
+    if (meta?.address) out.push({ label: symbol, address: meta.address });
+  }
+  return out;
+}
+
+/**
+ * Pure bytecode gate: every registered contract address must return non-empty
+ * code. Call this *before* writing an overlay or generating wallets.
+ * @param {{ label: string, address: string, code: string | null | undefined }[]} entries
+ * @param {string} networkId
+ * @returns {{ ok: true, results: { label: string, address: string, bytes: number }[] } | { ok: false, message: string, results: { label: string, address: string, bytes: number }[] }}
+ */
+export function evaluateAdoptBytecode(entries, networkId) {
+  const results = entries.map(({ label, address, code }) => {
+    const bytes =
+      code && code !== "0x" && code !== "0x0" ? Math.floor((code.length - 2) / 2) : 0;
+    return { label, address, bytes };
+  });
+  const empty = results.filter((r) => r.bytes === 0);
+  if (empty.length > 0) {
+    const detail = empty
+      .map((r) => `  ${r.label} ${r.address} — 0 bytes (no code on ${networkId})`)
+      .join("\n");
+    return {
+      ok: false,
+      message:
+        `Adopt aborted: one or more addresses hold no bytecode on ${networkId}.\n` +
+        detail +
+        "\nRefuse to write an overlay pointing at empty addresses.",
+      results,
+    };
+  }
+  return { ok: true, results };
+}
+
+/**
+ * True when the adoptable registry has no TokenizedMMF — adopt must deploy one
+ * via the MMF add-on path after the overlay is written.
+ * @param {AdoptableNetwork | { contracts?: { TokenizedMMF?: string } } | null | undefined} adoptable
+ */
+export function adoptNeedsMmf(adoptable) {
+  const mmf = adoptable?.contracts?.TokenizedMMF;
+  return !(typeof mmf === "string" && mmf.length > 0);
+}
+
+/**
+ * Refuse a bare full deploy on a network whose contracts are already live and
+ * registered in ADOPTABLE_NETWORKS when no overlay exists. Auto-detect would
+ * otherwise choose mode:"full" and redeploy escrow/tokens at new addresses —
+ * the irreversible outcome --adopt exists to prevent. Escape hatch:
+ * --force-full-deploy (must be typed deliberately).
+ *
+ * @param {{
+ *   networkId: string,
+ *   overlayExists: boolean,
+ *   forceFullDeploy: boolean,
+ *   adoptableNetworks?: Record<string, AdoptableNetwork>
+ * }} input
+ * @returns {{ ok: true } | { ok: false, message: string }}
+ */
+export function assertAdoptableFullDeployAllowed({
+  networkId,
+  overlayExists,
+  forceFullDeploy,
+  adoptableNetworks = ADOPTABLE_NETWORKS,
+}) {
+  if (overlayExists) return { ok: true };
+  if (forceFullDeploy) return { ok: true };
+  if (!adoptableNetworks[networkId]) return { ok: true };
+  return {
+    ok: false,
+    message:
+      `${networkId} is registered in ADOPTABLE_NETWORKS and has no overlay — ` +
+      `a bare full deploy would redeploy PaymentSettlement and tokens at NEW addresses, ` +
+      `breaking the same-address property.\n` +
+      `Use --adopt to re-home the live contracts into a fresh overlay, or pass ` +
+      `--force-full-deploy if you deliberately intend a destructive fresh deploy.`,
+  };
+}
+
+/**
+ * Gate --adopt before any transaction: registry present, no existing overlay
+ * (would overwrite live keys), deployer is the on-chain operator.
+ * @param {{ networkId: string, overlayExists: boolean, deployerAddress: string, adoptable: AdoptableNetwork | null | undefined }} input
+ * @returns {{ ok: true, mode: "adopt", needsMmf: boolean, reason: string } | { ok: false, message: string }}
+ */
+export function decideAdoptPlan({ networkId, overlayExists, deployerAddress, adoptable }) {
+  if (!adoptable) {
+    return {
+      ok: false,
+      message:
+        `No adoptable contract registry for ${networkId}. ` +
+        `Add an entry to ADOPTABLE_NETWORKS (or omit --adopt for a full deploy).`,
+    };
+  }
+  if (overlayExists) {
+    return {
+      ok: false,
+      message:
+        `Overlay already exists for ${networkId} (chain/deployments.${networkId}.json). ` +
+        `Adopt refuses to overwrite existing treasury/entity keys — move the file aside to re-adopt.`,
+    };
+  }
+  const expected = adoptable.operator;
+  if (!expected) {
+    return { ok: false, message: `Adoptable registry for ${networkId} is missing operator` };
+  }
+  if (!deployerAddress || deployerAddress.toLowerCase() !== expected.toLowerCase()) {
+    return {
+      ok: false,
+      message:
+        `Deployer ${deployerAddress || "(none)"} is not the on-chain operator ${expected} ` +
+        `for ${networkId}. Adopt keeps the original operator (re-keying needs an on-chain grant).`,
+    };
+  }
+  const needsMmf = adoptNeedsMmf(adoptable);
+  return {
+    ok: true,
+    mode: "adopt",
+    needsMmf,
+    reason: needsMmf
+      ? "adopt known contracts + generate new wallets; TokenizedMMF missing — MMF add-on after overlay"
+      : "adopt known contracts (including TokenizedMMF) + generate new wallets",
   };
 }
 
@@ -261,8 +454,9 @@ export function runPreflightChecks({ deployerKey, onchainId, balance, deployerAd
  * @param {DeployMode} mode
  * @param {string} networkId
  * @param {Record<string, unknown> | null | undefined} networkOverlay
+ * @param {{ needsMmf?: boolean, adoptable?: typeof ADOPTABLE_NETWORKS[string] | null }} [opts]
  */
-export function describePlannedActions(mode, networkId, networkOverlay) {
+export function describePlannedActions(mode, networkId, networkOverlay, opts = {}) {
   const lines = [`Deploy mode: ${mode}`];
   switch (mode) {
     case "full":
@@ -293,6 +487,38 @@ export function describePlannedActions(mode, networkId, networkOverlay) {
         `- TokenizedMMF already recorded (${networkOverlay?.contracts?.TokenizedMMF}) — no transactions`
       );
       break;
+    case "adopt": {
+      const adoptable = opts.adoptable;
+      const settlement = adoptable?.contracts?.PaymentSettlement;
+      const usdc = adoptable?.contracts?.tokens?.mockUSDC?.address;
+      const jpy = adoptable?.contracts?.tokens?.mockJPY?.address;
+      const sgd = adoptable?.contracts?.tokens?.mockSGD?.address;
+      const needsMmf = opts.needsMmf ?? adoptNeedsMmf(adoptable);
+      lines.push(
+        `- Verify on-chain bytecode for PaymentSettlement (${settlement})`,
+        `- Verify on-chain bytecode for mockUSDC (${usdc}), mockJPY (${jpy}), mockSGD (${sgd})`,
+        "- Keep deployer as operator (no re-key)",
+        "- Generate NEW treasury + entity wallets (old overlay keys are gone)",
+        "- Fund new wallets with gas dust (per-network targets)",
+        "- Mint demo token balances to new wallets (permissionless MockERC20.mint)",
+        "- Do NOT deploy PaymentSettlement or MockERC20",
+        "- Do NOT grant standing entity→escrow allowances"
+      );
+      if (needsMmf) {
+        lines.push(
+          "- Deploy TokenizedMMF (adopted registry has none)",
+          "- Mint MMF yield buffer (50,000 mockUSDC) to the new fund",
+          "- Treasury MAX-approve mockUSDC → TokenizedMMF"
+        );
+      } else {
+        lines.push(`- Reuse existing TokenizedMMF (${adoptable?.contracts?.TokenizedMMF})`);
+      }
+      lines.push(
+        `- Write chain/deployments.${networkId}.json`,
+        "- Register entity wallets in the database (if seeded)"
+      );
+      break;
+    }
     default:
       break;
   }
@@ -367,11 +593,13 @@ function fail(msg) {
 }
 
 async function main() {
-  const { networkId: NETWORK_ID, preflightOnly } = parseDeployArgs(process.argv);
+  const { networkId: NETWORK_ID, preflightOnly, adopt, forceFullDeploy } = parseDeployArgs(
+    process.argv
+  );
   const CFG = NETWORK_CONFIGS[NETWORK_ID];
   if (!CFG) {
     console.error(
-      `Usage: node scripts/deploy-testnet.mjs <network> [--preflight-only]\nSupported: ${Object.keys(NETWORK_CONFIGS).join(", ")}`
+      `Usage: node scripts/deploy-testnet.mjs <network> [--preflight-only] [--adopt] [--force-full-deploy]\nSupported: ${Object.keys(NETWORK_CONFIGS).join(", ")}`
     );
     process.exit(1);
   }
@@ -412,16 +640,85 @@ async function main() {
   });
   if (!preflight.ok) fail(preflight.message);
 
-  const overlayJson = fs.existsSync(OUT_PATH) ? fs.readFileSync(OUT_PATH, "utf8") : null;
+  const overlayExists = fs.existsSync(OUT_PATH);
+  const overlayJson = overlayExists ? fs.readFileSync(OUT_PATH, "utf8") : null;
   const networkOverlay = readNetworkOverlay(overlayJson, NETWORK_ID);
-  const { mode, reason } = decideDeployMode(networkOverlay);
+
+  /** @type {DeployMode} */
+  let mode;
+  /** @type {string} */
+  let reason;
+  /** @type {boolean | undefined} */
+  let needsMmf;
+  /** @type {typeof ADOPTABLE_NETWORKS[string] | undefined} */
+  let adoptable;
+
+  if (adopt) {
+    adoptable = ADOPTABLE_NETWORKS[NETWORK_ID];
+    const planDecision = decideAdoptPlan({
+      networkId: NETWORK_ID,
+      overlayExists,
+      deployerAddress: deployerAddr,
+      adoptable,
+    });
+    if (!planDecision.ok) fail(planDecision.message);
+    mode = planDecision.mode;
+    reason = planDecision.reason;
+    needsMmf = planDecision.needsMmf;
+
+    // Bytecode verification is part of adopt preflight — fail before any plan
+    // that would write empty addresses into an overlay.
+    const toCheck = listAdoptContractAddresses(adoptable);
+    const withCode = [];
+    for (const { label, address } of toCheck) {
+      const code = await publicClient.getBytecode({ address: /** @type {`0x${string}`} */ (address) });
+      withCode.push({ label, address, code });
+    }
+    const codeCheck = evaluateAdoptBytecode(withCode, NETWORK_ID);
+    console.log("\nOn-chain bytecode verification:");
+    for (const r of codeCheck.results) {
+      console.log(`  ${r.label} ${r.address} — ${r.bytes} bytes — ${r.bytes > 0 ? "ok" : "EMPTY"}`);
+    }
+    if (!codeCheck.ok) fail(codeCheck.message);
+  } else {
+    // Before auto-detect: an adoptable network with no overlay must not fall
+    // through to mode:"full" (redeploy). --force-full-deploy is the only escape.
+    const fullGuard = assertAdoptableFullDeployAllowed({
+      networkId: NETWORK_ID,
+      overlayExists,
+      forceFullDeploy,
+    });
+    if (!fullGuard.ok) fail(fullGuard.message);
+
+    const decided = decideDeployMode(networkOverlay);
+    mode = decided.mode;
+    reason = decided.reason;
+  }
 
   console.log(`\n${CFG.name} (${NETWORK_ID}) — ${reason}`);
-  const plan = describePlannedActions(mode, NETWORK_ID, networkOverlay);
+  const plan = describePlannedActions(mode, NETWORK_ID, networkOverlay, { needsMmf, adoptable });
   for (const line of plan) console.log(line);
 
   if (preflightOnly) {
     console.log("\n--preflight-only: no transactions sent.");
+    return;
+  }
+
+  if (mode === "adopt") {
+    await runAdopt({
+      NETWORK_ID,
+      CFG,
+      OUT_PATH,
+      RPC_URL,
+      EXPLORER,
+      deployerKey,
+      publicClient,
+      walletFor,
+      txLink,
+      addressLink,
+      adoptable,
+      needsMmf: !!needsMmf,
+    });
     return;
   }
 
@@ -458,6 +755,252 @@ async function main() {
     txLink,
     addressLink,
   });
+}
+
+/**
+ * Adopt known live contracts into a fresh overlay with new signable wallets.
+ * Never deploys PaymentSettlement or MockERC20. Deploys TokenizedMMF only when
+ * the adoptable registry omits it (pre-F4 networks).
+ */
+async function runAdopt({
+  NETWORK_ID,
+  CFG,
+  OUT_PATH,
+  RPC_URL,
+  EXPLORER,
+  deployerKey,
+  publicClient,
+  walletFor,
+  txLink,
+  addressLink,
+  adoptable,
+  needsMmf,
+}) {
+  const deployer = walletFor(deployerKey);
+  const deployerAddr = deployer.account.address;
+  const balance = await publicClient.getBalance({ address: deployerAddr });
+  console.log(`Deployer ${deployerAddr} — ${formatEther(balance)} ${CFG.currency} on ${CFG.name}`);
+
+  // Always generate fresh keys — the lost overlay's addresses cannot sign, and
+  // their mock balances are worthless (mint is permissionless). Never reuse,
+  // recover, or sweep old treasury/entity addresses.
+  const treasuryEnvKey = process.env.TREASURY_PRIVATE_KEY;
+  const treasuryKey = treasuryEnvKey || generatePrivateKey();
+  const treasuryAddr = privateKeyToAccount(treasuryKey).address;
+
+  const entityWallets = {};
+  for (const [externalId, profile] of Object.entries(ENTITY_PROFILES)) {
+    const pk = generatePrivateKey();
+    entityWallets[externalId] = {
+      privateKey: pk,
+      address: privateKeyToAccount(pk).address,
+      profile,
+    };
+  }
+
+  console.log("\nNew wallets (addresses only — keys written to overlay, not logged):");
+  console.log(`  treasury ${treasuryAddr}`);
+  for (const [id, w] of Object.entries(entityWallets)) {
+    console.log(`  ${id} ${w.address}`);
+  }
+
+  async function send(fn, label) {
+    const hash = await fn();
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    if (receipt.status !== "success") fail(`${label} reverted: ${txLink(hash)}`);
+    console.log(`  ${label} → ${txLink(hash)}`);
+    return { hash, receipt };
+  }
+
+  console.log("\nFunding role wallets with gas dust:");
+  const fundTargets = [
+    { label: "treasury", address: treasuryAddr, target: CFG.treasuryGasTarget },
+    ...Object.entries(entityWallets).map(([id, w]) => ({
+      label: id,
+      address: w.address,
+      target: CFG.entityGasTarget,
+    })),
+  ];
+  for (const t of fundTargets) {
+    const bal = await publicClient.getBalance({ address: t.address });
+    if (bal >= t.target) {
+      console.log(`  ${t.label} ${t.address} already funded (${formatEther(bal)} ${CFG.currency})`);
+      continue;
+    }
+    await send(
+      () => deployer.sendTransaction({ to: t.address, value: t.target - bal }),
+      `fund ${t.label} ${t.address}`
+    );
+  }
+
+  const tokenArt = artifact("MockERC20");
+  const tokenAbi = tokenArt.abi;
+  const tokens = adoptable.contracts.tokens;
+  const settlementAddress = adoptable.contracts.PaymentSettlement;
+
+  // Same demo balance distribution as the full deploy / local chains.
+  console.log("\nMinting demo balances to new wallets:");
+  const mints = [
+    ["mockUSDC", entityWallets.ent_acme_us.address, 1_000_000n * 10n ** 6n, "ACME 1,000,000 mockUSDC"],
+    ["mockUSDC", treasuryAddr, 500_000n * 10n ** 6n, "treasury 500,000 mockUSDC"],
+    ["mockJPY", treasuryAddr, 100_000_000n, "treasury 100,000,000 mockJPY"],
+    ["mockSGD", treasuryAddr, 1_000_000n * 10n ** 6n, "treasury 1,000,000 mockSGD"],
+    ["mockSGD", entityWallets.ent_sg_supplier.address, 200_000n * 10n ** 6n, "SG Imports 200,000 mockSGD"],
+    ["mockJPY", entityWallets.ent_tokyo_supplier.address, 10_000_000n, "Tokyo 10,000,000 mockJPY"],
+  ];
+  for (const [symbol, to, amount, label] of mints) {
+    await send(
+      () =>
+        deployer.writeContract({
+          address: tokens[symbol].address,
+          abi: tokenAbi,
+          functionName: "mint",
+          args: [to, amount],
+        }),
+      `mint ${label}`
+    );
+  }
+
+  // No entity→escrow approvals — exact per-payment allowance at execute time.
+
+  let mmfAddress = typeof adoptable.contracts.TokenizedMMF === "string" ? adoptable.contracts.TokenizedMMF : null;
+  let approvalTxHash = null;
+
+  if (needsMmf) {
+    console.log("\nDeploying TokenizedMMF (adopt add-on):");
+    const mmfArt = artifact("TokenizedMMF");
+    const mmfHash = await deployer.deployContract({
+      abi: mmfArt.abi,
+      bytecode: mmfArt.bytecode,
+      args: [tokens.mockUSDC.address],
+    });
+    const mmfReceipt = await publicClient.waitForTransactionReceipt({ hash: mmfHash });
+    if (mmfReceipt.status !== "success") fail(`TokenizedMMF deploy reverted: ${txLink(mmfHash)}`);
+    mmfAddress = mmfReceipt.contractAddress;
+    console.log(`  TokenizedMMF → ${addressLink(mmfAddress)}`);
+  } else {
+    console.log(`\nReusing adopted TokenizedMMF → ${addressLink(mmfAddress)}`);
+  }
+
+  const mmfUsdcBalance = await publicClient.readContract({
+    address: tokens.mockUSDC.address,
+    abi: tokenAbi,
+    functionName: "balanceOf",
+    args: [mmfAddress],
+  });
+
+  if (mmfYieldBufferSatisfied(mmfUsdcBalance)) {
+    console.log(
+      `\nMMF yield buffer already funded (${mmfUsdcBalance.toString()} base units ≥ ${MMF_YIELD_BUFFER.toString()}) — skip mint`
+    );
+  } else {
+    console.log("\nMinting MMF yield buffer:");
+    await send(
+      () =>
+        deployer.writeContract({
+          address: tokens.mockUSDC.address,
+          abi: tokenAbi,
+          functionName: "mint",
+          args: [mmfAddress, MMF_YIELD_BUFFER],
+        }),
+      "mint MMF yield buffer 50,000 mockUSDC"
+    );
+  }
+
+  const allowance = await publicClient.readContract({
+    address: tokens.mockUSDC.address,
+    abi: tokenAbi,
+    functionName: "allowance",
+    args: [treasuryAddr, mmfAddress],
+  });
+
+  if (treasuryMmfApprovalSatisfied(allowance)) {
+    console.log(`\nTreasury already approved mockUSDC → TokenizedMMF — skip approve`);
+  } else {
+    console.log("\nApproving the MMF as treasury:");
+    const treasuryWallet = walletFor(treasuryKey);
+    const { hash } = await send(
+      () =>
+        treasuryWallet.writeContract({
+          address: tokens.mockUSDC.address,
+          abi: tokenAbi,
+          functionName: "approve",
+          args: [mmfAddress, MAX_UINT256],
+        }),
+      "treasury approve mockUSDC → TokenizedMMF"
+    );
+    approvalTxHash = hash;
+  }
+
+  const deployments = {
+    networks: {
+      [NETWORK_ID]: {
+        chainId: CFG.chainId,
+        rpcUrl: RPC_URL,
+        ...(EXPLORER ? { explorerUrl: EXPLORER } : {}),
+        contracts: {
+          PaymentSettlement: settlementAddress,
+          TokenizedMMF: mmfAddress,
+          tokens: Object.fromEntries(
+            Object.entries(tokens).map(([k, v]) => [k, { address: v.address, decimals: v.decimals }])
+          ),
+        },
+        accounts: {
+          operator: { address: deployerAddr, privateKeyEnv: "DEPLOYER_PRIVATE_KEY" },
+          treasury: treasuryEnvKey
+            ? { address: treasuryAddr, privateKeyEnv: "TREASURY_PRIVATE_KEY" }
+            : { address: treasuryAddr, privateKey: treasuryKey },
+          entityWallets: Object.fromEntries(
+            Object.entries(entityWallets).map(([id, w]) => [
+              id,
+              { address: w.address, privateKey: w.privateKey },
+            ])
+          ),
+        },
+      },
+    },
+  };
+  fs.writeFileSync(OUT_PATH, JSON.stringify(deployments, null, 2));
+  console.log(`\nWrote ${path.relative(root, OUT_PATH)}`);
+
+  const prisma = new PrismaClient();
+  let registered = 0;
+  for (const [externalId, w] of Object.entries(entityWallets)) {
+    const entity = await prisma.entity.findUnique({ where: { externalId } });
+    if (!entity) continue;
+    await prisma.wallet.upsert({
+      where: { address_network: { address: w.address, network: NETWORK_ID } },
+      create: {
+        entityId: entity.id,
+        address: w.address,
+        network: NETWORK_ID,
+        label: w.profile.label,
+        allowlisted: w.profile.allowlisted,
+        riskScore: w.profile.riskScore,
+      },
+      update: {
+        label: w.profile.label,
+        allowlisted: w.profile.allowlisted,
+        riskScore: w.profile.riskScore,
+      },
+    });
+    registered++;
+  }
+  await prisma.$disconnect();
+  if (registered === 0) {
+    console.log(
+      `\nNote: no entities in the database yet — run \`npm run setup\` (it also registers these ${CFG.name} wallets).`
+    );
+  } else {
+    console.log(`Registered ${registered} entity wallets in the database for ${NETWORK_ID}.`);
+  }
+
+  const remaining = await publicClient.getBalance({ address: deployerAddr });
+  console.log(`\nDone (adopt). Deployer gas remaining: ${formatEther(remaining)} ${CFG.currency}`);
+  console.log(`PaymentSettlement: ${addressLink(settlementAddress)} (adopted)`);
+  console.log(`TokenizedMMF: ${addressLink(mmfAddress)} (${needsMmf ? "new" : "adopted"})`);
+  if (approvalTxHash) console.log(`Treasury MMF approval: ${txLink(approvalTxHash)}`);
+  console.log(`Start the app (npm run dev) and pick ${CFG.name} as source and/or destination chain.`);
 }
 
 /**
