@@ -55,3 +55,9 @@ tests/.tmp
 # per-machine agent settings (.claude/launch.json is shared and stays tracked)
 .claude/settings.local.json
 .claude/worktrees/
+
+# scanner / audit output (never commit)
+semgrep-results.json
+semgrep*.json
+*.sarif
+npm-audit.json

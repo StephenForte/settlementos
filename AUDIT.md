@@ -10,6 +10,83 @@ SettlementOS is suitable as a closed local demo, but is not safe to expose publi
 
 The project clearly labels itself as a testnet demo with mock assets. The findings below focus on the work needed to evolve it toward an operational site.
 
+## Semgrep baseline findings — reviewed and accepted (2026-08-10)
+
+CI's Semgrep job (`semgrep ci` with `SEMGREP_APP_TOKEN`, Pro Code + Supply Chain)
+reports **"Current version has 4 findings"** while still exiting green because
+PR runs are **diff scans** — "Findings: 0 (0 blocking)" means zero *new*
+findings in the changed files, not a clean project. The baseline four are
+**Supply Chain (SCA) reachability** findings on `package-lock.json`, not Code
+(SAST) rules: the same CI log re-scans the baseline with "4 Supply Chain rules"
+and "No code rules to run."
+
+Local reproduction (this triage):
+
+- `semgrep scan --config auto` over the full git tree → **0 Code findings**
+  (community registry; matches that the baseline is not a Code finding set).
+- Enumerating Semgrep Cloud's exact `check_id` strings requires
+  `SEMGREP_APP_TOKEN` / Semgrep Cloud (`steve-labs` org) and was **not** done.
+  Mapping Semgrep's "4 findings" / "4 Supply Chain rules" (from the CI log) onto
+  the four packages below is an **inference** from that log plus the lockfile
+  advisory set — not a reading of Semgrep's output, and not a claim about which
+  Semgrep rule or severity filter produced the count. Stable identifiers used
+  here are GHSA IDs from `npm audit --json`.
+- The table lists the four packages that carry **moderate-or-higher**
+  advisories, **deduped by package** (3 high + 1 moderate): `adm-zip` (high),
+  `serialize-javascript` (high RCE; also carries moderate CPU-DoS
+  `GHSA-qj8w-gfj5-8c6v`, listed once), `tmp` (high path traversal), and `uuid`
+  (moderate). These are **not** "four High" advisories. Five further distinct
+  advisories in the same lockfile — one additional moderate already noted on
+  `serialize-javascript`, plus four **low** (`cookie` `GHSA-pxg6-pf52-xh8x`,
+  `diff` `GHSA-73rr-hh4g-fpgx`, `elliptic` `GHSA-848j-6mx2-7j84`, and a second
+  `tmp` `GHSA-52f5-9888-hmc6`) — are equally transitive under `hardhat@2.29.0`
+  and are covered by the same accept decision (Dependency advisories section).
+
+| Advisory | Package (lockfile) | Location | Disposition |
+|---|---|---|---|
+| `GHSA-xcpc-8h2w-3j85` | `adm-zip@0.4.16` | `package-lock.json:3921` | **ACCEPTED** — transitive under `hardhat@2.29.0` (devDependency). Hostile ZIP → memory blow-up in the Hardhat toolchain; we compile our own contracts; never ships in the Next.js runtime. No non-breaking patch on Hardhat 2.x (see Dependency advisories section). |
+| `GHSA-5c6j-r48x-rmvq` | `serialize-javascript@6.0.2` | `package-lock.json:9052` | **ACCEPTED** — via `hardhat` → `mocha`. RCE requires feeding hostile input into mocha's serializer; not on the application attack surface. Same package also has moderate `GHSA-qj8w-gfj5-8c6v` (CPU DoS); listed once. Fix path is Hardhat 3 (breaking). |
+| `GHSA-ph9p-34f9-6g65` | `tmp@0.0.33` | `package-lock.json:9799` | **ACCEPTED** — via `hardhat` → `solc`. Path traversal in a temp-dir helper used by the Solidity compiler toolchain; local/dev only. |
+| `GHSA-w5hq-g745-h8pq` | `uuid@8.3.2` | `package-lock.json:10171` | **ACCEPTED** — direct transitive of `hardhat` (**moderate**, not high). Buffer bounds issue in unused v3/v5/v6 APIs of a devDependency; not imported by app/runtime code. |
+
+No `nosemgrep` suppressions were added. Remediation is the Hardhat 3 migration
+(deliberately deferred — see the Dependency advisories section below); do not
+treat a green Semgrep diff check as "baseline reviewed" without this record.
+
+## Dependency advisories — reviewed and accepted (2026-08-10)
+
+`npm audit` on this tree (2026-08-10) reports **17 vulnerabilities: 11 low,
+2 moderate, 4 high** (0 critical). Patchhog / similar "clean scan" statuses that
+pass when nothing is auto-fixable high/critical are not a substitute for this
+review.
+
+**Root cause (single):** every advisory is transitive under `hardhat@2.29.0`
+(a `devDependency`). Verified with `npm ls <pkg> --all` for representative
+leaves — `adm-zip`, `serialize-javascript`, `tmp`, `uuid`, `cookie` — each path
+roots at `hardhat`. Nothing in the tree reaches the Next.js runtime bundle.
+
+**Why there is no patch on the current major:** `hardhat@2.29.0` is the last 2.x
+release. npm's own remediation text is: fix available via
+`npm audit fix --force` / Will install `hardhat@3.12.0`, which is a breaking
+change. There is no 2.x bump that clears the graph.
+
+**Blast radius of the alternative (Hardhat 3 now):** Hardhat 3 is an ESM/TS-first
+rewrite. This repo's Hardhat surface is `hardhat.config.cjs` +
+`hardhat.config.polygon.cjs`, a vitest fixture that boots two nodes on
+9545/9546, and deploy scripts that read `chain/artifacts/`. Migrating as a
+security drive-by would put the full test suite and both deploy paths at risk
+for a toolchain that never ships.
+
+**Exposure being accepted:** a **dev-only** compile/test toolchain. Concrete
+highs include `serialize-javascript` RCE (requires hostile input into mocha)
+and `tmp` / `adm-zip` issues inside solc/Hardhat helpers — we compile our own
+contracts; untrusted artifact input is not an application threat model here.
+
+**Decision:** **accept; do not migrate now.** Do not run `npm audit fix` or
+`npm audit fix --force` for this class of finding. Revisit when Hardhat 3 is
+worth doing on its own merits (tooling/ESM migration), not as a security fix
+for a non-runtime dependency graph.
+
 ## Findings
 
 ### P0 — API access permits data disclosure and settlement actions
