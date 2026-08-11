@@ -8,6 +8,26 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Admin URL for the suite's ephemeral CREATE/DROP DATABASE (never the app DB).
+      SETTLEMENTOS_TEST_PG_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -28,8 +48,8 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      # Compiles contracts, boots two Hardhat nodes, and runs unit + DB +
-      # on-chain integration tests against an isolated fixture (tests/.tmp);
-      # all env the suite needs is set by tests/setup-env.ts.
+      # Compiles contracts, boots two Hardhat nodes, creates an ephemeral
+      # Postgres database (migrate deploy), and runs unit + DB + on-chain
+      # integration tests. Never touches a durable database.
       - name: Test
         run: npm test

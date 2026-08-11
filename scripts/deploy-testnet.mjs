@@ -198,11 +198,9 @@ export function parseDeployArgs(argv) {
  * Register (or replace) one entity's wallet for a network. Idempotent per
  * (entityId, network): a re-run with a new address updates the single row
  * rather than inserting a second. Leaves wallets for other entities / networks
- * untouched. When prior buggy runs left duplicates for the same key, consolidates
- * to one row holding the address just written.
- *
- * Application-level upsert — the schema's unique is still (address, network);
- * a @@unique([entityId, network]) belongs with the Postgres migration.
+ * untouched. When prior buggy runs left duplicates for the same key (rows that
+ * predate @@unique([entityId, network])), consolidates to one row holding the
+ * address just written, then upserts on the compound key.
  *
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{
@@ -217,11 +215,6 @@ export async function registerEntityWallet(prisma, { externalId, networkId, addr
   const entity = await prisma.entity.findUnique({ where: { externalId } });
   if (!entity) return false;
 
-  const existing = await prisma.wallet.findMany({
-    where: { entityId: entity.id, network: networkId },
-    orderBy: { createdAt: "asc" },
-  });
-
   const data = {
     address,
     label: profile.label,
@@ -229,21 +222,24 @@ export async function registerEntityWallet(prisma, { externalId, networkId, addr
     riskScore: profile.riskScore,
   };
 
-  if (existing.length === 0) {
-    await prisma.wallet.create({
-      data: { entityId: entity.id, network: networkId, ...data },
-    });
+  // Consolidate pre-constraint duplicates before the native upsert — the unique
+  // on (entityId, network) cannot be used while siblings remain.
+  const existing = await prisma.wallet.findMany({
+    where: { entityId: entity.id, network: networkId },
+    orderBy: { createdAt: "asc" },
+  });
+  if (existing.length > 1) {
+    const [keep, ...dupes] = existing;
+    await prisma.wallet.deleteMany({ where: { id: { in: dupes.map((d) => d.id) } } });
+    await prisma.wallet.update({ where: { id: keep.id }, data });
     return true;
   }
 
-  const [keep, ...dupes] = existing;
-  // Drop prior duplicates for THIS (entityId, network) only — before updating
-  // the kept row — so a unique (address, network) collision with a sibling
-  // cannot fire, and walletOnNetwork cannot pick a stale address.
-  if (dupes.length > 0) {
-    await prisma.wallet.deleteMany({ where: { id: { in: dupes.map((d) => d.id) } } });
-  }
-  await prisma.wallet.update({ where: { id: keep.id }, data });
+  await prisma.wallet.upsert({
+    where: { entityId_network: { entityId: entity.id, network: networkId } },
+    create: { entityId: entity.id, network: networkId, ...data },
+    update: data,
+  });
   return true;
 }
 

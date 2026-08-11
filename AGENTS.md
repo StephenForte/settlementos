@@ -19,28 +19,38 @@ simulated FX, no real funds.
 ## Run & verify
 
 ```bash
+# Prerequisite: local Postgres 16+ accepting connections on 127.0.0.1:5432
+# (Homebrew `postgresql@16` or equivalent). Create an empty DB, then set
+# DATABASE_URL in .env — see .env.example (?schema=settlementos).
 npm run chain             # base-local    → :8545, chainId 31337
 npm run chain:polygon     # polygon-local → :8546, chainId 31338
-npm run setup             # deploy to both local chains + reset/seed DB (the reset button)
+npm run setup             # deploy to both local chains + reset/seed DB (the reset button; localhost only)
+npm run db:deploy         # prisma migrate deploy — the deployed/schema path (not setup)
 npm run dev               # app on :3000
 npm run deploy:base-sepolia   # real testnet deploy (needs funded DEPLOYER_PRIVATE_KEY in .env)
 npm run deploy:polygon-amoy   # same, for Polygon Amoy (deployer needs POL there)
-npm test                      # full suite — no chains/DB needed, builds its own fixture
+npm test                      # full suite — needs local Postgres; builds its own ephemeral DB + chains
 npx tsc --noEmit && npm run lint
 ```
 
-**Tests**: `npm test` is fully self-contained — it compiles contracts, boots two
-Hardhat nodes on test-only ports (9545/9546), deploys to them, and builds a fresh
-SQLite DB under `tests/.tmp/` (never touching dev chains, `chain/deployments*.json`,
-or the dev DB). Layers: `tests/unit/` (state machine, FX, base units, explorer
-URLs, provider adapters with stubbed fetch), `tests/db/` (compliance matrix —
-mock and real-provider modes, audit-chain tamper detection),
-`tests/integration/` (executor E2E on-chain, PaymentSettlement contract behavior,
-API route validation, MMF guardrails + escrow segregation). CI runs typecheck + lint + tests on every push/PR
-(`.github/workflows/ci.yml`). **Add tests for new lifecycle, compliance, or
-chain behavior** — and still smoke-test UI-visible changes by hand via the flow
-in README "API". `npm run setup` resets DB + local chains at any time; it
-re-registers real-testnet wallets and never touches the public testnet deployments.
+**Tests**: `npm test` compiles contracts, boots two Hardhat nodes on test-only
+ports (19545/19546), creates an **ephemeral Postgres database** (migrate deploy
+into `?schema=settlementos`), seeds it, and drops the database on teardown. It
+never touches the dev DB, `chain/deployments*.json`, or a remote host. Requires
+Postgres on loopback (override the admin URL with `SETTLEMENTOS_TEST_PG_URL` —
+CI sets this to the workflow's Postgres service). Layers: `tests/unit/` (state
+machine, FX, base units, explorer URLs, provider adapters with stubbed fetch),
+`tests/db/` (compliance matrix — mock and real-provider modes, audit-chain
+tamper detection + concurrency), `tests/integration/` (executor E2E on-chain,
+PaymentSettlement contract behavior, API route validation, MMF guardrails +
+escrow segregation). CI runs typecheck + lint + tests on every push/PR
+(`.github/workflows/ci.yml`, with a `postgres:16` service). **Add tests for new
+lifecycle, compliance, or chain behavior** — and still smoke-test UI-visible
+changes by hand via the flow in README "API". `npm run setup` resets DB + local
+chains at any time (refuses non-localhost `DATABASE_URL`); it re-registers
+real-testnet wallets and never touches the public testnet deployments. Local
+dev schema sync uses `prisma db push` inside setup; the deployed path is
+`npm run db:deploy` (`prisma migrate deploy`).
 
 ## Architecture map
 
@@ -56,7 +66,7 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 | [lib/fx.ts](lib/fx.ts) | Simulated FX, **all bigint**: static mid rates, spread + tiered slippage, platform fee. Amounts are currency **minor units**; rates are integers scaled by `10^RATE_DECIMALS` (18) — `midRate()` returns a scaled bigint, `formatRate()` renders it. `convert()` (minor units across currencies at a rate), `applyBps()` (worsen a rate), `usdEquivalent()` (→ USD minor units, for tiering/risk thresholds) |
 | [lib/compliance.ts](lib/compliance.ts) | Compliance gate (KYB, sanctions, wallet/tx/corridor risk) → PASS/FAIL/MANUAL_REVIEW. Sanctions + wallet screening dispatch to real providers when env config is set (`OPENSANCTIONS_API_KEY`, `CHAINALYSIS_ORACLE_RPC_URL`), mocks otherwise |
 | `lib/providers/` | Real vendor adapters: OpenSanctions (sanctions match API), Chainalysis sanctions oracle (keyless on-chain `isSanctioned()` read for wallet screening). **Fail-safe: any provider error/timeout → MANUAL_REVIEW, never fail-open.** Verbatim provider evidence persisted on `ComplianceCheck.rawResponse` |
-| [lib/audit.ts](lib/audit.ts) | Append-only hash-chained audit log + chain verifier. `audit(action, detail, paymentId, actor, tx?)` — pass the caller's `Prisma.TransactionClient` to enlist the event in the transaction that writes the change it describes. Also the anchoring half: `createCheckpoint()` (on demand; automatic every `AUDIT_CHECKPOINT_INTERVAL` events, default 100, signed with `AUDIT_ANCHOR_KEY`), `verifyAuditChain()` → `AuditIntegrity` (verdict + `mode`/`anchored`/`checkpoint`/`eventsVerified` coverage), `AuditAnchorError` |
+| [lib/audit.ts](lib/audit.ts) | Append-only hash-chained audit log + chain verifier. `audit(action, detail, paymentId, actor, tx?)` — pass the caller's `Prisma.TransactionClient` to enlist the event in the transaction that writes the change it describes. Tip-read-plus-create is serialized with a transaction-scoped Postgres advisory lock (`lockAuditChain`). Also the anchoring half: `createCheckpoint()` (on demand; automatic every `AUDIT_CHECKPOINT_INTERVAL` events, default 100, signed with `AUDIT_ANCHOR_KEY`), `verifyAuditChain()` → `AuditIntegrity` (verdict + `mode`/`anchored`/`checkpoint`/`eventsVerified` coverage), `AuditAnchorError` |
 | [lib/auth.ts](lib/auth.ts) | API-key identity: `authenticate(request)` (`x-api-key` header → `sos_key` cookie) → `Principal { keyId, role, entityId?, label }` or null. Roles OPERATOR/REVIEWER/ENTITY; only sha256 hashes are stored. `keyId` is the `ApiKey.id` — the stable per-caller identity anything keyed by principal uses. **Identity only — routes enforce authorization** |
 | [lib/idempotency.ts](lib/idempotency.ts) | Idempotent-write records: `beginIdempotent()` (reserve the key or report replay/mismatch/in-flight), `completeIdempotent()` / `abandonIdempotent()`, `hashRequest()` (canonical, key-order-independent body fingerprint), `IDEMPOTENCY_TTL_MS` (24h, checked at read time — no cron). Framework-free; the response half is app/api/idempotency.ts |
 | [lib/rate-limit.ts](lib/rate-limit.ts) | In-memory sliding-window limiter: `consumeRateLimit(key, {limit, windowMs, now})` → `RateLimitDecision`, `resetRateLimits()` (test-only). `now` is a **parameter**, so the window is testable without fake timers. Per-process by design — behind >1 instance it becomes a per-instance limit, and the fix is a shared store, not a cleverer Map |
@@ -104,8 +114,12 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   that writes a domain row *and* an event passes its tx to `audit(..., tx)`
   (`transitionStatus`, treasury `park`/`recall`); only an event that describes no
   row (an export, a quote, the MMF accrual, whose index lives on chain) may take
-  the no-tx form. The tip read and the create stay in one transaction — that is what
-  serializes the chain.
+  the no-tx form. The tip read and the create stay in one transaction, and that
+  transaction holds a Postgres advisory lock (`lockAuditChain` /
+  `pg_advisory_xact_lock` in lib/audit.ts) for the critical section — that is what
+  serializes the chain under READ COMMITTED. SQLite's global write lock used to
+  provide this for free; without the advisory lock, concurrent `audit()` calls
+  fork on the same `prevHash` and `verifyAuditChain` reports BROKEN.
 - **Audit everything**: any state change or fund movement gets an `audit(...)`
   event. The log is append-only — never update or delete `AuditEvent` rows; that
   breaks the hash chain (`GET /api/audit` verifies it, the UI shows INTACT/BROKEN).
@@ -366,9 +380,10 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 ## Gotchas
 
 - **Calling `audit()` without a `tx` from inside an open `prisma.$transaction` deadlocks.**
-  It opens its own transaction on another connection, which blocks on the outer one's
-  SQLite write lock until the busy timeout fires — the symptom is every test in the file
-  timing out at ~5s, not an error naming a lock. Thread the tx through.
+  It opens its own transaction on another connection, which under Postgres waits on
+  the advisory lock (or on row locks) held by the outer transaction — the symptom is
+  every test in the file timing out at ~5s, not an error naming a lock. Thread the tx
+  through.
 
 - `audit()` JSON-stringifies its detail, and `JSON.stringify` **throws on a bigint**.
   Convert base units to strings (`.toString()` / `fromBaseUnits`) before putting them
@@ -388,10 +403,9 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
   which is the whole point. Anything that clears the log clears both, in that order:
   `scripts/setup.mjs`'s reset (this bit the demo — the reset button handed the app a
   BROKEN chain), and the two test files that own the table (`tests/db/audit.test.ts`,
-  `tests/db/audit-checkpoint.test.ts`). Note SQLite keeps the autoincrement sequence
-  across a wipe, so event ids do **not** restart at 1 after a reset — never infer a
-  count from an id (that is why the checkpoint interval counts rows rather than
-  subtracting ids).
+  `tests/db/audit-checkpoint.test.ts`). Note Postgres sequences (like SQLite's
+  autoincrement) do **not** restart at 1 after a wipe — never infer a count from an
+  id (that is why the checkpoint interval counts rows rather than subtracting ids).
 
 - `recall_required` is a **quote-time snapshot** frozen into `Payment.quoteJson`. The
   world can move between quoting and execution, so nothing downstream may assume it is
@@ -558,27 +572,31 @@ re-registers real-testnet wallets and never touches the public testnet deploymen
 ## Cursor Cloud specific instructions
 
 The startup update script runs `npm install`, ensures a gitignored `.env` exists
-with `DATABASE_URL="file:./dev.db"`, and runs `npx prisma generate`. Everything
-below is per-session service startup the agent does by hand — do not add it to the
-update script.
+with a local Postgres `DATABASE_URL` (`?schema=settlementos` — see `.env.example`),
+and runs `npx prisma generate`. Everything below is per-session service startup the
+agent does by hand — do not add it to the update script.
 
+- **Postgres is required.** Install/start Postgres 16+ on loopback before `npm run
+  setup` or `npm test`. Create an empty database (e.g. `settlementos_dev`) and set
+  `DATABASE_URL="postgresql://USER@127.0.0.1:5432/settlementos_dev?schema=settlementos"`.
 - **`.env` is required and gitignored** (never committed), so it does not persist in
   the repo across fresh VMs — the update script recreates it. The app, `npm run
-  setup`, and `npm run dev` all fail with `Environment variable not found:
-  DATABASE_URL` without it. `npm test` does *not* need it (the fixture sets its own
-  `DATABASE_URL`). No other secrets are needed for the local demo (real testnets and
-  real compliance providers are optional — see README).
+  setup`, and `npm run dev` all fail without `DATABASE_URL`. `npm test` builds its
+  own ephemeral database (admin URL `SETTLEMENTOS_TEST_PG_URL`, defaulting to
+  `postgresql://127.0.0.1:5432/postgres`) and never uses the dev DB. No other secrets
+  are needed for the local demo (real testnets and real compliance providers are
+  optional — see README).
 - **To run the app end-to-end**, both local Hardhat chains must be running *before*
   `npm run setup` (see README "Quick start" / AGENTS "Run & verify"): start `npm run
   chain` (:8545) and `npm run chain:polygon` (:8546) as long-lived processes (use
-  tmux), then `npm run setup` (compile + `prisma db push` + deploy + seed), then `npm
-  run dev` (:3000). `npm run setup` prints seeded API keys and also writes them to
-  gitignored `chain/dev-api-keys.json` — sign in at `/login` with the OPERATOR key, or
-  pass it as the `x-api-key` header to the API.
+  tmux), then `npm run setup` (compile + `prisma db push` + deploy + seed; refuses
+  non-localhost URLs), then `npm run dev` (:3000). Deployed environments use
+  `npm run db:deploy` instead of setup's `db push`. `npm run setup` prints seeded API
+  keys and also writes them to gitignored `chain/dev-api-keys.json` — sign in at
+  `/login` with the OPERATOR key, or pass it as the `x-api-key` header to the API.
 - **Hello-world smoke test** (verified working): create → quote → execute a payment
   (ACME US Inc → Tokyo Trading KK, `100000.00` USD→JPY, both networks `base-local`)
   reaches `SETTLED` with real on-chain escrow/settlement tx hashes; `GET /api/audit`
   reports the chain INTACT.
-- `npm test` is self-contained (boots its own chains on 9545/9546 + a fresh DB under
-  `tests/.tmp/`) and needs neither the dev chains nor `npm run setup` — see AGENTS
-  "Tests".
+- `npm test` needs local Postgres but neither the dev chains nor `npm run setup` —
+  see AGENTS "Tests".

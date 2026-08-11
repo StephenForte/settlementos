@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -54,6 +54,9 @@ model Wallet {
   entity Entity @relation(fields: [entityId], references: [id])
 
   @@unique([address, network])
+  // One wallet row per entity per network — closes the concurrent-duplicate
+  // hole that PR #57's application-level upsert deferred to this migration.
+  @@unique([entityId, network])
 }
 
 model Payment {

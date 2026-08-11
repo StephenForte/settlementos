@@ -20,6 +20,62 @@ import { prisma } from "./db";
  */
 export type AuditTx = Prisma.TransactionClient;
 
+/**
+ * Transaction-scoped Postgres advisory lock for the audit tip-read-plus-create.
+ *
+ * SQLite serialized the chain for free (one writer). Postgres READ COMMITTED
+ * does not: two concurrent appenders can both read the same tip and both insert
+ * with the same prevHash, forking the chain. This lock restores the SQLite
+ * "wait your turn" semantics on the critical section only.
+ *
+ * Key is an arbitrary int8 stable for the life of the product — not a secret,
+ * just a namespace so we never collide with another advisory lock in the same
+ * Postgres instance (e.g. chainbank's).
+ */
+export const AUDIT_CHAIN_LOCK_KEY = 0x534f5f415544n; // "SO_AUD" in hex-ish
+
+/**
+ * Test-only seam for proving the advisory lock is load-bearing (same shape as
+ * `executorTestHooks`). Arming outside the vitest runner throws — an env-var
+ * skip was rejected because hosting dashboards copy env between services and a
+ * comment does not travel with them.
+ */
+interface AuditTestHooks {
+  /** When true, `lockAuditChain` no-ops — concurrency tests only. */
+  skipChainLock?: boolean;
+}
+
+export const auditTestHooks: AuditTestHooks = new Proxy({} as AuditTestHooks, {
+  set(target, key, value) {
+    if (!process.env.VITEST) {
+      throw new Error(
+        `auditTestHooks are test-only and cannot be armed outside the test runner (attempted to set "${String(key)}")`
+      );
+    }
+    return Reflect.set(target, key, value);
+  },
+});
+
+/**
+ * Acquire the audit-chain lock on `tx`. Released automatically at commit/rollback.
+ *
+ * The former `SETTLEMENTOS_SKIP_AUDIT_CHAIN_LOCK` env escape hatch is gone: if
+ * that variable is present in any environment, we throw (loud) rather than
+ * honour or ignore it. Test-only skip goes through `auditTestHooks.skipChainLock`.
+ */
+export async function lockAuditChain(tx: AuditTx): Promise<void> {
+  if (process.env.SETTLEMENTOS_SKIP_AUDIT_CHAIN_LOCK !== undefined) {
+    throw new Error(
+      "SETTLEMENTOS_SKIP_AUDIT_CHAIN_LOCK is set — this escape hatch was removed because " +
+        "it silently disabled audit-chain serialization and forked the hash chain under " +
+        "concurrency. Unset it. Tests that must skip the lock arm auditTestHooks.skipChainLock " +
+        "under vitest only."
+    );
+  }
+  if (auditTestHooks.skipChainLock) return;
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${AUDIT_CHAIN_LOCK_KEY})`;
+}
+
 /** Events between automatic checkpoints. */
 const DEFAULT_CHECKPOINT_INTERVAL = 100;
 
@@ -59,11 +115,12 @@ function signatureMatches(expected: string, actual: string): boolean {
  * Append one event to the chain, inside `tx`.
  *
  * The read of the tip and the create of the new event must stay in the same
- * transaction: that is what serializes the chain. SQLite admits one writer at a
- * time, so a second appender's tip read cannot land between this one's read and
- * its create — it waits for this transaction to commit and then reads the event
- * it wrote. Split the two apart (or read the tip outside the tx) and two
- * appenders can both build on the same prevHash, forking the chain.
+ * transaction, and that transaction must hold `lockAuditChain` for the whole
+ * critical section. Under SQLite a global write lock made the transaction alone
+ * enough; under Postgres READ COMMITTED concurrent appenders can both observe
+ * the same tip unless they take turns via the advisory lock. Split the tip read
+ * from the create (or skip the lock) and two appenders fork the chain on the
+ * same prevHash — verifyAuditChain then reports BROKEN.
  */
 async function appendEvent(
   tx: AuditTx,
@@ -72,6 +129,7 @@ async function appendEvent(
   paymentId: string | undefined,
   actor: string
 ) {
+  await lockAuditChain(tx);
   const last = await tx.auditEvent.findFirst({ orderBy: { id: "desc" } });
   const prevHash = last?.hash ?? "GENESIS";
   const detailJson = JSON.stringify(detail);
@@ -144,6 +202,8 @@ export async function createCheckpoint() {
     throw new AuditAnchorError("not_configured", "audit anchoring is not configured (AUDIT_ANCHOR_KEY)");
   }
   return prisma.$transaction(async (tx) => {
+    // Same lock as append — a checkpoint and an append must not race on tip.
+    await lockAuditChain(tx);
     const tip = await tx.auditEvent.findFirst({ orderBy: { id: "desc" } });
     if (!tip) throw new AuditAnchorError("no_events", "there are no audit events to anchor");
     const last = await tx.auditCheckpoint.findFirst({ orderBy: { id: "desc" } });

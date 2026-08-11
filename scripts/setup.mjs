@@ -3,10 +3,11 @@
 //        base-local    (127.0.0.1:8545, chainId 31337) — simulates Base Sepolia
 //        polygon-local (127.0.0.1:8546, chainId 31338) — simulates Polygon Amoy
 //   2. Approves assets, funds entity wallets and the settlement treasury.
-//   3. Resets and seeds the SQLite database with demo entities and wallets.
+//   3. Resets and seeds the local Postgres database with demo entities and wallets.
 //   4. Writes chain/deployments.json for the app.
 //
 // Run: npm run setup   (requires `npm run chain` and `npm run chain:polygon`)
+// Refuses non-local DATABASE_URL — setup wipes the DB by design.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -15,6 +16,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { createPublicClient, createWalletClient, http, defineChain } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { PrismaClient } from "@prisma/client";
+import { assertLocalDatabaseUrl } from "./local-database-url.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
@@ -180,6 +182,10 @@ async function setupChain(networkId, cfg) {
 }
 
 async function main() {
+  // Fail before any chain deploy or DB wipe — setup is the reset button and
+  // must never point at the shared Render Postgres (chainbank lives there too).
+  assertLocalDatabaseUrl(process.env.DATABASE_URL);
+
   console.log("Deploying to all networks:");
   const networks = {};
   for (const [networkId, cfg] of Object.entries(CHAINS)) {

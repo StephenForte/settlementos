@@ -17,7 +17,7 @@ export default defineConfig({
     include: ["tests/**/*.test.ts"],
     globalSetup: ["tests/global-setup.ts"],
     setupFiles: ["tests/setup-env.ts"],
-    // Tests share one SQLite DB and two chain fixtures — keep files sequential.
+    // Tests share one ephemeral Postgres DB and two chain fixtures — keep files sequential.
     fileParallelism: false,
     testTimeout: 30_000,
     hookTimeout: 180_000,
