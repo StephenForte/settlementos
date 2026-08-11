@@ -2,9 +2,10 @@
 // auto-detected deploy-mode decision (full / mmf_addon / noop). J1 extends the
 // same file for --adopt helpers (registry, bytecode gate, plan). No live RPC.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { parseEther } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
+import { prisma } from "@/lib/db";
 import {
   NETWORK_CONFIGS,
   ADOPTABLE_NETWORKS,
@@ -19,6 +20,7 @@ import {
   decideAdoptPlan,
   diagnoseAdoptableOverlayFinding,
   assertAdoptableFullDeployAllowed,
+  registerEntityWallet,
   validateDeployerKey,
   validateChainId,
   validateDeployerBalance,
@@ -694,5 +696,50 @@ describe("assertAdoptableFullDeployAllowed (gates on resolved mode)", () => {
         networkOverlay: { contracts: { PaymentSettlement: SETTLEMENT } },
       })
     ).toMatch(/missing mockUSDC/);
+  });
+});
+
+describe("registerEntityWallet (idempotent per entityId+network)", () => {
+  // Isolated network id so we never touch seeded local/live wallet rows.
+  const NETWORK = "test-wallet-upsert-net";
+  const ADDR_1 = "0xA904877d0977b421841CD45eCe779cEdDEcb2D24";
+  const ADDR_2 = "0x50F061400e88a174BC0Dd09859191280d2026dc4";
+  const PROFILE = {
+    label: "upsert test wallet",
+    allowlisted: true,
+    riskScore: 5,
+  };
+
+  afterEach(async () => {
+    await prisma.wallet.deleteMany({ where: { network: NETWORK } });
+  });
+
+  it("second registration replaces the address — one row survives", async () => {
+    const entity = await prisma.entity.findUniqueOrThrow({
+      where: { externalId: "ent_acme_us" },
+    });
+
+    expect(
+      await registerEntityWallet(prisma, {
+        externalId: "ent_acme_us",
+        networkId: NETWORK,
+        address: ADDR_1,
+        profile: PROFILE,
+      })
+    ).toBe(true);
+    expect(
+      await registerEntityWallet(prisma, {
+        externalId: "ent_acme_us",
+        networkId: NETWORK,
+        address: ADDR_2,
+        profile: PROFILE,
+      })
+    ).toBe(true);
+
+    const rows = await prisma.wallet.findMany({
+      where: { entityId: entity.id, network: NETWORK },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].address).toBe(ADDR_2);
   });
 });
