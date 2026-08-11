@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { prisma } from "@/lib/db";
-import { audit, verifyAuditChain } from "@/lib/audit";
+import { audit, auditTestHooks, verifyAuditChain } from "@/lib/audit";
 
 // Concurrent appenders under Postgres READ COMMITTED can fork the chain unless
 // lockAuditChain serializes tip-read-plus-create. This test is the proof that
@@ -15,6 +15,9 @@ async function clearChain() {
 
 beforeAll(clearChain);
 afterAll(clearChain);
+afterEach(() => {
+  delete auditTestHooks.skipChainLock;
+});
 
 describe("audit chain concurrency under Postgres", () => {
   it(`keeps the chain INTACT across ${N} concurrent audit() calls`, async () => {

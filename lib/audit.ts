@@ -35,12 +35,44 @@ export type AuditTx = Prisma.TransactionClient;
 export const AUDIT_CHAIN_LOCK_KEY = 0x534f5f415544n; // "SO_AUD" in hex-ish
 
 /**
+ * Test-only seam for proving the advisory lock is load-bearing (same shape as
+ * `executorTestHooks`). Arming outside the vitest runner throws — an env-var
+ * skip was rejected because hosting dashboards copy env between services and a
+ * comment does not travel with them.
+ */
+interface AuditTestHooks {
+  /** When true, `lockAuditChain` no-ops — concurrency tests only. */
+  skipChainLock?: boolean;
+}
+
+export const auditTestHooks: AuditTestHooks = new Proxy({} as AuditTestHooks, {
+  set(target, key, value) {
+    if (!process.env.VITEST) {
+      throw new Error(
+        `auditTestHooks are test-only and cannot be armed outside the test runner (attempted to set "${String(key)}")`
+      );
+    }
+    return Reflect.set(target, key, value);
+  },
+});
+
+/**
  * Acquire the audit-chain lock on `tx`. Released automatically at commit/rollback.
- * No-op only when SETTLEMENTOS_SKIP_AUDIT_CHAIN_LOCK=1 — test/proof harness; never
- * set in production.
+ *
+ * The former `SETTLEMENTOS_SKIP_AUDIT_CHAIN_LOCK` env escape hatch is gone: if
+ * that variable is present in any environment, we throw (loud) rather than
+ * honour or ignore it. Test-only skip goes through `auditTestHooks.skipChainLock`.
  */
 export async function lockAuditChain(tx: AuditTx): Promise<void> {
-  if (process.env.SETTLEMENTOS_SKIP_AUDIT_CHAIN_LOCK === "1") return;
+  if (process.env.SETTLEMENTOS_SKIP_AUDIT_CHAIN_LOCK !== undefined) {
+    throw new Error(
+      "SETTLEMENTOS_SKIP_AUDIT_CHAIN_LOCK is set — this escape hatch was removed because " +
+        "it silently disabled audit-chain serialization and forked the hash chain under " +
+        "concurrency. Unset it. Tests that must skip the lock arm auditTestHooks.skipChainLock " +
+        "under vitest only."
+    );
+  }
+  if (auditTestHooks.skipChainLock) return;
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(${AUDIT_CHAIN_LOCK_KEY})`;
 }
 
