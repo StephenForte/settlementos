@@ -20,6 +20,7 @@ const NAV = [
   { href: "/entities", label: "Entities" },
   { href: "/liquidity", label: "Liquidity & Treasury" },
   { href: "/compliance", label: "Compliance Queue" },
+  { href: "/docs/regulatory", label: "Regulatory Docs" },
 ];
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {

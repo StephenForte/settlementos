@@ -381,7 +381,8 @@ coordinated redeploy of the SettlementOS contracts.
 - [DEMO.md](DEMO.md) — demo run-of-show
 - [PRD.md](PRD.md) — product requirements + phase roadmap (canonical)
 - [docs/regulatory/](docs/regulatory/) — regulatory design, legal classification,
-  partner integration, corridor strategy, and pilot memos (drafts)
+  partner integration, corridor strategy, and pilot memos (frozen templates).
+  Signed-in readers can browse them in-app at `/docs/regulatory`
 - [settlementos-explorer](https://github.com/StephenForte/settlementos-explorer) —
   the purpose-built payments explorer
 - [ForteL2](https://github.com/StephenForte/ForteL2) — the OP Stack L2 this
