@@ -110,3 +110,16 @@ export function explorerAddressUrl(networkId: string, address?: string | null): 
   if (!n?.explorerUrl || !address) return null;
   return `${n.explorerUrl}/address/${address}`;
 }
+
+/**
+ * Dashboard subtitle naming the rails that actually have deployments.
+ * Pass registry labels for deployed network ids (empty → honest "none").
+ * Pure so a host with only Base Sepolia cannot keep shipping a "local EVM"
+ * string that was true in one environment and false in the next.
+ */
+export function settlementRailCaption(labels: readonly string[]): string {
+  if (labels.length === 0) {
+    return "Cross-border B2B stablecoin settlement · no deployed rails";
+  }
+  return `Cross-border B2B stablecoin settlement · ${labels.join(", ")}`;
+}

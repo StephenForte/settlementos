@@ -1,5 +1,12 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { LIVE_NETWORK_IDS, NETWORKS, networkInfo, explorerTxUrl, explorerAddressUrl } from "@/lib/networks";
+import {
+  LIVE_NETWORK_IDS,
+  NETWORKS,
+  networkInfo,
+  explorerTxUrl,
+  explorerAddressUrl,
+  settlementRailCaption,
+} from "@/lib/networks";
 
 const TX = "0xdbf963150f5c1c90e3a007cc474c3fd42255fd3d019e3d71a6d821528fe258c5";
 
@@ -64,6 +71,26 @@ describe("ForteL2 env resolution", () => {
     const { NETWORKS: fresh } = await freshNetworks();
     expect(fresh["fortel2-sepolia"].rpcUrl).toBe("http://127.0.0.1:9545");
     expect(fresh["fortel2-sepolia"].readRpcUrl).toBe("https://replica.example.test");
+  });
+});
+
+describe("settlementRailCaption", () => {
+  it("names the deployed rails (Render: Base Sepolia alone)", () => {
+    expect(settlementRailCaption(["Base Sepolia"])).toBe(
+      "Cross-border B2B stablecoin settlement · Base Sepolia"
+    );
+  });
+
+  it("joins multiple deployed rails", () => {
+    expect(settlementRailCaption(["Base (local)", "Polygon Amoy (local)"])).toBe(
+      "Cross-border B2B stablecoin settlement · Base (local), Polygon Amoy (local)"
+    );
+  });
+
+  it("says so when nothing is deployed", () => {
+    expect(settlementRailCaption([])).toBe(
+      "Cross-border B2B stablecoin settlement · no deployed rails"
+    );
   });
 });
 

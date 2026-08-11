@@ -14,6 +14,10 @@ services:
     name: settlementos
     runtime: node
     plan: starter
+    # Internal DB hostname only resolves in the same region as the database.
+    # Both this service and settlementos-db are oregon — pin it so a Blueprint
+    # recreate cannot land the web service elsewhere via Render's default.
+    region: oregon
     # Per-process in-memory rate limit (lib/rate-limit.ts) — keep at 1 instance.
     numInstances: 1
     healthCheckPath: /api/networks

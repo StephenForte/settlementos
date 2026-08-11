@@ -7,6 +7,16 @@ already adopted); the DB is Postgres on `?schema=settlementos`.
 **Not this:** `npm run setup` — that wipes the database and refuses any
 non-localhost `DATABASE_URL`. On Render the seed path is `npm run seed:demo`.
 
+**Postgres version pin (16):** the Render database was deliberately created at
+Postgres **16** (not Render's default 18) so it matches local
+`postgresql@16` and CI's `postgres:16` service. Migrations were authored and
+tested against 16. Move all three together or none — do not bump Render alone.
+See AGENTS.md "Run & verify".
+
+**Region pin (`oregon`):** `render.yaml` sets `region: oregon` because the
+internal database URL only resolves for a service in the same region as
+`settlementos-db`. Do not omit the key and rely on Render's default.
+
 ---
 
 ## 0. Inventory (what the service needs)

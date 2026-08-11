@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { formatAmount } from "@/lib/assets";
-import { explorerTxUrl } from "@/lib/networks";
+import { NETWORKS, explorerTxUrl, settlementRailCaption } from "@/lib/networks";
+import { isChainReady, loadDeployments } from "@/lib/chain";
 import { usdEquivalent } from "@/lib/fx";
 import { formatMinorUnits, parseAmount } from "@/lib/money";
 import { stuckPayments } from "@/lib/executor";
@@ -11,6 +12,19 @@ import { AuthRequired } from "@/components/auth-required";
 import { Card, Stat, StatusBadge, Hash } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
+
+/** Registry-order labels for networks that actually have deployments. */
+function deployedRailLabels(): string[] {
+  if (!isChainReady()) return [];
+  try {
+    const deployed = new Set(Object.keys(loadDeployments().networks));
+    return Object.values(NETWORKS)
+      .filter((n) => deployed.has(n.id))
+      .map((n) => n.label);
+  } catch {
+    return [];
+  }
+}
 
 export default async function DashboardHome() {
   // The dashboard aggregates platform-wide volume, the review queue, and the
@@ -46,15 +60,14 @@ export default async function DashboardHome() {
   );
   const inReview = payments.filter((p) => p.status === "MANUAL_REVIEW");
   const recent = payments.slice(0, 8);
+  const railCaption = settlementRailCaption(deployedRailLabels());
 
   return (
     <div className="space-y-6">
       <header className="flex items-end justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-ink">Settlement Dashboard</h1>
-          <p className="mt-1 text-sm text-body">
-            Cross-border B2B stablecoin settlement · local EVM network (Base Sepolia–compatible)
-          </p>
+          <p className="mt-1 text-sm text-body">{railCaption}</p>
         </div>
         <Link
           href="/payments/new"
