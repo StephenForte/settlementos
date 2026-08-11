@@ -166,15 +166,31 @@ function titleFromMarkdown(source: string, fallback: string): string {
  * One-line description: prefer the README table's "Role in the pack" cell when
  * this file is listed there; otherwise the first non-status prose paragraph.
  */
+/** Role cell from the README pack table for `filename`, or null. No RegExp(filename). */
+function roleFromReadmeTable(readmeSource: string, filename: string): string | null {
+  // | 01 | [Technical architecture](01-technical-architecture.md) | What the system does… |
+  const needle = `](${filename})`;
+  for (const line of readmeSource.split(/\r?\n/)) {
+    if (!line.trimStart().startsWith("|") || !line.includes(needle)) continue;
+    const cells = line
+      .trim()
+      .replace(/^\|/, "")
+      .replace(/\|$/, "")
+      .split("|")
+      .map((c) => c.trim());
+    // # | Document | Role in the pack
+    if (cells.length >= 3 && cells[1]?.includes(needle)) {
+      return cells[2] || null;
+    }
+  }
+  return null;
+}
+
 function descriptionFromMarkdown(filename: string, source: string, readmeSource: string | null): string {
   if (readmeSource) {
-    // | 01 | [Technical architecture](01-technical-architecture.md) | What the system does… |
-    const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const row = readmeSource.match(
-      new RegExp(`\\|\\s*[^|]*\\s*\\|\\s*\\[[^\\]]+\\]\\(${escaped}\\)\\s*\\|\\s*([^|]+)\\|`),
-    );
-    if (row) {
-      return stripInlineMarkdown(row[1]);
+    const role = roleFromReadmeTable(readmeSource, filename);
+    if (role) {
+      return stripInlineMarkdown(role);
     }
   }
 
