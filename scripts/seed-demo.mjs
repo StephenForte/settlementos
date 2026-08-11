@@ -68,6 +68,37 @@ export function parseSeedArgs(argv) {
   return { refreshEntities: rest.includes("--refresh-entities") };
 }
 
+/**
+ * Host / port / database name for the API-key banner. Never returns credentials
+ * — DATABASE_URL passwords must not appear in operator logs or saved key notes.
+ * @param {string} databaseUrl
+ * @returns {{ host: string, port: string, database: string }}
+ */
+export function describeSeedTarget(databaseUrl) {
+  const url = new URL(databaseUrl);
+  const database = decodeURIComponent((url.pathname.replace(/^\//, "").split("/")[0] ?? "").split("?")[0]);
+  const port = url.port || "5432";
+  return { host: url.hostname, port, database };
+}
+
+/**
+ * Banner printed when new API keys are minted. Names the seeded host so a
+ * saved `sos_…` key is self-identifying across local / Render / test DBs.
+ * @param {string} databaseUrl
+ * @param {Record<string, string>} newKeys
+ */
+export function formatApiKeyBanner(databaseUrl, newKeys) {
+  const { host, port, database } = describeSeedTarget(databaseUrl);
+  const lines = [
+    `Seeded database: ${host}:${port}/${database}`,
+    "NEW API keys (save these — they are not stored in the DB and will not be re-printed):",
+  ];
+  for (const [label, raw] of Object.entries(newKeys)) {
+    lines.push(`  ${label}  ${raw}`);
+  }
+  return lines.join("\n");
+}
+
 function loadDotEnvIfPresent() {
   const envPath = path.join(root, ".env");
   if (!fs.existsSync(envPath)) return;
@@ -272,12 +303,10 @@ async function main() {
     for (const [k, v] of Object.entries(counts)) console.log(`  ${k}: ${v}`);
 
     if (Object.keys(newKeys).length > 0) {
-      console.log("\nNEW API keys (save these — they are not stored in the DB and will not be re-printed):");
-      for (const [label, raw] of Object.entries(newKeys)) {
-        console.log(`  ${label}  ${raw}`);
-      }
+      console.log("\n" + formatApiKeyBanner(process.env.DATABASE_URL, newKeys));
     } else {
-      console.log("\nNo new API keys created (idempotent re-run).");
+      const { host, port, database } = describeSeedTarget(process.env.DATABASE_URL);
+      console.log(`\nNo new API keys created (idempotent re-run) — database ${host}:${port}/${database}.`);
     }
   } finally {
     await prisma.$disconnect();

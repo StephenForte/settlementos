@@ -19,7 +19,7 @@ simulated FX, no real funds.
 ## Run & verify
 
 ```bash
-# Prerequisite: local Postgres 16+ accepting connections on 127.0.0.1:5432
+# Prerequisite: local Postgres 16 accepting connections on 127.0.0.1:5432
 # (Homebrew `postgresql@16` or equivalent). Create an empty DB, then set
 # DATABASE_URL in .env — see .env.example (?schema=settlementos).
 npm run chain             # base-local    → :8545, chainId 31337
@@ -32,6 +32,13 @@ npm run deploy:polygon-amoy   # same, for Polygon Amoy (deployer needs POL there
 npm test                      # full suite — needs local Postgres; builds its own ephemeral DB + chains
 npx tsc --noEmit && npm run lint
 ```
+
+**Postgres version pin (16):** local Homebrew/`postgresql@16`, CI's
+`postgres:16` service (`.github/workflows/ci.yml`), and the Render database
+(`settlementos-db`, deliberately created at 16 — not Render's default 18) must
+stay on the **same** major version. Migrations were authored and tested against
+16; bumping one host alone reintroduces skew. Move all three together or none.
+This is a pin rule, not an upgrade task.
 
 **Tests**: `npm test` compiles contracts, boots two Hardhat nodes on test-only
 ports (19545/19546), creates an **ephemeral Postgres database** (migrate deploy
@@ -580,9 +587,10 @@ with a local Postgres `DATABASE_URL` (`?schema=settlementos` — see `.env.examp
 and runs `npx prisma generate`. Everything below is per-session service startup the
 agent does by hand — do not add it to the update script.
 
-- **Postgres is required.** Install/start Postgres 16+ on loopback before `npm run
-  setup` or `npm test`. Create an empty database (e.g. `settlementos_dev`) and set
-  `DATABASE_URL="postgresql://USER@127.0.0.1:5432/settlementos_dev?schema=settlementos"`.
+- **Postgres is required.** Install/start Postgres **16** on loopback before `npm run
+ setup` or `npm test` (same major as CI and Render — see the pin rule under Run &
+ verify). Create an empty database (e.g. `settlementos_dev`) and set
+ `DATABASE_URL="postgresql://USER@127.0.0.1:5432/settlementos_dev?schema=settlementos"`.
 - **`.env` is required and gitignored** (never committed), so it does not persist in
   the repo across fresh VMs — the update script recreates it. The app, `npm run
   setup`, and `npm run dev` all fail without `DATABASE_URL`. `npm test` builds its

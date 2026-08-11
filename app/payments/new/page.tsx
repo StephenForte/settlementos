@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui";
+import { reconcileNetworkSelection } from "@/lib/network-selection";
 
 interface EntityOption {
   externalId: string;
@@ -21,10 +22,6 @@ interface NetworkOption {
 
 const CURRENCIES = ["USD", "JPY", "SGD"];
 const ASSET_FOR: Record<string, string> = { USD: "mockUSDC", JPY: "mockJPY", SGD: "mockSGD" };
-const DEFAULT_NETWORKS: NetworkOption[] = [
-  { id: "base-local", label: "Base (local)", live: false, available: true },
-  { id: "polygon-local", label: "Polygon Amoy (local)", live: false, available: true },
-];
 const PURPOSES = [
   "supplier_payment",
   "intercompany_transfer",
@@ -36,15 +33,17 @@ const PURPOSES = [
 export default function NewPaymentPage() {
   const router = useRouter();
   const [entities, setEntities] = useState<EntityOption[]>([]);
-  const [networks, setNetworks] = useState<NetworkOption[]>(DEFAULT_NETWORKS);
+  // Empty until /api/networks resolves — do not claim local chains are available.
+  const [networks, setNetworks] = useState<NetworkOption[]>([]);
+  const [networksReady, setNetworksReady] = useState(false);
   const [form, setForm] = useState({
     sender_id: "",
     recipient_id: "",
     amount: "100000.00",
     source_currency: "USD",
     destination_currency: "JPY",
-    source_network: "base-local",
-    destination_network: "polygon-local",
+    source_network: "",
+    destination_network: "",
     purpose: "supplier_payment",
     reference_id: "INV-2026-001",
     memo: "",
@@ -70,9 +69,22 @@ export default function NewPaymentPage() {
       .then((r) => r.json())
       .then((data) => {
         const available: NetworkOption[] = (data.networks ?? []).filter((n: NetworkOption) => n.available);
-        if (available.length > 0) setNetworks(available);
+        const ids = available.map((n) => n.id);
+        setNetworks(available);
+        setForm((f) => {
+          const next = reconcileNetworkSelection(
+            { source: f.source_network, destination: f.destination_network },
+            ids
+          );
+          return { ...f, source_network: next.source, destination_network: next.destination };
+        });
       })
-      .catch(() => {});
+      .catch(() => {
+        setNetworks([]);
+      })
+      .finally(() => {
+        setNetworksReady(true);
+      });
   }, []);
 
   function set<K extends keyof typeof form>(key: K, value: string) {
@@ -99,6 +111,14 @@ export default function NewPaymentPage() {
 
   const senders = entities.filter((e) => e.role !== "RECIPIENT");
   const recipients = entities.filter((e) => e.role !== "SENDER");
+  const canSubmit =
+    networksReady &&
+    networks.length > 0 &&
+    !!form.source_network &&
+    !!form.destination_network &&
+    !!form.sender_id &&
+    !!form.recipient_id &&
+    !submitting;
 
   const inputClass =
     "w-full rounded-md border border-mute bg-canvas px-3 py-2 text-sm text-ink focus:border-primary focus:outline-none";
@@ -189,7 +209,12 @@ export default function NewPaymentPage() {
                 className={inputClass}
                 value={form.source_network}
                 onChange={(e) => set("source_network", e.target.value)}
+                disabled={!networksReady || networks.length === 0}
               >
+                {!networksReady && <option value="">Loading networks…</option>}
+                {networksReady && networks.length === 0 && (
+                  <option value="">No deployed networks</option>
+                )}
                 {networks.map((n) => (
                   <option key={n.id} value={n.id}>
                     {n.label}
@@ -204,7 +229,12 @@ export default function NewPaymentPage() {
                 className={inputClass}
                 value={form.destination_network}
                 onChange={(e) => set("destination_network", e.target.value)}
+                disabled={!networksReady || networks.length === 0}
               >
+                {!networksReady && <option value="">Loading networks…</option>}
+                {networksReady && networks.length === 0 && (
+                  <option value="">No deployed networks</option>
+                )}
                 {networks.map((n) => (
                   <option key={n.id} value={n.id}>
                     {n.label}
@@ -212,7 +242,9 @@ export default function NewPaymentPage() {
                   </option>
                 ))}
               </select>
-              {form.source_network !== form.destination_network && (
+              {form.source_network &&
+                form.destination_network &&
+                form.source_network !== form.destination_network && (
                 <p className="mt-1 text-[11px] text-status-cyan-fg">Cross-chain route via simulated bridge</p>
               )}
               {networks.some(
@@ -259,7 +291,7 @@ export default function NewPaymentPage() {
 
           <button
             type="submit"
-            disabled={submitting || !form.sender_id || !form.recipient_id}
+            disabled={!canSubmit}
             className="rounded-md bg-primary px-5 py-2.5 text-sm font-semibold text-ink hover:opacity-90 disabled:opacity-50"
           >
             {submitting ? "Creating…" : "Create Draft Payment"}
