@@ -52,6 +52,14 @@ const nextConfig: NextConfig = {
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },
+  // The regulatory docs viewer reads `docs/regulatory/*.md` at request time.
+  // Render runs `next start` from the full checkout (so the directory is usually
+  // on disk anyway), but file tracing can still drop unimported paths from a
+  // standalone/NFT bundle — pin them to the docs routes explicitly.
+  outputFileTracingIncludes: {
+    "/docs/regulatory": ["./docs/regulatory/**/*"],
+    "/docs/regulatory/[slug]": ["./docs/regulatory/**/*"],
+  },
 };
 
 export default nextConfig;
