@@ -149,11 +149,37 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
     generated wallets, not the contracts or the deployer/operator key.
   - Not run: 3 of T4's 4 live checks (staged receipt-loss timing needs the
     test-only `executorTestHooks`); hermetic tests cover them.
+- **ForteL2 re-genesis is the entry gate to Phase 7, not its exit** (confirmed
+  by the ForteL2 side 2026-08-11; fault-game immutables only change via
+  redeploy, so the wipe opens the phase). Every ForteL2 address we hold is on
+  that clock: escrow, the three mock tokens, and `TokenizedMMF`
+  `0xaed29387417dad9ab1993332e2c2b99d35ffe7ff`. Consequences: back up
+  `chain/deployments.fortel2-sepolia.json` for the *current* chain only — its
+  generated wallet keys cannot sign on the post-wipe chain, so the backup is
+  not insurance against re-genesis; the 2026-08-07 live-session hashes stop
+  resolving; recovery is a redeploy or `--adopt` with a **new**
+  `ADOPTABLE_NETWORKS` entry, re-seeded wallets, one re-verified settlement,
+  and an explorer address-book republish. Budget **two** cycles, not one — the
+  ForteL2 side has recorded but explicitly not committed to landing re-genesis
+  and the off-box write-URL publish in the same beat (the URL is gated on their
+  US-012, independent of the Phase 7 schedule). They owe us ≥1 day's notice plus
+  the new addresses once they exist; that obligation is written into their reset
+  procedure.
+- **Registry id `fortel2-sepolia` is confirmed fixed across re-genesis**
+  (2026-08-11). It is registry metadata keyed to the rail, not a deployment
+  artifact — chain id 852 and the key both survive a state wipe. ForteL2 dropped
+  it from `openQuestions` in their `deployments/rail-interface.json` and recorded
+  that regenerating that file must not reopen it. The sibling `fortel2-local`
+  (901) keeps the same `fortel2-<environment>` convention. Do not rename either:
+  the literal `fortel2-` prefix drives `replicaLagRetries()` (lib/chain.ts:329),
+  the overlay filename, and the `FORTEL2_SEPOLIA_*` env stems.
 - NEXT: dispatch T5 (hardening review — its brief should fold in the live
   results plus the four residuals in the decisions log). Also: optional F6
-  explorer address book (ForteL2 addresses now final); Stephen's review of
-  the Track B regulatory drafts; US-F007 checkbox inconsistency in the PRD
-  still needs Stephen's call.
+  explorer address book — **hold or design for re-keying until after the Phase 7
+  re-genesis**; its 11 ForteL2 rows would go public with a known imminent expiry
+  (an earlier note here said the addresses were "now final", which the re-genesis
+  gate makes false). Stephen's review of the Track B regulatory drafts; US-F007
+  checkbox inconsistency in the PRD still needs Stephen's call.
 
 ## Base Sepolia (live)
 - Deployed 2026-07-07, verified with a real settled payment.

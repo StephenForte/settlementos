@@ -2,10 +2,20 @@
 
 **Outcome: F4 (MMF) and F7/US-F008 (bridge) both verified live on ForteL2 852.**
 
+> **Expiry notice (added 2026-08-11): every ForteL2 hash and address below stops
+> resolving at the Phase 7 re-genesis.** The ForteL2 side confirmed that
+> re-genesis is the *entry gate* to Phase 7 (fault-game immutables only change via
+> redeploy), so the state wipe is expected soon and takes the whole chain history
+> with it. A failing `cast tx` lookup after that point means the chain was reset —
+> **not** that this session is unverified or fabricated. The Base-side and
+> `base-local` legs are unaffected. Post-wipe recovery is a redeploy or `--adopt`
+> against a new `ADOPTABLE_NETWORKS` entry; see the re-genesis bullet in CLAUDE.md.
+
 First session with the ForteL2 852 sequencer reachable on the SettlementOS
 machine (geth on `127.0.0.1:9545`). Everything below was executed against the
-**live** chain, not a fixture. Tx hashes are permanent on-chain evidence and
-remain verifiable after any database reset:
+**live** chain, not a fixture. Tx hashes survive any *database* reset — but they
+live on the ForteL2 chain itself, so they do not survive that chain's
+re-genesis (see the expiry notice above):
 
 ```bash
 cast tx <hash> --rpc-url http://127.0.0.1:9545
