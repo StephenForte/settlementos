@@ -156,18 +156,42 @@ export const ADOPTABLE_NETWORKS = {
 
 /** @typedef {"full" | "mmf_addon" | "noop" | "adopt"} DeployMode */
 
+/** Known CLI flags for deploy-testnet.mjs (anything else starting with "-" is an error). */
+export const DEPLOY_FLAGS = ["--preflight-only", "--adopt", "--force-full-deploy"];
+
 /**
  * Parse argv for network id, --preflight-only, --adopt, and --force-full-deploy.
+ * Rejects unknown dash-tokens and requires exactly one network id — a typo'd
+ * flag must never silently fall through to an unguarded full deploy.
  * @param {string[]} argv process.argv
  */
 export function parseDeployArgs(argv) {
   const rest = argv.slice(2);
-  const flags = new Set(["--preflight-only", "--adopt", "--force-full-deploy"]);
-  const preflightOnly = rest.includes("--preflight-only");
-  const adopt = rest.includes("--adopt");
-  const forceFullDeploy = rest.includes("--force-full-deploy");
-  const networkId = rest.find((a) => !flags.has(a));
-  return { networkId, preflightOnly, adopt, forceFullDeploy };
+  const flags = new Set(DEPLOY_FLAGS);
+  for (const token of rest) {
+    if (token.startsWith("-") && !flags.has(token)) {
+      throw new Error(
+        `Unknown argument: ${token}. Valid flags: ${DEPLOY_FLAGS.join(", ")}`
+      );
+    }
+  }
+  const networkIds = rest.filter((a) => !flags.has(a));
+  if (networkIds.length === 0) {
+    throw new Error(
+      `Missing network id. Usage: node scripts/deploy-testnet.mjs <network> [${DEPLOY_FLAGS.join("] [")}]`
+    );
+  }
+  if (networkIds.length > 1) {
+    throw new Error(
+      `Expected exactly one network id, got ${networkIds.length}: ${networkIds.join(", ")}`
+    );
+  }
+  return {
+    networkId: networkIds[0],
+    preflightOnly: rest.includes("--preflight-only"),
+    adopt: rest.includes("--adopt"),
+    forceFullDeploy: rest.includes("--force-full-deploy"),
+  };
 }
 
 /**
@@ -713,9 +737,17 @@ function fail(msg) {
 }
 
 async function main() {
-  const { networkId: NETWORK_ID, preflightOnly, adopt, forceFullDeploy } = parseDeployArgs(
-    process.argv
-  );
+  let NETWORK_ID;
+  let preflightOnly;
+  let adopt;
+  let forceFullDeploy;
+  try {
+    ({ networkId: NETWORK_ID, preflightOnly, adopt, forceFullDeploy } = parseDeployArgs(
+      process.argv
+    ));
+  } catch (e) {
+    fail(/** @type {Error} */ (e).message);
+  }
   const CFG = NETWORK_CONFIGS[NETWORK_ID];
   if (!CFG) {
     console.error(

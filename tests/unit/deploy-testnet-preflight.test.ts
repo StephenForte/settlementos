@@ -110,6 +110,12 @@ describe("parseDeployArgs", () => {
       adopt: true,
       forceFullDeploy: false,
     });
+    expect(parseDeployArgs(["node", "script", "base-sepolia", "--adopt", "--preflight-only"])).toEqual({
+      networkId: "base-sepolia",
+      preflightOnly: true,
+      adopt: true,
+      forceFullDeploy: false,
+    });
   });
 
   it("parses --force-full-deploy", () => {
@@ -119,6 +125,31 @@ describe("parseDeployArgs", () => {
       adopt: false,
       forceFullDeploy: true,
     });
+  });
+
+  it.each([
+    {
+      name: "typo --adpot",
+      argv: ["node", "script", "base-sepolia", "--adpot"],
+      error: /Unknown argument: --adpot\. Valid flags: --preflight-only, --adopt, --force-full-deploy/,
+    },
+    {
+      name: "single-dash -adopt",
+      argv: ["node", "script", "base-sepolia", "-adopt"],
+      error: /Unknown argument: -adopt\. Valid flags: --preflight-only, --adopt, --force-full-deploy/,
+    },
+    {
+      name: "missing network id",
+      argv: ["node", "script", "--adopt"],
+      error: /Missing network id/,
+    },
+    {
+      name: "two network ids",
+      argv: ["node", "script", "base-sepolia", "polygon-amoy"],
+      error: /Expected exactly one network id, got 2: base-sepolia, polygon-amoy/,
+    },
+  ])("rejects $name", ({ argv, error }) => {
+    expect(() => parseDeployArgs(argv)).toThrow(error);
   });
 });
 
