@@ -153,18 +153,26 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
   by the ForteL2 side 2026-08-11; fault-game immutables only change via
   redeploy, so the wipe opens the phase). Every ForteL2 address we hold is on
   that clock: escrow, the three mock tokens, and `TokenizedMMF`
-  `0xaed29387417dad9ab1993332e2c2b99d35ffe7ff`. Consequences: back up
-  `chain/deployments.fortel2-sepolia.json` for the *current* chain only — its
-  generated wallet keys cannot sign on the post-wipe chain, so the backup is
-  not insurance against re-genesis; the 2026-08-07 live-session hashes stop
-  resolving; recovery is a redeploy or `--adopt` with a **new**
-  `ADOPTABLE_NETWORKS` entry, re-seeded wallets, one re-verified settlement,
-  and an explorer address-book republish. Budget **two** cycles, not one — the
-  ForteL2 side has recorded but explicitly not committed to landing re-genesis
-  and the off-box write-URL publish in the same beat (the URL is gated on their
-  US-012, independent of the Phase 7 schedule). They owe us ≥1 day's notice plus
-  the new addresses once they exist; that obligation is written into their reset
-  procedure.
+  `0xaed29387417dad9ab1993332e2c2b99d35ffe7ff`. **Earlier in the sequence is not
+  sooner in time**: Phase 7 is "Planned", not scheduled, no date attached, and
+  the ForteL2 deployment stays pinned until it (their 2026-08-11 follow-up).
+  Consequences: back up `chain/deployments.fortel2-sepolia.json` for the
+  *current* chain only — its generated wallet keys cannot sign on the post-wipe
+  chain, so the backup is not insurance against re-genesis; the 2026-08-07
+  live-session hashes stop resolving. **Recovery is a full redeploy, not
+  `--adopt`** — adopt bytecode-verifies *surviving* contracts and regenerates
+  only the wallets around them, so it is the overlay-lost/chain-intact path
+  (Base Sepolia J1) and has nothing to verify after a wipe. Move the old overlay
+  aside, run the full deploy, re-seed wallets, re-verify one settlement,
+  republish the explorer address book; record the new addresses in
+  `ADOPTABLE_NETWORKS` afterwards so a *future* overlay loss can adopt. Cost is
+  roughly an afternoon of attention, so it is not worth pre-optimizing — the
+  same-beat request (bundling re-genesis with their off-box write-URL publish)
+  was **withdrawn** 2026-08-11 for that reason; the two are gated independently
+  (theirs on a US-012 security go/no-go) and the write URL should ship whenever
+  it clears. They owe us ≥1 day's notice plus the new addresses once they exist,
+  written into their reset runbook (README "Network reset procedure" step 1 and
+  the `resetPolicy` field in `rail-interface.json`).
 - **Registry id `fortel2-sepolia` is confirmed fixed across re-genesis**
   (2026-08-11). It is registry metadata keyed to the rail, not a deployment
   artifact — chain id 852 and the key both survive a state wipe. ForteL2 dropped
@@ -175,10 +183,12 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
   the overlay filename, and the `FORTEL2_SEPOLIA_*` env stems.
 - NEXT: dispatch T5 (hardening review — its brief should fold in the live
   results plus the four residuals in the decisions log). Also: optional F6
-  explorer address book — **hold or design for re-keying until after the Phase 7
-  re-genesis**; its 11 ForteL2 rows would go public with a known imminent expiry
-  (an earlier note here said the addresses were "now final", which the re-genesis
-  gate makes false). Stephen's review of the Track B regulatory drafts; US-F007
+  explorer address book — build it so the ForteL2 rows can be **re-keyed** after
+  the re-genesis rather than holding it until then (an earlier note here said
+  those addresses were "now final", which the re-genesis gate makes false; a
+  later one said hold, which assumed an audience — this is a one-user POC and no
+  one outside sees the rail before the wipe). Stephen's review of the Track B
+  regulatory drafts; US-F007
   checkbox inconsistency in the PRD still needs Stephen's call.
 
 ## Base Sepolia (live)
