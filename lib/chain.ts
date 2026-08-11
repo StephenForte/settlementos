@@ -57,12 +57,30 @@ export interface Deployments {
 }
 
 // Overridable so tests can point at an isolated fixture dir instead of chain/.
+// On Render, live-network overlays are Secret Files (private keys) — never in
+// git. Default mount is /etc/secrets/<filename>; set SETTLEMENTOS_CHAIN_DIR to
+// that directory, or rely on the /etc/secrets fallback below when the overlay
+// is absent from CHAIN_DIR (dashboard-uploaded secret, blueprint env drift).
 const CHAIN_DIR = process.env.SETTLEMENTOS_CHAIN_DIR || path.join(process.cwd(), "chain");
+/** Render Secret Files directory; overridable for hermetic tests. */
+const SECRET_OVERLAY_DIR =
+  process.env.SETTLEMENTOS_SECRET_OVERLAY_DIR || path.join(path.sep, "etc", "secrets");
 const DEPLOYMENTS_PATH = path.join(CHAIN_DIR, "deployments.json");
-const liveOverlayPath = (networkId: string) => path.join(CHAIN_DIR, `deployments.${networkId}.json`);
 
 function readJson(p: string) {
   return JSON.parse(fs.readFileSync(p, "utf8"));
+}
+
+/** Resolve a live-network overlay: CHAIN_DIR first, then Render's secret mount. */
+function resolveLiveOverlayPath(networkId: string): string | null {
+  const candidates = [path.join(CHAIN_DIR, `deployments.${networkId}.json`)];
+  if (path.resolve(CHAIN_DIR) !== path.resolve(SECRET_OVERLAY_DIR)) {
+    candidates.push(path.join(SECRET_OVERLAY_DIR, `deployments.${networkId}.json`));
+  }
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
 }
 
 export function loadDeployments(): Deployments {
@@ -70,12 +88,15 @@ export function loadDeployments(): Deployments {
   if (local && !local.networks) {
     throw new Error("deployments.json is single-network (pre-Phase-3). Re-run: npm run setup");
   }
-  const overlays = LIVE_NETWORK_IDS.map(liveOverlayPath)
-    .filter((p) => fs.existsSync(p))
+  const overlays = LIVE_NETWORK_IDS.map(resolveLiveOverlayPath)
+    .filter((p): p is string => p != null)
     .map(readJson);
   if (!local && overlays.length === 0) {
     throw new Error(
-      "No deployments found. For local chains: start them (npm run chain, npm run chain:polygon) and run npm run setup. For a real testnet: npm run deploy:base-sepolia or deploy:polygon-amoy"
+      "No deployments found. For local chains: start them (npm run chain, npm run chain:polygon) and run npm run setup. " +
+        "For a real testnet locally: npm run deploy:base-sepolia (writes chain/deployments.<network>.json). " +
+        "On Render: upload that overlay as a Secret File named deployments.<network>.json " +
+        "(available at /etc/secrets/…) and set SETTLEMENTOS_CHAIN_DIR=/etc/secrets."
     );
   }
   return {
@@ -85,7 +106,10 @@ export function loadDeployments(): Deployments {
 }
 
 export function isChainReady(): boolean {
-  for (const p of [DEPLOYMENTS_PATH, ...LIVE_NETWORK_IDS.map(liveOverlayPath)]) {
+  const overlayPaths = LIVE_NETWORK_IDS.map(resolveLiveOverlayPath).filter(
+    (p): p is string => p != null
+  );
+  for (const p of [DEPLOYMENTS_PATH, ...overlayPaths]) {
     try {
       if (fs.existsSync(p) && readJson(p).networks) return true;
     } catch {
