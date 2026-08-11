@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 // Non-destructive, idempotent demo seed for a deployed (or shared) Postgres.
 //
-// Upserts demo entities + wallets from live-network overlays, and creates API
-// keys only when missing. NEVER deletes payments, audit events, checkpoints,
-// entities, wallets, or keys. Safe to re-run.
+// Creates missing demo entities, registers wallets from live-network overlays,
+// and mints API keys only when missing. Safe to re-run:
+//   - never deletes payments, audit events, checkpoints, entities, or API keys
+//   - never overwrites an existing entity's columns unless --refresh-entities
+//   - the only delete it can reach is registerEntityWallet's duplicate-wallet
+//     consolidation (prisma.wallet.deleteMany), which is unreachable under the
+//     current @@unique([entityId, network]) constraint
 //
 // This is NOT `npm run setup`:
 //   - setup wipes the DB and refuses non-localhost DATABASE_URL
@@ -11,11 +15,10 @@
 //
 // Run:  npm run seed:demo
 //   or: node --env-file=.env scripts/seed-demo.mjs   (local, with .env)
-//   or: node scripts/seed-demo.mjs                   (Render Shell — env already set)
+//   or: node scripts/seed-demo.mjs [--refresh-entities]
 //
-// Requires DATABASE_URL with ?schema=settlementos. Reads overlays from
-// SETTLEMENTOS_CHAIN_DIR (default ./chain) and/or SETTLEMENTOS_SECRET_OVERLAY_DIR
-// (default /etc/secrets), same resolution as lib/chain.ts.
+// Requires DATABASE_URL with ?schema=settlementos. Overlay resolution is the
+// single implementation in lib/overlay-paths.mjs (same as lib/chain.ts).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -24,76 +27,46 @@ import { createHash, randomBytes } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { parseEnvFileText } from "./local-database-url.mjs";
 import { registerEntityWallet } from "./deploy-testnet.mjs";
+import { DEMO_ENTITIES, ENTITY_REFRESH_COLUMNS, entityRowData } from "./seed-entities.mjs";
+import {
+  resolveChainDir,
+  resolveLiveOverlayPath,
+  resolveSecretOverlayDir,
+} from "../lib/overlay-paths.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
 
 const LIVE_NETWORK_IDS = ["base-sepolia", "polygon-amoy", "fortel2-sepolia"];
 
+/** @type {readonly string[]} */
+export const SEED_FLAGS = Object.freeze(["--refresh-entities"]);
+
 // Keep in sync with lib/auth.ts / scripts/setup.mjs (mjs cannot import the TS module).
 const generateKey = () => `sos_${randomBytes(24).toString("hex")}`;
 const hashKey = (raw) => createHash("sha256").update(raw).digest("hex");
 
-const ENTITIES = [
-  {
-    externalId: "ent_acme_us",
-    name: "ACME US Inc",
-    country: "US",
-    role: "SENDER",
-    kybStatus: "PASSED",
-    riskRating: "LOW",
-    approvedCorridors: JSON.stringify(["USD-JPY", "USD-SGD"]),
-    mmfEligible: true,
-    mmfOptIn: true,
-    walletProfile: {
-      label: "ACME operating wallet",
-      allowlisted: true,
-      riskScore: 5,
-    },
-  },
-  {
-    externalId: "ent_tokyo_supplier",
-    name: "Tokyo Trading KK",
-    country: "JP",
-    role: "RECIPIENT",
-    kybStatus: "PASSED",
-    riskRating: "LOW",
-    approvedCorridors: JSON.stringify(["USD-JPY", "SGD-JPY", "JPY-USD"]),
-    walletProfile: {
-      label: "Tokyo Trading settlement wallet",
-      allowlisted: true,
-      riskScore: 10,
-    },
-  },
-  {
-    externalId: "ent_sg_supplier",
-    name: "Singapore Imports Pte Ltd",
-    country: "SG",
-    role: "BOTH",
-    kybStatus: "PASSED",
-    riskRating: "LOW",
-    approvedCorridors: JSON.stringify(["USD-SGD", "SGD-JPY", "SGD-USD"]),
-    walletProfile: {
-      label: "SG Imports settlement wallet",
-      allowlisted: true,
-      riskScore: 8,
-    },
-  },
-  {
-    externalId: "ent_osaka_parts",
-    name: "Osaka Parts Co",
-    country: "JP",
-    role: "RECIPIENT",
-    kybStatus: "PENDING",
-    riskRating: "MEDIUM",
-    approvedCorridors: JSON.stringify(["USD-JPY"]),
-    walletProfile: {
-      label: "Osaka Parts wallet (unverified)",
-      allowlisted: false,
-      riskScore: 55,
-    },
-  },
-];
+/**
+ * Parse argv. Rejects unknown dash-tokens and unexpected positionals
+ * (deploy-testnet.mjs convention from PR #57).
+ * @param {string[]} argv process.argv
+ */
+export function parseSeedArgs(argv) {
+  const rest = argv.slice(2);
+  const flags = new Set(SEED_FLAGS);
+  for (const token of rest) {
+    if (token.startsWith("-") && !flags.has(token)) {
+      throw new Error(`Unknown argument: ${token}. Valid flags: ${SEED_FLAGS.join(", ")}`);
+    }
+  }
+  const positionals = rest.filter((a) => !flags.has(a));
+  if (positionals.length > 0) {
+    throw new Error(
+      `Unexpected argument: ${positionals[0]}. Usage: node scripts/seed-demo.mjs [${SEED_FLAGS.join("] [")}]`
+    );
+  }
+  return { refreshEntities: rest.includes("--refresh-entities") };
+}
 
 function loadDotEnvIfPresent() {
   const envPath = path.join(root, ".env");
@@ -126,25 +99,19 @@ function assertSeedDatabaseUrl(databaseUrl) {
   }
 }
 
-function chainDir() {
-  return process.env.SETTLEMENTOS_CHAIN_DIR || path.join(root, "chain");
-}
-
-function secretOverlayDir() {
-  return process.env.SETTLEMENTOS_SECRET_OVERLAY_DIR || path.join(path.sep, "etc", "secrets");
-}
-
-/** Same overlay resolution as lib/chain.ts (CHAIN_DIR, then secret mount). */
-function resolveLiveOverlayPath(networkId) {
-  const candidates = [path.join(chainDir(), `deployments.${networkId}.json`)];
-  const secrets = secretOverlayDir();
-  if (path.resolve(chainDir()) !== path.resolve(secrets)) {
-    candidates.push(path.join(secrets, `deployments.${networkId}.json`));
-  }
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
-  }
-  return null;
+function warnIfCwdDivergesFromRepoRoot() {
+  if (process.env.SETTLEMENTOS_CHAIN_DIR) return;
+  const cwd = path.resolve(process.cwd());
+  const repoRoot = path.resolve(root);
+  if (cwd === repoRoot) return;
+  console.warn(
+    `WARNING: SETTLEMENTOS_CHAIN_DIR is unset and process.cwd() (${cwd}) differs from ` +
+      `the repo root (${repoRoot}). Overlay resolution uses process.cwd()/chain — the same ` +
+      `rule as the running app (lib/overlay-paths.mjs). Candidate directories:\n` +
+      `  cwd/chain:  ${path.join(cwd, "chain")}\n` +
+      `  repo/chain: ${path.join(repoRoot, "chain")}\n` +
+      `Set SETTLEMENTOS_CHAIN_DIR to the directory that holds deployments.*.json.`
+  );
 }
 
 function loadLiveWallets() {
@@ -161,41 +128,46 @@ function loadLiveWallets() {
   return { liveWallets, found };
 }
 
-function entityFields(e) {
-  return {
-    externalId: e.externalId,
-    name: e.name,
-    country: e.country,
-    role: e.role,
-    kybStatus: e.kybStatus,
-    riskRating: e.riskRating,
-    approvedCorridors: e.approvedCorridors,
-    mmfEligible: e.mmfEligible ?? false,
-    mmfOptIn: e.mmfOptIn ?? false,
-  };
-}
-
-async function ensureEntity(prisma, e) {
-  const data = entityFields(e);
+/**
+ * Create-only by default. With --refresh-entities, overwrite columns after
+ * printing exactly which entities and columns will change. Wallet registration
+ * and key minting always continue for existing entities.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {import("./seed-entities.mjs").DemoEntity} e
+ * @param {{ refreshEntities: boolean }} opts
+ */
+async function ensureEntity(prisma, e, { refreshEntities }) {
+  const data = entityRowData(e);
   const existing = await prisma.entity.findUnique({ where: { externalId: e.externalId } });
-  if (existing) {
-    await prisma.entity.update({
-      where: { id: existing.id },
-      data: {
-        name: data.name,
-        country: data.country,
-        role: data.role,
-        kybStatus: data.kybStatus,
-        riskRating: data.riskRating,
-        approvedCorridors: data.approvedCorridors,
-        mmfEligible: data.mmfEligible,
-        mmfOptIn: data.mmfOptIn,
-      },
-    });
-    return { entity: await prisma.entity.findUniqueOrThrow({ where: { id: existing.id } }), created: false };
+  if (!existing) {
+    const entity = await prisma.entity.create({ data });
+    return { entity, created: true, refreshed: false };
   }
-  const entity = await prisma.entity.create({ data });
-  return { entity, created: true };
+
+  if (!refreshEntities) {
+    return { entity: existing, created: false, refreshed: false };
+  }
+
+  /** @type {string[]} */
+  const changing = [];
+  for (const col of ENTITY_REFRESH_COLUMNS) {
+    if (existing[col] !== data[col]) changing.push(col);
+  }
+  if (changing.length === 0) {
+    console.log(`  entity ${e.externalId}: --refresh-entities (no column changes)`);
+    return { entity: existing, created: false, refreshed: false };
+  }
+
+  console.log(`  REFRESH ${e.externalId}: overwriting columns: ${changing.join(", ")}`);
+  for (const col of changing) {
+    console.log(`    ${col}: ${JSON.stringify(existing[col])} → ${JSON.stringify(data[col])}`);
+  }
+
+  const update = {};
+  for (const col of ENTITY_REFRESH_COLUMNS) update[col] = data[col];
+  const entity = await prisma.entity.update({ where: { id: existing.id }, data: update });
+  return { entity, created: false, refreshed: true };
 }
 
 async function ensurePlatformKey(prisma, role, label) {
@@ -221,23 +193,36 @@ async function ensureEntityKey(prisma, entity, label) {
 }
 
 async function main() {
+  const { refreshEntities } = parseSeedArgs(process.argv);
+
   console.log("=== SettlementOS non-destructive demo seed ===");
-  console.log("This script NEVER deletes payments, audit events, entities, or API keys.");
+  console.log(
+    "Never deletes payments, audit events, checkpoints, entities, or API keys. " +
+      "Existing entity columns are left alone unless --refresh-entities. " +
+      "The only delete path is registerEntityWallet's duplicate-wallet consolidation, " +
+      "unreachable under @@unique([entityId, network])."
+  );
   console.log("For a full local wipe+redeploy use: npm run setup (localhost only).\n");
+  if (refreshEntities) {
+    console.log("Flag --refresh-entities: will overwrite existing entity columns after printing diffs.\n");
+  }
 
   loadDotEnvIfPresent();
   assertSeedDatabaseUrl(process.env.DATABASE_URL);
+  warnIfCwdDivergesFromRepoRoot();
 
+  const chainDir = resolveChainDir();
+  const secretDir = resolveSecretOverlayDir();
   const { liveWallets, found } = loadLiveWallets();
   if (found.length === 0) {
     console.warn(
       "WARNING: no live-network overlay found under " +
-        `${chainDir()} or ${secretOverlayDir()}. ` +
+        `${chainDir} or ${secretDir}. ` +
         "Entities will be created without wallets — upload deployments.base-sepolia.json " +
         "as a Render Secret File (or place it in chain/) and re-run."
     );
   } else {
-    console.log("Overlays:");
+    console.log("Overlays (absolute paths):");
     for (const f of found) console.log(`  ${f.id} ← ${f.path}`);
   }
 
@@ -246,9 +231,10 @@ async function main() {
   const newKeys = {};
 
   try {
-    for (const e of ENTITIES) {
-      const { entity, created } = await ensureEntity(prisma, e);
-      console.log(`  entity ${e.externalId}: ${created ? "created" : "updated"}`);
+    for (const e of DEMO_ENTITIES) {
+      const { entity, created, refreshed } = await ensureEntity(prisma, e, { refreshEntities });
+      if (created) console.log(`  entity ${e.externalId}: created`);
+      else if (!refreshed) console.log(`  entity ${e.externalId}: already present, unchanged`);
 
       for (const [networkId, byEntity] of Object.entries(liveWallets)) {
         const lw = byEntity[e.externalId];
@@ -300,7 +286,12 @@ async function main() {
   console.log("\nseed:demo complete.");
 }
 
-main().catch((err) => {
-  console.error(err?.message || err);
-  process.exit(1);
-});
+const isMain =
+  process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+
+if (isMain) {
+  main().catch((err) => {
+    console.error(err?.message || err);
+    process.exit(1);
+  });
+}

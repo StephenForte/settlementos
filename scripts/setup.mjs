@@ -17,6 +17,7 @@ import { createPublicClient, createWalletClient, http, defineChain } from "viem"
 import { privateKeyToAccount } from "viem/accounts";
 import { PrismaClient } from "@prisma/client";
 import { assertLocalDatabaseUrl } from "./local-database-url.mjs";
+import { DEMO_ENTITIES } from "./seed-entities.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
@@ -238,52 +239,20 @@ async function main() {
   }
 
   const networkIds = Object.keys(CHAINS);
-  const entities = [
-    {
-      externalId: "ent_acme_us",
-      name: "ACME US Inc",
-      country: "US",
-      role: "SENDER",
-      kybStatus: "PASSED",
-      riskRating: "LOW",
-      approvedCorridors: JSON.stringify(["USD-JPY", "USD-SGD"]),
-      // The one institution cleared for tokenized-MMF parking (Phase 8).
-      mmfEligible: true,
-      mmfOptIn: true,
-      wallet: { address: ACCOUNTS.acme.address, label: "ACME operating wallet", allowlisted: true, riskScore: 5 },
-    },
-    {
-      externalId: "ent_tokyo_supplier",
-      name: "Tokyo Trading KK",
-      country: "JP",
-      role: "RECIPIENT",
-      kybStatus: "PASSED",
-      riskRating: "LOW",
-      approvedCorridors: JSON.stringify(["USD-JPY", "SGD-JPY", "JPY-USD"]),
-      wallet: { address: ACCOUNTS.tokyo.address, label: "Tokyo Trading settlement wallet", allowlisted: true, riskScore: 10 },
-    },
-    {
-      externalId: "ent_sg_supplier",
-      name: "Singapore Imports Pte Ltd",
-      country: "SG",
-      role: "BOTH",
-      kybStatus: "PASSED",
-      riskRating: "LOW",
-      approvedCorridors: JSON.stringify(["USD-SGD", "SGD-JPY", "SGD-USD"]),
-      wallet: { address: ACCOUNTS.singapore.address, label: "SG Imports settlement wallet", allowlisted: true, riskScore: 8 },
-    },
-    {
-      // Intentionally incomplete onboarding — demos the manual-review path.
-      externalId: "ent_osaka_parts",
-      name: "Osaka Parts Co",
-      country: "JP",
-      role: "RECIPIENT",
-      kybStatus: "PENDING",
-      riskRating: "MEDIUM",
-      approvedCorridors: JSON.stringify(["USD-JPY"]),
-      wallet: { address: ACCOUNTS.osaka.address, label: "Osaka Parts wallet (unverified)", allowlisted: false, riskScore: 55 },
-    },
-  ];
+  // Local-chain wallet addresses (dev mnemonic). Entity attributes + wallet
+  // profile come from scripts/seed-entities.mjs (shared with seed:demo).
+  const LOCAL_ADDRESS_BY_EXTERNAL = {
+    ent_acme_us: ACCOUNTS.acme.address,
+    ent_tokyo_supplier: ACCOUNTS.tokyo.address,
+    ent_sg_supplier: ACCOUNTS.singapore.address,
+    ent_osaka_parts: ACCOUNTS.osaka.address,
+  };
+  const entities = DEMO_ENTITIES.map((e) => {
+    const address = LOCAL_ADDRESS_BY_EXTERNAL[e.externalId];
+    if (!address) throw new Error(`No local address mapped for ${e.externalId}`);
+    const { walletProfile, ...data } = e;
+    return { ...data, wallet: { address, ...walletProfile } };
+  });
 
   // Raw keys, collected for the console + chain/dev-api-keys.json. The DB only
   // ever sees their hashes, so this is the one chance to capture them.

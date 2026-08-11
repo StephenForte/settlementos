@@ -108,22 +108,38 @@ npm run seed:demo
 ```
 
 3. *Expected:*
-   - Banner: `non-destructive demo seed` / `NEVER deletes`
-   - `Overlays: base-sepolia ← /etc/secrets/deployments.base-sepolia.json`
-   - Entities created/updated; wallets printed as addresses only
+   - Banner: non-destructive demo seed; existing entity columns left alone
+     unless `--refresh-entities`
+   - `Overlays (absolute paths): base-sepolia ← /etc/secrets/deployments.base-sepolia.json`
+     (confirm the absolute path is under `/etc/secrets`, not a stray checkout)
+   - New entities: `created`; wallets printed as addresses only
    - **NEW API keys** printed once — copy OPERATOR (and others) offline
    - Row counts: `entities: 4`, wallets ≥ 4, `apiKeys` ≥ 6
-4. Run **again**:
+4. Run **again** (idempotence check):
 
 ```bash
 npm run seed:demo
 ```
 
-5. *Expected second run:* same row counts; `already present` for keys; **no new
-   raw keys printed**; `payments` / `auditEvents` unchanged (not wiped).
+5. *Expected second run:*
+   - Same row counts; `payments` / `auditEvents` unchanged (not wiped)
+   - Each entity: `already present, unchanged` — **entity columns are not
+     rewritten** (KYB / `mmfOptIn` / risk stay whatever the operator set)
+   - Wallets for networks in the overlay are still registered (upsert); missing
+     API keys would still be minted — but on a clean second run keys say
+     `already present` and **no new raw keys are printed**
 
-If you see a setup wipe message or `deleteMany`, you ran the wrong command —
-stop. Only `npm run setup` wipes, and it must refuse this host.
+Default re-runs are safe for operator-edited entity columns. To force the seed
+values back onto existing rows, pass the explicit override:
+
+```bash
+node scripts/seed-demo.mjs --refresh-entities
+```
+
+That flag prints every entity and column it is about to overwrite before writing.
+
+If you see a setup wipe message, you ran the wrong command — stop. Only
+`npm run setup` wipes, and it must refuse this host.
 
 ---
 
@@ -219,7 +235,11 @@ let s=""; process.stdin.on("data",d=>s+=d); process.stdin.on("end",()=>{
 app did not see the overlay — check Secret File filename and
 `SETTLEMENTOS_CHAIN_DIR`.*
 
-### 2.4 Migration state
+### 2.4 Migration state + pre-deploy actually ran
+
+`render.yaml` sets `plan: starter` (paid), so `preDeployCommand` is supported
+(it is unavailable only on free instances). Confirm both the Settings field
+**and** that the last deploy's logs show the pre-deploy step.
 
 ```bash
 npx prisma migrate status
@@ -228,6 +248,12 @@ npx prisma migrate status
 *Expected: all migrations listed as applied (currently
 `20260811004754_init_postgres`). Drift or "pending" ⇒ `preDeployCommand` did
 not run — confirm Settings shows `npx prisma migrate deploy`, then Manual Deploy.*
+
+In the deploy event log, find a pre-deploy / "running pre-deploy command" line
+with `prisma migrate deploy` succeeding ("No pending migrations" or applied).
+**Missing pre-deploy in the log while Settings still shows the command is the
+same blueprint-drift class as a wrong build command** — fix Settings or
+re-link the Blueprint, then redeploy.
 
 ### 2.5 Security headers (from your laptop against the public URL)
 
@@ -264,9 +290,13 @@ Sign in with the OPERATOR key from seed, open the audit / integrity UI (or
    - `prisma generate`
    - `next build` success
    - pre-deploy: `prisma migrate deploy` → "No pending migrations" or applied
-3. Re-run §2.1–2.3 (SHA, env names, `/api/networks`).
-4. **Do not** re-run `seed:demo` unless you need new entities/wallets — it is
-   safe, but unnecessary on every deploy.
+3. Re-run §2.1–2.3 (SHA, env names, `/api/networks`) and §2.4 (migrate status +
+   pre-deploy log line).
+4. Re-running `seed:demo` after a deploy is optional. The default path is
+   **create-only for entity columns** — it will not revert operator KYB / MMF
+   opt-in decisions. Re-run when you need wallets from a newly uploaded overlay
+   or missing API keys. Use `--refresh-entities` only when you intentionally
+   want seed values written back onto existing entity rows.
 
 ---
 

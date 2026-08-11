@@ -24,6 +24,11 @@ import {
 } from "viem";
 import { ERC20_ABI, MMF_ABI, SETTLEMENT_ABI } from "./abis";
 import { LIVE_NETWORK_IDS, NETWORKS, networkInfo } from "./networks";
+import {
+  resolveChainDir,
+  resolveLiveOverlayPath,
+  resolveSecretOverlayDir,
+} from "./overlay-paths.mjs";
 import { signerFor, type AccountRef, type Signer } from "./signers";
 
 export type { AccountRef, Signer };
@@ -56,31 +61,24 @@ export interface Deployments {
   accounts?: NetworkAccounts;
 }
 
-// Overridable so tests can point at an isolated fixture dir instead of chain/.
+// Overlay dirs: single implementation in lib/overlay-paths.mjs (also used by
+// scripts/seed-demo.mjs). Read once at import — tests stub env then resetModules.
 // On Render, live-network overlays are Secret Files (private keys) — never in
-// git. Default mount is /etc/secrets/<filename>; set SETTLEMENTOS_CHAIN_DIR to
-// that directory, or rely on the /etc/secrets fallback below when the overlay
-// is absent from CHAIN_DIR (dashboard-uploaded secret, blueprint env drift).
-const CHAIN_DIR = process.env.SETTLEMENTOS_CHAIN_DIR || path.join(process.cwd(), "chain");
-/** Render Secret Files directory; overridable for hermetic tests. */
-const SECRET_OVERLAY_DIR =
-  process.env.SETTLEMENTOS_SECRET_OVERLAY_DIR || path.join(path.sep, "etc", "secrets");
+// git. Set SETTLEMENTOS_CHAIN_DIR=/etc/secrets, or rely on the secret-mount
+// fallback when the overlay is absent from CHAIN_DIR (blueprint env drift).
+const CHAIN_DIR = resolveChainDir();
+const SECRET_OVERLAY_DIR = resolveSecretOverlayDir();
 const DEPLOYMENTS_PATH = path.join(CHAIN_DIR, "deployments.json");
 
 function readJson(p: string) {
   return JSON.parse(fs.readFileSync(p, "utf8"));
 }
 
-/** Resolve a live-network overlay: CHAIN_DIR first, then Render's secret mount. */
-function resolveLiveOverlayPath(networkId: string): string | null {
-  const candidates = [path.join(CHAIN_DIR, `deployments.${networkId}.json`)];
-  if (path.resolve(CHAIN_DIR) !== path.resolve(SECRET_OVERLAY_DIR)) {
-    candidates.push(path.join(SECRET_OVERLAY_DIR, `deployments.${networkId}.json`));
-  }
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
-  }
-  return null;
+function liveOverlayPath(networkId: string): string | null {
+  return resolveLiveOverlayPath(networkId, {
+    chainDir: CHAIN_DIR,
+    secretDir: SECRET_OVERLAY_DIR,
+  });
 }
 
 export function loadDeployments(): Deployments {
@@ -88,7 +86,7 @@ export function loadDeployments(): Deployments {
   if (local && !local.networks) {
     throw new Error("deployments.json is single-network (pre-Phase-3). Re-run: npm run setup");
   }
-  const overlays = LIVE_NETWORK_IDS.map(resolveLiveOverlayPath)
+  const overlays = LIVE_NETWORK_IDS.map(liveOverlayPath)
     .filter((p): p is string => p != null)
     .map(readJson);
   if (!local && overlays.length === 0) {
@@ -106,7 +104,7 @@ export function loadDeployments(): Deployments {
 }
 
 export function isChainReady(): boolean {
-  const overlayPaths = LIVE_NETWORK_IDS.map(resolveLiveOverlayPath).filter(
+  const overlayPaths = LIVE_NETWORK_IDS.map(liveOverlayPath).filter(
     (p): p is string => p != null
   );
   for (const p of [DEPLOYMENTS_PATH, ...overlayPaths]) {
