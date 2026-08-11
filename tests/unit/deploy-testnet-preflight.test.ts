@@ -523,15 +523,23 @@ describe("assertAdoptableFullDeployAllowed (gates on resolved mode)", () => {
     };
   }
 
+  /** Present-overlay refusals must not send the operator straight to --adopt
+   * (decideAdoptPlan will bounce). Absent-overlay refusals should. */
+  const CONSEQUENCE = /NEW addresses/;
+  const FORCE = /--force-full-deploy/;
+  const MOVE_ASIDE = /Move chain\/deployments\.base-sepolia\.json aside first/;
+  const BARE_ADOPT = /Use --adopt to re-home/;
+
   it("refuses when file absent (resolved mode full)", () => {
     const { mode, result } = guardFor({ overlayFilePresent: false, overlayJson: null });
     expect(mode).toBe("full");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.message).toMatch(/no overlay file present/);
-      expect(result.message).toMatch(/--adopt/);
-      expect(result.message).toMatch(/--force-full-deploy/);
-      expect(result.message).toMatch(/NEW addresses/);
+      expect(result.message).toMatch(BARE_ADOPT);
+      expect(result.message).not.toMatch(/aside first/);
+      expect(result.message).toMatch(FORCE);
+      expect(result.message).toMatch(CONSEQUENCE);
     }
   });
 
@@ -544,7 +552,10 @@ describe("assertAdoptableFullDeployAllowed (gates on resolved mode)", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.message).toMatch(/unreadable \(malformed JSON\)/);
-      expect(result.message).toMatch(/NEW addresses/);
+      expect(result.message).toMatch(MOVE_ASIDE);
+      expect(result.message).toMatch(/--adopt/);
+      expect(result.message).toMatch(FORCE);
+      expect(result.message).toMatch(CONSEQUENCE);
     }
   });
 
@@ -557,6 +568,9 @@ describe("assertAdoptableFullDeployAllowed (gates on resolved mode)", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.message).toMatch(/missing networks\[base-sepolia\]/);
+      expect(result.message).toMatch(MOVE_ASIDE);
+      expect(result.message).toMatch(FORCE);
+      expect(result.message).toMatch(CONSEQUENCE);
     }
   });
 
@@ -572,6 +586,9 @@ describe("assertAdoptableFullDeployAllowed (gates on resolved mode)", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.message).toMatch(/missing PaymentSettlement/);
+      expect(result.message).toMatch(MOVE_ASIDE);
+      expect(result.message).toMatch(FORCE);
+      expect(result.message).toMatch(CONSEQUENCE);
     }
   });
 
@@ -587,6 +604,9 @@ describe("assertAdoptableFullDeployAllowed (gates on resolved mode)", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.message).toMatch(/missing mockUSDC/);
+      expect(result.message).toMatch(MOVE_ASIDE);
+      expect(result.message).toMatch(FORCE);
+      expect(result.message).toMatch(CONSEQUENCE);
     }
   });
 

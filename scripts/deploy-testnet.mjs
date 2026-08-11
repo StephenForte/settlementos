@@ -432,14 +432,23 @@ export function assertAdoptableFullDeployAllowed({
     overlayJson,
     networkOverlay,
   });
+  // --adopt only succeeds when the overlay file is absent. When the file is
+  // present (malformed / wrong key / incomplete), adopt immediately refuses to
+  // overwrite keys — so the hint must tell the operator to move the file aside
+  // first, not send them into that second refusal.
+  const hint = overlayFilePresent
+    ? `Move chain/deployments.${networkId}.json aside first, then re-run with --adopt ` +
+      `to re-home the live contracts into a fresh overlay, or pass ` +
+      `--force-full-deploy if you deliberately intend a destructive fresh deploy.`
+    : `Use --adopt to re-home the live contracts into a fresh overlay, or pass ` +
+      `--force-full-deploy if you deliberately intend a destructive fresh deploy.`;
   return {
     ok: false,
     message:
       `${networkId} is registered in ADOPTABLE_NETWORKS (${finding}) — ` +
       `a bare full deploy would redeploy PaymentSettlement and tokens at NEW addresses, ` +
       `breaking the same-address property.\n` +
-      `Use --adopt to re-home the live contracts into a fresh overlay, or pass ` +
-      `--force-full-deploy if you deliberately intend a destructive fresh deploy.`,
+      hint,
   };
 }
 
