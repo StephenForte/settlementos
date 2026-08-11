@@ -20,6 +20,30 @@ import { prisma } from "./db";
  */
 export type AuditTx = Prisma.TransactionClient;
 
+/**
+ * Transaction-scoped Postgres advisory lock for the audit tip-read-plus-create.
+ *
+ * SQLite serialized the chain for free (one writer). Postgres READ COMMITTED
+ * does not: two concurrent appenders can both read the same tip and both insert
+ * with the same prevHash, forking the chain. This lock restores the SQLite
+ * "wait your turn" semantics on the critical section only.
+ *
+ * Key is an arbitrary int8 stable for the life of the product — not a secret,
+ * just a namespace so we never collide with another advisory lock in the same
+ * Postgres instance (e.g. chainbank's).
+ */
+export const AUDIT_CHAIN_LOCK_KEY = 0x534f5f415544n; // "SO_AUD" in hex-ish
+
+/**
+ * Acquire the audit-chain lock on `tx`. Released automatically at commit/rollback.
+ * No-op only when SETTLEMENTOS_SKIP_AUDIT_CHAIN_LOCK=1 — test/proof harness; never
+ * set in production.
+ */
+export async function lockAuditChain(tx: AuditTx): Promise<void> {
+  if (process.env.SETTLEMENTOS_SKIP_AUDIT_CHAIN_LOCK === "1") return;
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${AUDIT_CHAIN_LOCK_KEY})`;
+}
+
 /** Events between automatic checkpoints. */
 const DEFAULT_CHECKPOINT_INTERVAL = 100;
 
@@ -59,11 +83,12 @@ function signatureMatches(expected: string, actual: string): boolean {
  * Append one event to the chain, inside `tx`.
  *
  * The read of the tip and the create of the new event must stay in the same
- * transaction: that is what serializes the chain. SQLite admits one writer at a
- * time, so a second appender's tip read cannot land between this one's read and
- * its create — it waits for this transaction to commit and then reads the event
- * it wrote. Split the two apart (or read the tip outside the tx) and two
- * appenders can both build on the same prevHash, forking the chain.
+ * transaction, and that transaction must hold `lockAuditChain` for the whole
+ * critical section. Under SQLite a global write lock made the transaction alone
+ * enough; under Postgres READ COMMITTED concurrent appenders can both observe
+ * the same tip unless they take turns via the advisory lock. Split the tip read
+ * from the create (or skip the lock) and two appenders fork the chain on the
+ * same prevHash — verifyAuditChain then reports BROKEN.
  */
 async function appendEvent(
   tx: AuditTx,
@@ -72,6 +97,7 @@ async function appendEvent(
   paymentId: string | undefined,
   actor: string
 ) {
+  await lockAuditChain(tx);
   const last = await tx.auditEvent.findFirst({ orderBy: { id: "desc" } });
   const prevHash = last?.hash ?? "GENESIS";
   const detailJson = JSON.stringify(detail);
@@ -144,6 +170,8 @@ export async function createCheckpoint() {
     throw new AuditAnchorError("not_configured", "audit anchoring is not configured (AUDIT_ANCHOR_KEY)");
   }
   return prisma.$transaction(async (tx) => {
+    // Same lock as append — a checkpoint and an append must not race on tip.
+    await lockAuditChain(tx);
     const tip = await tx.auditEvent.findFirst({ orderBy: { id: "desc" } });
     if (!tip) throw new AuditAnchorError("no_events", "there are no audit events to anchor");
     const last = await tx.auditCheckpoint.findFirst({ orderBy: { id: "desc" } });

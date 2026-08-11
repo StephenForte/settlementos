@@ -793,4 +793,54 @@ describe("registerEntityWallet (idempotent per entityId+network)", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].address).toBe(ADDR_2);
   });
+
+  it("consolidates pre-existing duplicate rows for the same entityId+network", async () => {
+    const entity = await prisma.entity.findUniqueOrThrow({
+      where: { externalId: "ent_acme_us" },
+    });
+    await prisma.wallet.create({
+      data: {
+        entityId: entity.id,
+        network: NETWORK,
+        address: ADDR_1,
+        ...PROFILE,
+      },
+    });
+    // Rows that predate @@unique([entityId, network]) cannot be inserted while
+    // the index exists — drop it only for this case, insert a sibling, then let
+    // registerEntityWallet consolidate and restore the index in finally.
+    await prisma.$executeRawUnsafe(`DROP INDEX IF EXISTS "Wallet_entityId_network_key"`);
+    try {
+      await prisma.wallet.create({
+        data: {
+          entityId: entity.id,
+          network: NETWORK,
+          address: "0x00000000000000000000000000000000000000aa",
+          ...PROFILE,
+        },
+      });
+      expect(
+        await prisma.wallet.count({ where: { entityId: entity.id, network: NETWORK } })
+      ).toBe(2);
+
+      expect(
+        await registerEntityWallet(prisma, {
+          externalId: "ent_acme_us",
+          networkId: NETWORK,
+          address: ADDR_2,
+          profile: PROFILE,
+        })
+      ).toBe(true);
+
+      const rows = await prisma.wallet.findMany({
+        where: { entityId: entity.id, network: NETWORK },
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].address).toBe(ADDR_2);
+    } finally {
+      await prisma.$executeRawUnsafe(
+        `CREATE UNIQUE INDEX IF NOT EXISTS "Wallet_entityId_network_key" ON "Wallet"("entityId", "network")`
+      );
+    }
+  });
 });

@@ -168,3 +168,14 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
   wallets and adds TokenizedMMF (pre-F4 deploy had none) without redeploying
   escrow/tokens.
 - Faucet lessons are in auto-memory (base-sepolia-faucet-lessons).
+
+## Database (2026-08-10)
+- Provider is **Postgres** (`provider = "postgresql"`), not SQLite. Tables live in
+  the `settlementos` schema via `DATABASE_URL=...?schema=settlementos` so a shared
+  Render instance can keep chainbank in `public.*`.
+- Local prerequisite: Postgres 16+ on loopback. `npm test` creates/drops an
+  ephemeral database; `npm run setup` refuses non-localhost URLs (wipe guard).
+- Deployed schema path: `npm run db:deploy` (`prisma migrate deploy`). Local reset
+  still uses `prisma db push` inside `npm run setup`.
+- Audit chain serialization under READ COMMITTED: `lockAuditChain` advisory lock
+  in `lib/audit.ts` (see AGENTS.md invariant + `tests/db/audit-concurrency.test.ts`).
