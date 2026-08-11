@@ -476,8 +476,12 @@ dev schema sync uses `prisma db push` inside setup; the deployed path is
   seeding. After editing `prisma/schema.prisma`, `npm run setup` is what brings the
   dev DB and client in sync; the test fixture pushes the schema itself in
   `tests/global-setup.ts`. Seeded demo entities are defined **twice** — in
-  `scripts/setup.mjs` and in `ENTITIES` in `tests/helpers/deploy.ts` — keep the two
-  in sync when adding entity fields.
+  `scripts/seed-entities.mjs` (imported by `scripts/setup.mjs` and
+  `scripts/seed-demo.mjs`) and in `ENTITIES` in `tests/helpers/deploy.ts` —
+  keep those two in sync when adding entity fields. Remote/non-destructive
+  seed is `npm run seed:demo` (never `npm run setup` on Render). Overlay path
+  resolution for the app and that seed is the single module
+  `lib/overlay-paths.mjs`.
 - **API keys are seeded, never stored raw.** `npm run setup` generates one OPERATOR,
   one REVIEWER, and one ENTITY key per entity, prints them once, and writes them to
   gitignored `chain/dev-api-keys.json` — the DB only ever holds sha256 hashes, so a

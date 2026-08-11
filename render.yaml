@@ -1,0 +1,47 @@
+# SettlementOS — Render Blueprint
+#
+# TRAP: Blueprint sync has failed silently before. After every deploy, run the
+# post-deploy verification in tasks/runbooks/render-deploy.md — compare the
+# *running* service (commit SHA, env var NAMES, migration status, overlay path)
+# against this file. Do not trust the dashboard "Blueprint" tab alone.
+#
+# Secret Files (overlay with private keys) are NOT declared here — upload
+# deployments.base-sepolia.json in the Dashboard → Environment → Secret Files.
+# Node version is pinned via NODE_VERSION below and .node-version (22.23.1).
+
+services:
+  - type: web
+    name: settlementos
+    runtime: node
+    plan: starter
+    # Per-process in-memory rate limit (lib/rate-limit.ts) — keep at 1 instance.
+    numInstances: 1
+    healthCheckPath: /api/networks
+    # Settlement on Base Sepolia is synchronous and can take ~8–10s; give
+    # in-flight requests room during a deploy.
+    maxShutdownDelaySeconds: 60
+    buildCommand: npm ci --include=dev && npx prisma generate && npm run build
+    preDeployCommand: npx prisma migrate deploy
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: "22.23.1"
+      - key: NODE_ENV
+        value: production
+      # Live overlays (Secret Files) are mounted at /etc/secrets/<filename>.
+      - key: SETTLEMENTOS_CHAIN_DIR
+        value: /etc/secrets
+      # Render terminates TLS and sets X-Forwarded-For — read the rightmost hop.
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"
+      # Public Base Sepolia RPC (override in Dashboard if you use a private one).
+      - key: BASE_SEPOLIA_RPC_URL
+        value: https://sepolia.base.org
+      # Secrets — set once in the Dashboard (sync: false so Blueprint updates
+      # do not blank them). Never commit values.
+      - key: DATABASE_URL
+        sync: false
+      - key: AUDIT_ANCHOR_KEY
+        sync: false
+      - key: DEPLOYER_PRIVATE_KEY
+        sync: false
