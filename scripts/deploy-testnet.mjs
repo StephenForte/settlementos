@@ -156,18 +156,95 @@ export const ADOPTABLE_NETWORKS = {
 
 /** @typedef {"full" | "mmf_addon" | "noop" | "adopt"} DeployMode */
 
+/** Known CLI flags for deploy-testnet.mjs (anything else starting with "-" is an error). */
+export const DEPLOY_FLAGS = ["--preflight-only", "--adopt", "--force-full-deploy"];
+
 /**
  * Parse argv for network id, --preflight-only, --adopt, and --force-full-deploy.
+ * Rejects unknown dash-tokens and requires exactly one network id — a typo'd
+ * flag must never silently fall through to an unguarded full deploy.
  * @param {string[]} argv process.argv
  */
 export function parseDeployArgs(argv) {
   const rest = argv.slice(2);
-  const flags = new Set(["--preflight-only", "--adopt", "--force-full-deploy"]);
-  const preflightOnly = rest.includes("--preflight-only");
-  const adopt = rest.includes("--adopt");
-  const forceFullDeploy = rest.includes("--force-full-deploy");
-  const networkId = rest.find((a) => !flags.has(a));
-  return { networkId, preflightOnly, adopt, forceFullDeploy };
+  const flags = new Set(DEPLOY_FLAGS);
+  for (const token of rest) {
+    if (token.startsWith("-") && !flags.has(token)) {
+      throw new Error(
+        `Unknown argument: ${token}. Valid flags: ${DEPLOY_FLAGS.join(", ")}`
+      );
+    }
+  }
+  const networkIds = rest.filter((a) => !flags.has(a));
+  if (networkIds.length === 0) {
+    throw new Error(
+      `Missing network id. Usage: node scripts/deploy-testnet.mjs <network> [${DEPLOY_FLAGS.join("] [")}]`
+    );
+  }
+  if (networkIds.length > 1) {
+    throw new Error(
+      `Expected exactly one network id, got ${networkIds.length}: ${networkIds.join(", ")}`
+    );
+  }
+  return {
+    networkId: networkIds[0],
+    preflightOnly: rest.includes("--preflight-only"),
+    adopt: rest.includes("--adopt"),
+    forceFullDeploy: rest.includes("--force-full-deploy"),
+  };
+}
+
+/**
+ * Register (or replace) one entity's wallet for a network. Idempotent per
+ * (entityId, network): a re-run with a new address updates the single row
+ * rather than inserting a second. Leaves wallets for other entities / networks
+ * untouched. When prior buggy runs left duplicates for the same key, consolidates
+ * to one row holding the address just written.
+ *
+ * Application-level upsert — the schema's unique is still (address, network);
+ * a @@unique([entityId, network]) belongs with the Postgres migration.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{
+ *   externalId: string,
+ *   networkId: string,
+ *   address: string,
+ *   profile: { label: string, allowlisted: boolean, riskScore: number }
+ * }} input
+ * @returns {Promise<boolean>} true when a row was written; false if entity unseeded
+ */
+export async function registerEntityWallet(prisma, { externalId, networkId, address, profile }) {
+  const entity = await prisma.entity.findUnique({ where: { externalId } });
+  if (!entity) return false;
+
+  const existing = await prisma.wallet.findMany({
+    where: { entityId: entity.id, network: networkId },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const data = {
+    address,
+    label: profile.label,
+    allowlisted: profile.allowlisted,
+    riskScore: profile.riskScore,
+  };
+
+  if (existing.length === 0) {
+    await prisma.wallet.create({
+      data: { entityId: entity.id, network: networkId, ...data },
+    });
+    return true;
+  }
+
+  const [keep, ...dupes] = existing;
+  // Drop prior duplicates for THIS (entityId, network) only — before updating
+  // the kept row — so a unique (address, network) collision with a sibling
+  // cannot fire, and walletOnNetwork cannot pick a stale address.
+  if (dupes.length > 0) {
+    await prisma.wallet.deleteMany({ where: { id: { in: dupes.map((d) => d.id) } } });
+  }
+  await prisma.wallet.update({ where: { id: keep.id }, data });
+  return true;
 }
 
 /**
@@ -379,14 +456,23 @@ export function assertAdoptableFullDeployAllowed({
     overlayJson,
     networkOverlay,
   });
+  // --adopt only succeeds when the overlay file is absent. When the file is
+  // present (malformed / wrong key / incomplete), adopt immediately refuses to
+  // overwrite keys — so the hint must tell the operator to move the file aside
+  // first, not send them into that second refusal.
+  const hint = overlayFilePresent
+    ? `Move chain/deployments.${networkId}.json aside first, then re-run with --adopt ` +
+      `to re-home the live contracts into a fresh overlay, or pass ` +
+      `--force-full-deploy if you deliberately intend a destructive fresh deploy.`
+    : `Use --adopt to re-home the live contracts into a fresh overlay, or pass ` +
+      `--force-full-deploy if you deliberately intend a destructive fresh deploy.`;
   return {
     ok: false,
     message:
       `${networkId} is registered in ADOPTABLE_NETWORKS (${finding}) — ` +
       `a bare full deploy would redeploy PaymentSettlement and tokens at NEW addresses, ` +
       `breaking the same-address property.\n` +
-      `Use --adopt to re-home the live contracts into a fresh overlay, or pass ` +
-      `--force-full-deploy if you deliberately intend a destructive fresh deploy.`,
+      hint,
   };
 }
 
@@ -651,9 +737,17 @@ function fail(msg) {
 }
 
 async function main() {
-  const { networkId: NETWORK_ID, preflightOnly, adopt, forceFullDeploy } = parseDeployArgs(
-    process.argv
-  );
+  let NETWORK_ID;
+  let preflightOnly;
+  let adopt;
+  let forceFullDeploy;
+  try {
+    ({ networkId: NETWORK_ID, preflightOnly, adopt, forceFullDeploy } = parseDeployArgs(
+      process.argv
+    ));
+  } catch (e) {
+    fail(/** @type {Error} */ (e).message);
+  }
   const CFG = NETWORK_CONFIGS[NETWORK_ID];
   if (!CFG) {
     console.error(
@@ -1028,25 +1122,13 @@ async function runAdopt({
   const prisma = new PrismaClient();
   let registered = 0;
   for (const [externalId, w] of Object.entries(entityWallets)) {
-    const entity = await prisma.entity.findUnique({ where: { externalId } });
-    if (!entity) continue;
-    await prisma.wallet.upsert({
-      where: { address_network: { address: w.address, network: NETWORK_ID } },
-      create: {
-        entityId: entity.id,
-        address: w.address,
-        network: NETWORK_ID,
-        label: w.profile.label,
-        allowlisted: w.profile.allowlisted,
-        riskScore: w.profile.riskScore,
-      },
-      update: {
-        label: w.profile.label,
-        allowlisted: w.profile.allowlisted,
-        riskScore: w.profile.riskScore,
-      },
+    const wrote = await registerEntityWallet(prisma, {
+      externalId,
+      networkId: NETWORK_ID,
+      address: w.address,
+      profile: w.profile,
     });
-    registered++;
+    if (wrote) registered++;
   }
   await prisma.$disconnect();
   if (registered === 0) {
@@ -1365,21 +1447,13 @@ async function runFullDeploy({
   const prisma = new PrismaClient();
   let registered = 0;
   for (const [externalId, w] of Object.entries(entityWallets)) {
-    const entity = await prisma.entity.findUnique({ where: { externalId } });
-    if (!entity) continue;
-    await prisma.wallet.upsert({
-      where: { address_network: { address: w.address, network: NETWORK_ID } },
-      create: {
-        entityId: entity.id,
-        address: w.address,
-        network: NETWORK_ID,
-        label: w.profile.label,
-        allowlisted: w.profile.allowlisted,
-        riskScore: w.profile.riskScore,
-      },
-      update: { label: w.profile.label, allowlisted: w.profile.allowlisted, riskScore: w.profile.riskScore },
+    const wrote = await registerEntityWallet(prisma, {
+      externalId,
+      networkId: NETWORK_ID,
+      address: w.address,
+      profile: w.profile,
     });
-    registered++;
+    if (wrote) registered++;
   }
   await prisma.$disconnect();
   if (registered === 0) {

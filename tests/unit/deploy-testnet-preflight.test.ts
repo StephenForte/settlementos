@@ -2,9 +2,10 @@
 // auto-detected deploy-mode decision (full / mmf_addon / noop). J1 extends the
 // same file for --adopt helpers (registry, bytecode gate, plan). No live RPC.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { parseEther } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
+import { prisma } from "@/lib/db";
 import {
   NETWORK_CONFIGS,
   ADOPTABLE_NETWORKS,
@@ -19,6 +20,7 @@ import {
   decideAdoptPlan,
   diagnoseAdoptableOverlayFinding,
   assertAdoptableFullDeployAllowed,
+  registerEntityWallet,
   validateDeployerKey,
   validateChainId,
   validateDeployerBalance,
@@ -108,6 +110,12 @@ describe("parseDeployArgs", () => {
       adopt: true,
       forceFullDeploy: false,
     });
+    expect(parseDeployArgs(["node", "script", "base-sepolia", "--adopt", "--preflight-only"])).toEqual({
+      networkId: "base-sepolia",
+      preflightOnly: true,
+      adopt: true,
+      forceFullDeploy: false,
+    });
   });
 
   it("parses --force-full-deploy", () => {
@@ -117,6 +125,31 @@ describe("parseDeployArgs", () => {
       adopt: false,
       forceFullDeploy: true,
     });
+  });
+
+  it.each([
+    {
+      name: "typo --adpot",
+      argv: ["node", "script", "base-sepolia", "--adpot"],
+      error: /Unknown argument: --adpot\. Valid flags: --preflight-only, --adopt, --force-full-deploy/,
+    },
+    {
+      name: "single-dash -adopt",
+      argv: ["node", "script", "base-sepolia", "-adopt"],
+      error: /Unknown argument: -adopt\. Valid flags: --preflight-only, --adopt, --force-full-deploy/,
+    },
+    {
+      name: "missing network id",
+      argv: ["node", "script", "--adopt"],
+      error: /Missing network id/,
+    },
+    {
+      name: "two network ids",
+      argv: ["node", "script", "base-sepolia", "polygon-amoy"],
+      error: /Expected exactly one network id, got 2: base-sepolia, polygon-amoy/,
+    },
+  ])("rejects $name", ({ argv, error }) => {
+    expect(() => parseDeployArgs(argv)).toThrow(error);
   });
 });
 
@@ -521,15 +554,23 @@ describe("assertAdoptableFullDeployAllowed (gates on resolved mode)", () => {
     };
   }
 
+  /** Present-overlay refusals must not send the operator straight to --adopt
+   * (decideAdoptPlan will bounce). Absent-overlay refusals should. */
+  const CONSEQUENCE = /NEW addresses/;
+  const FORCE = /--force-full-deploy/;
+  const MOVE_ASIDE = /Move chain\/deployments\.base-sepolia\.json aside first/;
+  const BARE_ADOPT = /Use --adopt to re-home/;
+
   it("refuses when file absent (resolved mode full)", () => {
     const { mode, result } = guardFor({ overlayFilePresent: false, overlayJson: null });
     expect(mode).toBe("full");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.message).toMatch(/no overlay file present/);
-      expect(result.message).toMatch(/--adopt/);
-      expect(result.message).toMatch(/--force-full-deploy/);
-      expect(result.message).toMatch(/NEW addresses/);
+      expect(result.message).toMatch(BARE_ADOPT);
+      expect(result.message).not.toMatch(/aside first/);
+      expect(result.message).toMatch(FORCE);
+      expect(result.message).toMatch(CONSEQUENCE);
     }
   });
 
@@ -542,7 +583,10 @@ describe("assertAdoptableFullDeployAllowed (gates on resolved mode)", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.message).toMatch(/unreadable \(malformed JSON\)/);
-      expect(result.message).toMatch(/NEW addresses/);
+      expect(result.message).toMatch(MOVE_ASIDE);
+      expect(result.message).toMatch(/--adopt/);
+      expect(result.message).toMatch(FORCE);
+      expect(result.message).toMatch(CONSEQUENCE);
     }
   });
 
@@ -555,6 +599,9 @@ describe("assertAdoptableFullDeployAllowed (gates on resolved mode)", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.message).toMatch(/missing networks\[base-sepolia\]/);
+      expect(result.message).toMatch(MOVE_ASIDE);
+      expect(result.message).toMatch(FORCE);
+      expect(result.message).toMatch(CONSEQUENCE);
     }
   });
 
@@ -570,6 +617,9 @@ describe("assertAdoptableFullDeployAllowed (gates on resolved mode)", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.message).toMatch(/missing PaymentSettlement/);
+      expect(result.message).toMatch(MOVE_ASIDE);
+      expect(result.message).toMatch(FORCE);
+      expect(result.message).toMatch(CONSEQUENCE);
     }
   });
 
@@ -585,6 +635,9 @@ describe("assertAdoptableFullDeployAllowed (gates on resolved mode)", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.message).toMatch(/missing mockUSDC/);
+      expect(result.message).toMatch(MOVE_ASIDE);
+      expect(result.message).toMatch(FORCE);
+      expect(result.message).toMatch(CONSEQUENCE);
     }
   });
 
@@ -694,5 +747,50 @@ describe("assertAdoptableFullDeployAllowed (gates on resolved mode)", () => {
         networkOverlay: { contracts: { PaymentSettlement: SETTLEMENT } },
       })
     ).toMatch(/missing mockUSDC/);
+  });
+});
+
+describe("registerEntityWallet (idempotent per entityId+network)", () => {
+  // Isolated network id so we never touch seeded local/live wallet rows.
+  const NETWORK = "test-wallet-upsert-net";
+  const ADDR_1 = "0xA904877d0977b421841CD45eCe779cEdDEcb2D24";
+  const ADDR_2 = "0x50F061400e88a174BC0Dd09859191280d2026dc4";
+  const PROFILE = {
+    label: "upsert test wallet",
+    allowlisted: true,
+    riskScore: 5,
+  };
+
+  afterEach(async () => {
+    await prisma.wallet.deleteMany({ where: { network: NETWORK } });
+  });
+
+  it("second registration replaces the address — one row survives", async () => {
+    const entity = await prisma.entity.findUniqueOrThrow({
+      where: { externalId: "ent_acme_us" },
+    });
+
+    expect(
+      await registerEntityWallet(prisma, {
+        externalId: "ent_acme_us",
+        networkId: NETWORK,
+        address: ADDR_1,
+        profile: PROFILE,
+      })
+    ).toBe(true);
+    expect(
+      await registerEntityWallet(prisma, {
+        externalId: "ent_acme_us",
+        networkId: NETWORK,
+        address: ADDR_2,
+        profile: PROFILE,
+      })
+    ).toBe(true);
+
+    const rows = await prisma.wallet.findMany({
+      where: { entityId: entity.id, network: NETWORK },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].address).toBe(ADDR_2);
   });
 });
