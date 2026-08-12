@@ -41,6 +41,10 @@ services:
       # Public Base Sepolia RPC (override in Dashboard if you use a private one).
       - key: BASE_SEPOLIA_RPC_URL
         value: https://sepolia.base.org
+      # ForteL2 read replica (Private Service fortel2-replica:10000, Oregon).
+      # Balance/display reads only — writes and confirm() stay on the sequencer RPC.
+      - key: FORTEL2_SEPOLIA_READ_RPC_URL
+        value: http://fortel2-replica:10000
       # Secrets — set once in the Dashboard (sync: false so Blueprint updates
       # do not blank them). Never commit values.
       - key: DATABASE_URL
