@@ -19,7 +19,7 @@ failure/repair paths.
 | `DATABASE_URL` | yes | local SQLite |
 | `DEPLOYER_PRIVATE_KEY` | yes | operator on both live networks (see AGENTS.md) |
 | `FORTEL2_SEPOLIA_RPC_URL` | yes | sequencer; default loopback only works **on the ForteL2 host** |
-| `FORTEL2_SEPOLIA_READ_RPC_URL` | optional | Render replica for balance/display reads only |
+| `FORTEL2_SEPOLIA_READ_RPC_URL` | optional | `http://fortel2-replica:10000` on Render Oregon — balance/display reads only (~3 min lag); writes/confirm stay on sequencer |
 | `BASE_SEPOLIA_RPC_URL` | optional | defaults to public Base Sepolia RPC |
 
 Do **not** expose the ForteL2 sequencer port to the public internet. Prefer

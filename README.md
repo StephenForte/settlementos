@@ -309,19 +309,24 @@ long-term home settlement rail — is in the network registry as `fortel2-sepoli
 The chain is operated **outside this repo** on the operator's Mac — a personal,
 best-effort L2 with **no uptime SLA**. Base Sepolia and Polygon Amoy are public
 testnets run by real operators; ForteL2 is one person's stack. A demo against
-852 only works while that sequencer is up. An optional Render read replica can
-back balance/display reads, but it is read-only, not a substitute for the
-sequencer, and has OOM'd on catch-up on small instances (see
-[`tasks/fortel2-l2-prereqs.md`](tasks/fortel2-l2-prereqs.md) § "Replica OOM on
-catch-up"). Canonical chain facts (chain IDs, RPCs, bridge addresses, reset
-policy) live in ForteL2's `deployments/rail-interface.json`.
+852 only works while that sequencer is up. On Render Oregon, an optional read
+replica at `http://fortel2-replica:10000` (Private Service `fortel2-replica`,
+same private network as this app) backs balance/display reads only — it is
+read-only (~3 min lag vs the sequencer from L1 batching; settle-and-confirm
+against the replica looks like failed txs), not a substitute for the sequencer,
+and has OOM'd on catch-up on small instances (see
+[`tasks/fortel2-l2-prereqs.md`](tasks/fortel2-l2-prereqs.md) §5). There is no
+public read URL yet; `rail-interface.json` `replica.readRpcUrl` stays null.
+Canonical chain facts (chain IDs, RPCs, bridge addresses, reset policy) live in
+ForteL2's `deployments/rail-interface.json`.
 
 ```bash
 # Write/sequencer RPC (default: the Mac sequencer loopback)
 FORTEL2_SEPOLIA_RPC_URL=http://127.0.0.1:9545
-# Optional read-only replica RPC (Render). Balance/display reads only — writes
-# and tx confirmation always use the sequencer RPC above.
-FORTEL2_SEPOLIA_READ_RPC_URL=
+# Optional read-only replica (Render Oregon private network only). Balance/
+# display reads only — writes and confirm() always use the sequencer RPC above.
+# ~3 min lag; unset locally unless you tunnel to the replica.
+FORTEL2_SEPOLIA_READ_RPC_URL=http://fortel2-replica:10000
 # Optional offline ForteL2 devnet (resets freely; experiments only)
 FORTEL2_LOCAL_RPC_URL=http://127.0.0.1:9545
 ```

@@ -60,10 +60,26 @@ The deploy script hard-fails if the RPC is unreachable, the chain id is not
 
 ## 5. Optional — Render replica read URL
 
-If you want SOS balance/display reads served by the replica instead of the
-sequencer, share the Render read RPC URL; SOS sets it as
-`FORTEL2_SEPOLIA_READ_RPC_URL` (F1 already routes only balance reads there —
-writes and tx confirmation always stay on the sequencer). Purely optional.
+SettlementOS on Render Oregon sets:
+
+```bash
+FORTEL2_SEPOLIA_READ_RPC_URL=http://fortel2-replica:10000
+```
+
+That hostname resolves only on Render's Oregon private network (Private Service
+`fortel2-replica`, port 10000, HTTP not HTTPS). It is **read-only** — the
+replica filter rejects `eth_sendRawTransaction`, `debug_traceBlockByNumber`,
+`txpool_status`, and other write/trace methods. SOS routes balance/display reads
+via `readClientFor()`; writes, `confirm()`, allowance checks consumed by writes,
+and refund-vs-compensate escrow reads stay on `FORTEL2_SEPOLIA_RPC_URL`
+(sequencer). There is **no public read URL** yet — do not publish this hostname
+in `rail-interface.json` (`replica.readRpcUrl` stays null until one exists).
+
+**Lag:** the replica trails the sequencer by roughly **three minutes** (L1 batch
+derivation). A just-submitted tx is invisible there; polling receipts or
+settle-and-confirm against the replica looks like failed txs. Purely optional —
+unset `FORTEL2_SEPOLIA_READ_RPC_URL` and reads fall back to the sequencer (fail
+closed to the write client, never another chain).
 
 ### Replica OOM on catch-up (seen 2026-08-05)
 
@@ -77,8 +93,9 @@ huge backlog in one burst (`decoded singular batch from channel` floods, then
   live.
 - Turn log level down to `warn` during catch-up so batch-decode spam does not
   add I/O pressure.
-- SOS writes are unaffected (sequencer RPC). If the replica is flaky, unset
-  `FORTEL2_SEPOLIA_READ_RPC_URL` so balance/display reads hit the sequencer.
+- SOS writes and `confirm()` are unaffected (sequencer RPC). If the replica is
+  flaky or OOM during catch-up, unset `FORTEL2_SEPOLIA_READ_RPC_URL` so
+  balance/display reads hit the sequencer.
 
 ## 6. Bookkeeping
 

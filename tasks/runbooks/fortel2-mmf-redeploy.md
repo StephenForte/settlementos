@@ -18,7 +18,7 @@ loopback on a different host.
 | Check | Why |
 |---|---|
 | Sequencer up and reachable | Writes go to `FORTEL2_SEPOLIA_RPC_URL` (default `http://127.0.0.1:9545` on the **sequencer host**). Confirm `eth_chainId` → `0x354` (852). |
-| Optional read replica | `FORTEL2_SEPOLIA_READ_RPC_URL` if set — display/balance paths only; deploy + park/recall/accrue still write via the sequencer URL. |
+| Optional read replica | `FORTEL2_SEPOLIA_READ_RPC_URL=http://fortel2-replica:10000` on Render Oregon — display/balance paths only (~3 min lag); deploy + park/recall/accrue still write via the sequencer URL. |
 | `DEPLOYER_PRIVATE_KEY` in `.env` | Same funded key used for Base Sepolia / Amoy (`0x5128889F20Ec13e0Be38b2BeBC568594159B652d` in the F2 prep notes). Never commit it. |
 | Deployer L2 balance ≥ ~0.005 ETH | Script preflight (`minDeployerBalance`); covers contract deploys + entity/treasury gas dust. Bridge more from Sepolia L1 via OptimismPortalProxy if short — see `tasks/f2-prep-notes.md` / ForteL2 `deposit-eth-sepolia.sh`. |
 | `DATABASE_URL` + seeded entities | Overlay wallet registration upserts into the app DB; `npm run setup` (or a prior F2/F3 seed) must have created the demo entities. |
