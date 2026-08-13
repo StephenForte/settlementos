@@ -134,11 +134,17 @@ export function networkContracts(networkId: string): NetworkContracts {
 
 function viemChain(networkId: string) {
   const info = networkInfo(networkId);
+  const maxPriorityFeePerGas = priorityFeeFor(networkId);
   return defineChain({
     id: info.chainId,
     name: info.label,
     nativeCurrency: { name: info.nativeSymbol ?? "Ether", symbol: info.nativeSymbol ?? "ETH", decimals: 18 },
     rpcUrls: { default: { http: [info.rpcUrl] } },
+    // Omit `fees` entirely when undefined — defineChain defaults it to
+    // undefined, which is today's object. Do not pass
+    // `{ maxPriorityFeePerGas: undefined }`; that is a present fees object
+    // and is not byte-identical to an untouched chain.
+    ...(maxPriorityFeePerGas !== undefined ? { fees: { maxPriorityFeePerGas } } : {}),
   });
 }
 
@@ -352,6 +358,30 @@ export function replicaLagRetries(networkId: string): number {
   if (networkId.startsWith("fortel2-")) return 0;
   if (networkInfo(networkId).live) return 4;
   return 0;
+}
+
+/**
+ * EIP-1559 priority tip for a network, or `undefined` to leave viem's
+ * `estimateFeesPerGas` (node `eth_maxPriorityFeePerGas`) alone.
+ *
+ * ForteL2 has no fee market — single writer, near-empty blocks — so the node's
+ * suggested ~0.001 gwei tip is 80%+ of what we pay, and quoting that cost to a
+ * counterparty quotes our own tip back to ourselves. 1 wei is the near-zero
+ * value: viem 2.54.6 honours `0n` (`??` / `typeof !== 'undefined'` in
+ * `estimateMaxPriorityFeePerGas`), but `1n` also survives a `||` fallback if
+ * one ever appears. Compared to a 0.001 gwei node tip, 1 wei is invisible in
+ * any cost quote.
+ *
+ * Every other network — especially Polygon Amoy, which enforces a ~30 gwei
+ * floor — returns `undefined` so pricing stays byte-identical to today. A
+ * near-zero tip there would sit unmined rather than error.
+ *
+ * Pure function of `networkId`. No env reads: clients are memoized at first
+ * use, so an env-dependent fee would freeze and be untestable.
+ */
+export function priorityFeeFor(networkId: string): bigint | undefined {
+  if (networkId.startsWith("fortel2-")) return 1n;
+  return undefined;
 }
 
 /**
