@@ -49,7 +49,7 @@ ForteL2 learning Phases **0–3 are done** (Sepolia L2 chain **852** + Render re
 |---|---|
 | **NOW (recommended)** | Start **F1–F5 against `fortel2-sepolia` (852)** using ForteL2 `deployments/rail-interface.json` |
 | Optional | `fortel2-local` (901) for offline-only experiments (resets freely) |
-| Reads | Prefer Render **replica** `http://fortel2-replica:10000` when reachable; **writes** on Render use `https://fortel2-write.ente.ltd` + Access headers (ForteL2 D-0035). Local writes still use Mac loopback `:9545`. |
+| Reads | Prefer Render **replica** `http://fortel2-replica:10000` when reachable (private hostname — do **not** consolidate onto the write hostname). **Writes** and `confirm()` on Render use `https://fortel2-write.ente.ltd` + Access headers (ForteL2 D-0035). Local writes still use Mac loopback `:9545`. The replica derives from L1 batches and is structurally ~3 minutes behind the sequencer; confirming against it makes every settlement look failed. |
 | Do **not** wait for | Phase 3b friends, Phase 4–6 client rebuilds, paymaster, real USDC |
 | Redeploy SOS contracts | Required at ForteL2 **Phase 7** network wipe (coordinated with replica pack/publish) |
 
@@ -58,13 +58,26 @@ ForteL2 learning Phases **0–3 are done** (Sepolia L2 chain **852** + Render re
 | Input | Status |
 |---|---|
 | Chain IDs 901 (local) / **852** (Sepolia L2) | ✅ in `rail-interface.json` |
-| L2 write RPC (Render) | ✅ `https://fortel2-write.ente.ltd` behind Cloudflare Access (PR #65, proven 2026-08-12). Token with Steve (Cloudflare + Render `CF_ACCESS_*`). |
+| L2 write RPC (Render) | ✅ `https://fortel2-write.ente.ltd` behind Cloudflare Access (PR #65, hostname live 2026-08-12). **E2E settlement through Access proven 2026-08-13:** `pay_4bf481cdc9ea` SETTLED on `fortel2-sepolia`; escrow `0x48797d94…c3942b` (block 979,593) and settle `0x876325b2…8045c7` (block 979,595), both status `0x1`, both L1-finalized. Verified against the sequencer, not the reconciliation export. ~17s create → escrow mined — Access hop and RPC method filter cost nothing measurable. Token with Steve (Cloudflare + Render `CF_ACCESS_*`). |
 | L2 write RPC (local / operator) | ✅ `http://127.0.0.1:9545` (full) or `:9555` (D1 allowlist) when stack up |
 | Bridge proxies + deposit funding mode | ✅ Sepolia Standard Bridge; deposit to fund L2 |
 | Reset policy | ✅ Sepolia pinned through Phase 6; wipe at Phase 7 |
-| Replica for reads | ✅ Phase 3 done — URL operator-configured (private Render) |
+| Replica for reads | ✅ Phase 3 done — URL operator-configured (private Render hostname `http://fortel2-replica:10000`). Structurally ~3 min behind (L1-batch derivation, not a one-block sequencer lag). Display/balance only. |
 
 Canonical file: ForteL2 `deployments/rail-interface.json` + `tasks/prd-money-rail.md`.
+
+## Write-path invariants (do not "optimize")
+
+Confirmed by the ForteL2 side 2026-08-13 and already true in this repo. Changing any of these makes settlements look failed or attaches Access headers to the wrong hop.
+
+- **`confirm()` polls the write endpoint, not the replica.** `confirm()` → `publicClientFor` → `writeHttp(info.rpcUrl)`. The replica derives from L1 batches rather than following the sequencer, so it is structurally ~3 minutes behind and always will be. Moving confirmation onto `readClientFor` would make every settlement look failed for three minutes. This is the single most important thing not to "optimize." Locked by `tests/unit/chain-read-client.test.ts`.
+- **Access headers attach only on `fortel2-sepolia` write transports**, and only when both `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` are set. Base Sepolia / Amoy / local loopback never receive them. `readClientFor` is bare `http()` — the replica is private-network and has no Access in front. Same test file.
+- **The read URL is the Render private hostname**, not the write hostname. Do not point `FORTEL2_SEPOLIA_READ_RPC_URL` at `ente.ltd`. Unset locally unless you tunnel to the replica.
+
+Already handled, so do not file as work:
+
+- **403 vs 502.** Application retry (`retryOnReplicaLag`) classifies contract revert strings only, and the budget is **0** on `fortel2-*`. A 403 + Access HTML (missing service-token headers, or the policy changed) is a client-side problem and is not retried. A 502/530 (tunnel up, origin down) is also not retried today — a resilience gap, not a correctness bug. Do not add HTTP-status retry by folding 403 into the same backoff as 502.
+- **`eth_getFilterChanges` "filter not found".** SettlementOS never creates filters. Confirmation is `waitForTransactionReceipt` → `eth_getTransactionReceipt` polling. Sequencer restarts (filter IDs are per-node in-memory state) do not hit a path here.
 
 ## Phase roadmap (SettlementOS)
 
@@ -72,7 +85,7 @@ Canonical file: ForteL2 `deployments/rail-interface.json` + `tasks/prd-money-rai
 |---|---|---|
 | **F1** | Network registry + chain adapter for **`fortel2-sepolia` (852)** (and optional local 901) | ✅ Done (PR #21) |
 | **F2** | Deploy existing contracts + seed wallets on ForteL2 852 | ✅ Done (PR #24) — deployed 2026-07-24 |
-| **F3** | Single-chain payment demo (ACME → Tokyo) on ForteL2 | ✅ Done — first settle 2026-07-24 (`pay_8c318fcae804`) |
+| **F3** | Single-chain payment demo (ACME → Tokyo) on ForteL2 | ✅ Done — first settle 2026-07-24 (`pay_8c318fcae804`); **re-proven through the Access write path 2026-08-13** (`pay_4bf481cdc9ea`, both txs L1-finalized) |
 | **F4** | Treasury MMF park/recall against ForteL2 balances | ✅ **Done live (2026-08-07)** — `TokenizedMMF` deployed to the real 852 sequencer via the add-on path (`0xaed29387…e7ff`); park→accrue→recall returned 50004.79452 on 50k (+4.794520 = 3.5%/365 exactly) with the escrow balance unmoved. Evidence: [`tasks/runbooks/fortel2-live-session-2026-08-07.md`](runbooks/fortel2-live-session-2026-08-07.md) |
 | **F5** | Docs/demo/README: ForteL2 as destination rail | ✅ Done (with F3) |
 | **F6** | Explorer address book + optional replica read URL | After F3 |
@@ -87,7 +100,7 @@ Canonical file: ForteL2 `deployments/rail-interface.json` + `tasks/prd-money-rai
 **Acceptance Criteria:**
 - [x] Primary entry `fortel2-sepolia`: chainId **852**, RPC from env (e.g. `FORTEL2_SEPOLIA_RPC_URL`, defaulting to Mac sequencer URL from rail-interface)
 - [x] Optional entry `fortel2-local`: chainId **901** for offline experiments
-- [x] Optional `FORTEL2_SEPOLIA_READ_RPC_URL` (replica) used for balance/read paths when set; writes still use sequencer RPC
+- [x] Optional `FORTEL2_SEPOLIA_READ_RPC_URL` (replica) used for balance/read paths when set; writes **and `confirm()`** still use the sequencer / write RPC — never the replica (structural ~3 min L1-derivation lag)
 - [x] `networkInfo`, explorer helpers, and route engine accept the new ids without special-case payment logic
 - [x] Missing RPC fails closed with a clear error (do not silently fall back to another chain)
 - [x] Unit/registry tests updated; README notes env vars and that the chain is operated outside this repo
@@ -118,7 +131,7 @@ Canonical file: ForteL2 `deployments/rail-interface.json` + `tasks/prd-money-rai
 
 **Acceptance Criteria:**
 - [x] Create payment with `source_network` = `destination_network` = ForteL2 id
-- [x] Quote → compliance → execute completes to `SETTLED` (or existing success terminal state)
+- [x] Quote → compliance → execute completes to `SETTLED` (or existing success terminal state) — first settle 2026-07-24 (`pay_8c318fcae804`); **authenticated write path (Cloudflare Access → sequencer) proven 2026-08-13** with `pay_4bf481cdc9ea`: escrow `0x48797d94…c3942b` (block 979,593) and settle `0x876325b2…8045c7` (block 979,595), both status `0x1` and L1-finalized. ~17s create → escrow mined. Verified against the sequencer, not the reconciliation export.
 - [x] Payment detail shows ForteL2 tx hash(es); link via explorer helper if an explorer URL exists, else raw hash + RPC note
 - [x] Audit log entries reference those hashes
 - [x] No changes to compliance provider semantics
