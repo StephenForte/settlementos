@@ -29,6 +29,10 @@ internal database URL only resolves for a service in the same region as
 | Secret File `deployments.base-sepolia.json` | **yes** | Dashboard → Secret Files → `/etc/secrets/deployments.base-sepolia.json` | `loadDeployments()` finds no networks → payments cannot use Base Sepolia; seed creates entities without wallets. **Never commit this file.** |
 | `SETTLEMENTOS_CHAIN_DIR` | no | Env (`/etc/secrets`) | Without it, lib/chain still falls back to `/etc/secrets` for overlays; set it explicitly so path resolution matches the blueprint. |
 | `BASE_SEPOLIA_RPC_URL` | no (public default) | Env | Falls back to `https://sepolia.base.org`. Flaky public RPC → slow/failed reads. |
+| `FORTEL2_SEPOLIA_RPC_URL` | no (Access hostname) | Env (`https://fortel2-write.ente.ltd`) | ForteL2 writes 403 without this + the Access token. Never `VITE_*`. |
+| `FORTEL2_SEPOLIA_READ_RPC_URL` | no | Env (`http://fortel2-replica:10000`) | Balance/display reads. Never point at ente.ltd — replica has no Access. |
+| `CF_ACCESS_CLIENT_ID` | **yes** | Env var (`sync: false`) | ForteL2 write hostname rejects unauthenticated calls (403 Access HTML). Render only. |
+| `CF_ACCESS_CLIENT_SECRET` | **yes** | Env var (`sync: false`) | Pair with `CF_ACCESS_CLIENT_ID`. Never commit; never `VITE_*`. |
 | `TRUSTED_PROXY_HOPS` | no | Env (`1`) | Login IP rate-limit may key on a client-spoofable `X-Forwarded-For` entry. |
 | `NODE_VERSION` | no | Env (`22.23.1`) | Wrong Node → build/runtime mismatch with local/CI. |
 
@@ -59,6 +63,8 @@ Do these in order. Expected output is in italics after each step.
    - `AUDIT_ANCHOR_KEY` — generate once: `openssl rand -hex 32` (store offline).
    - `DEPLOYER_PRIVATE_KEY` — the Base Sepolia operator key already in local `.env`
      (never paste into chat/logs).
+   - `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` — Cloudflare Access
+     service token for `fortel2-write` (policy `settlementos`). Never `VITE_*`.
 5. Apply / create. *First build starts. It may fail until the Secret File exists
    — that is OK if the failure is "No deployments found"; continue to 1.3.*
 
@@ -79,8 +85,12 @@ Service → **Environment**. The **names** present must include at least:
 ```
 AUDIT_ANCHOR_KEY
 BASE_SEPOLIA_RPC_URL
+CF_ACCESS_CLIENT_ID
+CF_ACCESS_CLIENT_SECRET
 DATABASE_URL
 DEPLOYER_PRIVATE_KEY
+FORTEL2_SEPOLIA_RPC_URL
+FORTEL2_SEPOLIA_READ_RPC_URL
 NODE_ENV
 NODE_VERSION
 SETTLEMENTOS_CHAIN_DIR
@@ -96,6 +106,8 @@ screenshot values). Compare **names and non-secret values** to `render.yaml`:
 | `SETTLEMENTOS_CHAIN_DIR=/etc/secrets` | same |
 | `TRUSTED_PROXY_HOPS=1` | same |
 | `BASE_SEPOLIA_RPC_URL=https://sepolia.base.org` | same (or your private RPC) |
+| `FORTEL2_SEPOLIA_RPC_URL=https://fortel2-write.ente.ltd` | same |
+| `FORTEL2_SEPOLIA_READ_RPC_URL=http://fortel2-replica:10000` | same |
 | `numInstances: 1` | Settings → Scaling → 1 |
 | `buildCommand: npm ci --include=dev && …` | Settings → Build & Deploy |
 | `preDeployCommand: npx prisma migrate deploy` | Settings → Build & Deploy |
@@ -180,7 +192,9 @@ node -e '
 const need = [
   "DATABASE_URL","AUDIT_ANCHOR_KEY","DEPLOYER_PRIVATE_KEY",
   "SETTLEMENTOS_CHAIN_DIR","BASE_SEPOLIA_RPC_URL","TRUSTED_PROXY_HOPS",
-  "NODE_VERSION","NODE_ENV"
+  "NODE_VERSION","NODE_ENV",
+  "FORTEL2_SEPOLIA_RPC_URL","FORTEL2_SEPOLIA_READ_RPC_URL",
+  "CF_ACCESS_CLIENT_ID","CF_ACCESS_CLIENT_SECRET"
 ];
 for (const k of need) {
   const v = process.env[k];
@@ -189,6 +203,8 @@ for (const k of need) {
 console.log("SETTLEMENTOS_CHAIN_DIR_value=" + (process.env.SETTLEMENTOS_CHAIN_DIR || "<unset>"));
 console.log("TRUSTED_PROXY_HOPS_value=" + (process.env.TRUSTED_PROXY_HOPS || "<unset>"));
 console.log("NODE_VERSION_value=" + (process.env.NODE_VERSION || "<unset>"));
+console.log("FORTEL2_SEPOLIA_RPC_URL_value=" + (process.env.FORTEL2_SEPOLIA_RPC_URL || "<unset>"));
+console.log("FORTEL2_SEPOLIA_READ_RPC_URL_value=" + (process.env.FORTEL2_SEPOLIA_READ_RPC_URL || "<unset>"));
 '
 ```
 
