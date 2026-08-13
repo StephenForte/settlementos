@@ -143,16 +143,15 @@ function viemChain(networkId: string) {
 }
 
 /**
- * Write-path HTTP transport. When both Cloudflare Access service-token env
- * vars are set (Render), attach CF-Access-Client-Id / CF-Access-Client-Secret
- * so the ForteL2 write hostname (fortel2-write.ente.ltd) accepts the call.
- * Either missing → no headers, so local loopback still works. Never use this
+ * Write-path HTTP transport. Access service-token headers attach only for
+ * fortel2-sepolia, and only when both CF_ACCESS_* env vars are set (Render).
+ * Base Sepolia / Amoy / local loopback never receive them. Never use this
  * for readClientFor: the replica is private-network and has no Access in front.
  */
-function writeHttp(url: string) {
+function writeHttp(url: string, networkId: string) {
   const id = process.env.CF_ACCESS_CLIENT_ID;
   const secret = process.env.CF_ACCESS_CLIENT_SECRET;
-  if (id && secret) {
+  if (networkId === "fortel2-sepolia" && id && secret) {
     return http(url, {
       fetchOptions: {
         headers: {
@@ -172,7 +171,7 @@ export function publicClientFor(networkId: string): PublicClient {
     const info = networkInfo(networkId);
     publicClients[networkId] = createPublicClient({
       chain: viemChain(networkId),
-      transport: writeHttp(info.rpcUrl),
+      transport: writeHttp(info.rpcUrl, networkId),
     });
   }
   return publicClients[networkId];
@@ -208,7 +207,7 @@ export async function walletFor(networkId: string, signer: Signer) {
   const info = networkInfo(networkId);
   return createWalletClient({
     chain: viemChain(networkId),
-    transport: writeHttp(info.rpcUrl),
+    transport: writeHttp(info.rpcUrl, networkId),
     account: await signer.account(),
   });
 }

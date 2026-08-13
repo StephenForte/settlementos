@@ -93,4 +93,11 @@ describe("Cloudflare Access write headers", () => {
     const chain = await freshChain();
     expect(accessHeaders(chain.publicClientFor("fortel2-sepolia"))).toBeUndefined();
   });
+
+  it("with both CF_ACCESS_* set, publicClientFor(\"base-sepolia\") has no Access headers", async () => {
+    vi.stubEnv("CF_ACCESS_CLIENT_ID", "test-access-id");
+    vi.stubEnv("CF_ACCESS_CLIENT_SECRET", "test-access-secret");
+    const chain = await freshChain();
+    expect(accessHeaders(chain.publicClientFor("base-sepolia"))).toBeUndefined();
+  });
 });
