@@ -1,6 +1,6 @@
 # PRD: EVM-Based Stablecoin Settlement Infrastructure MVP
 
-## Implementation Status (living section — updated 2026-08-03)
+## Implementation Status (living section — updated 2026-08-13)
 
 The MVP described in this PRD is **built and running**. Code: [github.com/StephenForte/settlementos](https://github.com/StephenForte/settlementos) (Next.js App Router + Prisma/SQLite + viem + Hardhat, Solidity 0.8.24). Engineering guide in `AGENTS.md`, demo run-of-show in `DEMO.md`.
 
@@ -15,7 +15,7 @@ The MVP described in this PRD is **built and running**. Code: [github.com/Stephe
 | 7 | Second real testnet (Polygon Amoy) — public cross-chain demo | ✅ Done 2026-07-15 |
 | 8 | Tokenized MMF / overnight liquidity parking (JLTXX-inspired, see §24) | ✅ Done 2026-07-14 |
 | 9 | Production hardening (AUDIT.md remediation) + regulatory & partner package | 🔨 Track A ✅ Done 2026-07-16 (327→341 tests, merged #8); Track B drafts in `docs/regulatory/` |
-| ForteL2 | Home-rail integration (registry → deploy → settle → MMF → docs) | ✅ F1–F5 + F7 done — see [`tasks/prd-fortel2-integration.md`](tasks/prd-fortel2-integration.md); F4 live-MMF wiring PR #29 (2026-08-03); **live-sequencer park→accrue→recall verified 2026-08-07** (50k → 50004.79452, escrow untouched — [`tasks/runbooks/fortel2-live-session-2026-08-07.md`](tasks/runbooks/fortel2-live-session-2026-08-07.md)); F6 explorer address book done in [`settlementos-explorer`](https://github.com/StephenForte/settlementos-explorer) (PR #4 → `20f17ff`) |
+| ForteL2 | Home-rail integration (registry → deploy → settle → MMF → docs) | ✅ F1–F5 + F7 done — see [`tasks/prd-fortel2-integration.md`](tasks/prd-fortel2-integration.md); F4 live-MMF wiring PR #29 (2026-08-03); **live-sequencer park→accrue→recall verified 2026-08-07** (50k → 50004.79452, escrow untouched — [`tasks/runbooks/fortel2-live-session-2026-08-07.md`](tasks/runbooks/fortel2-live-session-2026-08-07.md)); F6 explorer address book done in [`settlementos-explorer`](https://github.com/StephenForte/settlementos-explorer) (PR #4 → `20f17ff`); **authenticated write path proven 2026-08-13** (`pay_4bf481cdc9ea`, both txs L1-finalized — confirm stays on the write RPC, never the replica) |
 
 Live on Base Sepolia (chainId 84532): `PaymentSettlement` at
 [`0x9d8b8b7c476ab02306046f3da719d380fa0456aa`](https://sepolia.basescan.org/address/0x9d8b8b7c476ab02306046f3da719d380fa0456aa);
@@ -31,13 +31,20 @@ Live on ForteL2 Sepolia (chainId 852): same `PaymentSettlement` address plus
 `TokenizedMMF` at `0xaed29387417dad9ab1993332e2c2b99d35ffe7ff` — park→accrue→recall
 and bridge legs verified 2026-08-07
 ([`tasks/runbooks/fortel2-live-session-2026-08-07.md`](tasks/runbooks/fortel2-live-session-2026-08-07.md)).
-ForteL2 is a personal, best-effort L2 with **no uptime SLA** (operated on the
-operator's Mac); Base Sepolia and Polygon Amoy are public testnets run by real
-operators. A demo against 852 only works while that sequencer is up. An optional
-Render read replica can back balance/display reads, but it is read-only, not a
-substitute for the sequencer, and has OOM'd on catch-up on small instances (see
+Authenticated write path (Cloudflare Access → `fortel2-write.ente.ltd`) proven
+2026-08-13 with `pay_4bf481cdc9ea`: escrow `0x48797d94…c3942b` (block 979,593)
+and settle `0x876325b2…8045c7` (block 979,595), both status `0x1` and
+L1-finalized; ~17s create → escrow mined. `confirm()` stays on the write RPC —
+the replica is structurally ~3 minutes behind (L1-batch derivation) and
+confirming against it makes every settlement look failed. ForteL2 is a personal,
+best-effort L2 with **no uptime SLA** (operated on the operator's Mac); Base
+Sepolia and Polygon Amoy are public testnets run by real operators. A demo
+against 852 only works while that sequencer is up. An optional Render read
+replica can back balance/display reads, but it is read-only, not a substitute
+for the sequencer, and has OOM'd on catch-up on small instances (see
 [`tasks/fortel2-l2-prereqs.md`](tasks/fortel2-l2-prereqs.md) § "Replica OOM on
-catch-up"). Detailed phase notes in §29.
+catch-up"). Detailed phase notes in §29 and the write-path invariants in
+[`tasks/prd-fortel2-integration.md`](tasks/prd-fortel2-integration.md).
 
 ## 1. Product Name
 
