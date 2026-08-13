@@ -317,7 +317,9 @@ against the replica looks like failed txs), not a substitute for the sequencer,
 and has OOM'd on catch-up on small instances (see
 [`tasks/fortel2-l2-prereqs.md`](tasks/fortel2-l2-prereqs.md) §5). There is no
 public read URL yet; `rail-interface.json` `replica.readRpcUrl` stays null.
-Canonical chain facts (chain IDs, RPCs, bridge addresses, reset policy) live in
+On Render, writes go to `https://fortel2-write.ente.ltd` (Cloudflare Access,
+proven 2026-08-12, ForteL2 D-0035). Canonical chain facts (chain IDs, RPCs,
+bridge addresses, reset policy) live in
 ForteL2's `deployments/rail-interface.json`.
 
 ```bash
@@ -325,8 +327,9 @@ ForteL2's `deployments/rail-interface.json`.
 # Access hostname. Never VITE_*; never commit the service token.
 FORTEL2_SEPOLIA_RPC_URL=https://fortel2-write.ente.ltd
 # Access service token for the write hostname (Render only). Both required
-# to attach CF-Access-Client-Id / CF-Access-Client-Secret on write clients;
-# either missing → no headers (local loopback still works).
+# to attach CF-Access-Client-Id / CF-Access-Client-Secret on fortel2-sepolia
+# write clients only (Base Sepolia / Amoy never receive them); either
+# missing → no headers (local loopback still works).
 CF_ACCESS_CLIENT_ID=
 CF_ACCESS_CLIENT_SECRET=
 # Optional read-only replica (Render Oregon private network only). Balance/

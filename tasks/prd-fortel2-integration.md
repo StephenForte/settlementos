@@ -49,7 +49,7 @@ ForteL2 learning Phases **0–3 are done** (Sepolia L2 chain **852** + Render re
 |---|---|
 | **NOW (recommended)** | Start **F1–F5 against `fortel2-sepolia` (852)** using ForteL2 `deployments/rail-interface.json` |
 | Optional | `fortel2-local` (901) for offline-only experiments (resets freely) |
-| Reads | Prefer Render **replica** RPC when reachable; **writes** use Mac sequencer `L2_RPC_URL` |
+| Reads | Prefer Render **replica** `http://fortel2-replica:10000` when reachable; **writes** on Render use `https://fortel2-write.ente.ltd` + Access headers (ForteL2 D-0035). Local writes still use Mac loopback `:9545`. |
 | Do **not** wait for | Phase 3b friends, Phase 4–6 client rebuilds, paymaster, real USDC |
 | Redeploy SOS contracts | Required at ForteL2 **Phase 7** network wipe (coordinated with replica pack/publish) |
 
@@ -58,7 +58,8 @@ ForteL2 learning Phases **0–3 are done** (Sepolia L2 chain **852** + Render re
 | Input | Status |
 |---|---|
 | Chain IDs 901 (local) / **852** (Sepolia L2) | ✅ in `rail-interface.json` |
-| L2 RPC (Mac sequencer loopback) | ✅ `http://127.0.0.1:9545` when stack up |
+| L2 write RPC (Render) | ✅ `https://fortel2-write.ente.ltd` behind Cloudflare Access (PR #65, proven 2026-08-12). Token with Steve (Cloudflare + Render `CF_ACCESS_*`). |
+| L2 write RPC (local / operator) | ✅ `http://127.0.0.1:9545` (full) or `:9555` (D1 allowlist) when stack up |
 | Bridge proxies + deposit funding mode | ✅ Sepolia Standard Bridge; deposit to fund L2 |
 | Reset policy | ✅ Sepolia pinned through Phase 6; wipe at Phase 7 |
 | Replica for reads | ✅ Phase 3 done — URL operator-configured (private Render) |
