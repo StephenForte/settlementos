@@ -142,6 +142,28 @@ function viemChain(networkId: string) {
   });
 }
 
+/**
+ * Write-path HTTP transport. Access service-token headers attach only for
+ * fortel2-sepolia, and only when both CF_ACCESS_* env vars are set (Render).
+ * Base Sepolia / Amoy / local loopback never receive them. Never use this
+ * for readClientFor: the replica is private-network and has no Access in front.
+ */
+function writeHttp(url: string, networkId: string) {
+  const id = process.env.CF_ACCESS_CLIENT_ID;
+  const secret = process.env.CF_ACCESS_CLIENT_SECRET;
+  if (networkId === "fortel2-sepolia" && id && secret) {
+    return http(url, {
+      fetchOptions: {
+        headers: {
+          "CF-Access-Client-Id": id,
+          "CF-Access-Client-Secret": secret,
+        },
+      },
+    });
+  }
+  return http(url);
+}
+
 const publicClients: Record<string, PublicClient> = {};
 
 export function publicClientFor(networkId: string): PublicClient {
@@ -149,7 +171,7 @@ export function publicClientFor(networkId: string): PublicClient {
     const info = networkInfo(networkId);
     publicClients[networkId] = createPublicClient({
       chain: viemChain(networkId),
-      transport: http(info.rpcUrl),
+      transport: writeHttp(info.rpcUrl, networkId),
     });
   }
   return publicClients[networkId];
@@ -170,6 +192,7 @@ export function readClientFor(networkId: string): PublicClient {
   const info = networkInfo(networkId);
   if (!info.readRpcUrl) return publicClientFor(networkId);
   if (!readClients[networkId]) {
+    // Bare http() — never writeHttp(). The replica is private-network, no Access.
     readClients[networkId] = createPublicClient({
       chain: viemChain(networkId),
       transport: http(info.readRpcUrl),
@@ -184,7 +207,7 @@ export async function walletFor(networkId: string, signer: Signer) {
   const info = networkInfo(networkId);
   return createWalletClient({
     chain: viemChain(networkId),
-    transport: http(info.rpcUrl),
+    transport: writeHttp(info.rpcUrl, networkId),
     account: await signer.account(),
   });
 }

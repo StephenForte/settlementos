@@ -41,3 +41,63 @@ describe("readClientFor", () => {
     expect(() => chain.publicClientFor("fortel2")).toThrow(/Unknown network/);
   });
 });
+
+describe("Cloudflare Access write headers", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  async function freshChain() {
+    vi.resetModules();
+    return await import("@/lib/chain");
+  }
+
+  function accessHeaders(client: { transport: Record<string, unknown> }) {
+    const opts = client.transport.fetchOptions as { headers?: unknown } | undefined;
+    return opts?.headers;
+  }
+
+  it("with CF env set, write transport has the two headers; read transport does not", async () => {
+    vi.stubEnv("FORTEL2_SEPOLIA_RPC_URL", "https://fortel2-write.ente.ltd");
+    vi.stubEnv("FORTEL2_SEPOLIA_READ_RPC_URL", "http://fortel2-replica:10000");
+    vi.stubEnv("CF_ACCESS_CLIENT_ID", "test-access-id");
+    vi.stubEnv("CF_ACCESS_CLIENT_SECRET", "test-access-secret");
+    const chain = await freshChain();
+    const write = chain.publicClientFor("fortel2-sepolia");
+    const read = chain.readClientFor("fortel2-sepolia");
+    expect(accessHeaders(write)).toEqual({
+      "CF-Access-Client-Id": "test-access-id",
+      "CF-Access-Client-Secret": "test-access-secret",
+    });
+    expect(accessHeaders(read)).toBeUndefined();
+
+    const { privateKeyToAccount } = await import("viem/accounts");
+    const account = privateKeyToAccount(
+      "0x1111111111111111111111111111111111111111111111111111111111111111"
+    );
+    const wallet = await chain.walletFor("fortel2-sepolia", {
+      address: account.address,
+      account: async () => account,
+    });
+    expect(accessHeaders(wallet)).toEqual({
+      "CF-Access-Client-Id": "test-access-id",
+      "CF-Access-Client-Secret": "test-access-secret",
+    });
+  });
+
+  it("if either CF env is missing, write transport has no Access headers", async () => {
+    vi.stubEnv("FORTEL2_SEPOLIA_RPC_URL", "http://127.0.0.1:9545");
+    vi.stubEnv("CF_ACCESS_CLIENT_ID", "test-access-id");
+    vi.stubEnv("CF_ACCESS_CLIENT_SECRET", "");
+    const chain = await freshChain();
+    expect(accessHeaders(chain.publicClientFor("fortel2-sepolia"))).toBeUndefined();
+  });
+
+  it("with both CF_ACCESS_* set, publicClientFor(\"base-sepolia\") has no Access headers", async () => {
+    vi.stubEnv("CF_ACCESS_CLIENT_ID", "test-access-id");
+    vi.stubEnv("CF_ACCESS_CLIENT_SECRET", "test-access-secret");
+    const chain = await freshChain();
+    expect(accessHeaders(chain.publicClientFor("base-sepolia"))).toBeUndefined();
+  });
+});

@@ -41,8 +41,13 @@ services:
       # Public Base Sepolia RPC (override in Dashboard if you use a private one).
       - key: BASE_SEPOLIA_RPC_URL
         value: https://sepolia.base.org
+      # ForteL2 write RPC — Cloudflare Access hostname. Never VITE_*.
+      # Reads stay on the private-network replica below; never point the read
+      # URL at ente.ltd (the replica has no Access in front).
+      - key: FORTEL2_SEPOLIA_RPC_URL
+        value: https://fortel2-write.ente.ltd
       # ForteL2 read replica (Private Service fortel2-replica:10000, Oregon).
-      # Balance/display reads only — writes and confirm() stay on the sequencer RPC.
+      # Balance/display reads only — writes and confirm() stay on the write RPC.
       - key: FORTEL2_SEPOLIA_READ_RPC_URL
         value: http://fortel2-replica:10000
       # Secrets — set once in the Dashboard (sync: false so Blueprint updates
@@ -52,4 +57,9 @@ services:
       - key: AUDIT_ANCHOR_KEY
         sync: false
       - key: DEPLOYER_PRIVATE_KEY
+        sync: false
+      # Cloudflare Access service token for fortel2-write.ente.ltd. Render only.
+      - key: CF_ACCESS_CLIENT_ID
+        sync: false
+      - key: CF_ACCESS_CLIENT_SECRET
         sync: false

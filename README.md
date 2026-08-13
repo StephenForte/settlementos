@@ -321,11 +321,18 @@ Canonical chain facts (chain IDs, RPCs, bridge addresses, reset policy) live in
 ForteL2's `deployments/rail-interface.json`.
 
 ```bash
-# Write/sequencer RPC (default: the Mac sequencer loopback)
-FORTEL2_SEPOLIA_RPC_URL=http://127.0.0.1:9545
+# Write RPC. Local default: Mac sequencer loopback. On Render: Cloudflare
+# Access hostname. Never VITE_*; never commit the service token.
+FORTEL2_SEPOLIA_RPC_URL=https://fortel2-write.ente.ltd
+# Access service token for the write hostname (Render only). Both required
+# to attach CF-Access-Client-Id / CF-Access-Client-Secret on write clients;
+# either missing → no headers (local loopback still works).
+CF_ACCESS_CLIENT_ID=
+CF_ACCESS_CLIENT_SECRET=
 # Optional read-only replica (Render Oregon private network only). Balance/
-# display reads only — writes and confirm() always use the sequencer RPC above.
-# ~3 min lag; unset locally unless you tunnel to the replica.
+# display reads only — writes and confirm() always use the write RPC above.
+# Never point this at ente.ltd (the replica has no Access). ~3 min lag;
+# unset locally unless you tunnel to the replica.
 FORTEL2_SEPOLIA_READ_RPC_URL=http://fortel2-replica:10000
 # Optional offline ForteL2 devnet (resets freely; experiments only)
 FORTEL2_LOCAL_RPC_URL=http://127.0.0.1:9545
