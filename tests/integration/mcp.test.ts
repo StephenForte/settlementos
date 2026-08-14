@@ -223,10 +223,19 @@ describe("get_payment tenant isolation", () => {
   });
 
   it("returns not-found for another tenant's id, identical to a nonexistent id", async () => {
-    const foreign = getPayment(acmePrincipal, { payment_id: othersPayment });
-    const ghost = getPayment(acmePrincipal, { payment_id: "pay_does_not_exist" });
-    await expect(foreign).rejects.toMatchObject({ code: "not_found", message: "not found" });
-    await expect(ghost).rejects.toMatchObject({ code: "not_found", message: "not found" });
+    // Build both matchers before awaiting either. `expect(p).rejects` attaches
+    // its handler synchronously, so awaiting in sequence leaves the second
+    // promise rejected-and-unhandled for a turn — which Vitest reports as an
+    // unhandled rejection and exits non-zero on, even with every test passing.
+    // Whether it fires is pure timing, so it passed locally and failed in CI.
+    const notFound = { code: "not_found", message: "not found" };
+    const foreign = expect(
+      getPayment(acmePrincipal, { payment_id: othersPayment })
+    ).rejects.toMatchObject(notFound);
+    const ghost = expect(
+      getPayment(acmePrincipal, { payment_id: "pay_does_not_exist" })
+    ).rejects.toMatchObject(notFound);
+    await Promise.all([foreign, ghost]);
   });
 
   it("lets the tenant read its own payment", async () => {
