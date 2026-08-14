@@ -126,6 +126,10 @@ describe("explorer URL helpers", () => {
     expect(explorerTxUrl("nonexistent", TX)).toBeNull();
   });
 
+  it("fixture pins NEXT_PUBLIC_FORTEL2_EXPLORER_URL off", () => {
+    expect(process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL).toBe("");
+  });
+
   describe("ForteL2 explorer when NEXT_PUBLIC_FORTEL2_EXPLORER_URL is set", () => {
     const BASE = "https://settlementos-explorer-ihgo.onrender.com";
     const CANONICAL = `${BASE}/fortel2-sepolia/tx/${TX}`;
