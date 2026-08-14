@@ -259,11 +259,19 @@ export async function getBalances(principal: Principal) {
 }
 
 /**
- * Hash-chain integrity. Available to any authenticated principal: the verdict
- * is a property of the log, not of a tenant's rows, and no events are returned.
+ * Hash-chain integrity. **Platform-only**, matching REST `GET /api/audit`
+ * (`requireRole "OPERATOR", "REVIEWER"`). No events are returned, but
+ * `events_verified` is a count over *every* tenant's rows, and the tenant-scoping
+ * invariant forbids leaking through "a count, an aggregate, or a forgotten
+ * field". Verification is also O(events) by necessity — it re-hashes from
+ * genesis on every call — and this route carries no read-side rate limit, so
+ * leaving it open would hand the lowest-privilege role an unbounded repeated
+ * full-table re-hash.
+ *
  * `anchored: false` is a weaker INTACT than a signed one — both fields are kept.
  */
-export async function verifyAuditChainTool() {
+export async function verifyAuditChainTool(principal: Principal) {
+  requirePlatform(principal);
   const integrity = await verifyAuditChain();
   return {
     verdict: integrity.valid ? "INTACT" : "BROKEN",

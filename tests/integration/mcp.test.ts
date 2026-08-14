@@ -343,7 +343,7 @@ describe("list_entities cursor scoping", () => {
 
 describe("verify_audit_chain", () => {
   it("returns INTACT with mode, anchored, and events_verified — not a flattened verdict", async () => {
-    const result = await verifyAuditChainTool();
+    const result = await verifyAuditChainTool(operatorPrincipal);
     expect(result.verdict).toBe("INTACT");
     expect(result.valid).toBe(true);
     expect(result.mode).toBe("full");
@@ -351,6 +351,13 @@ describe("verify_audit_chain", () => {
     expect(result.events_verified).toBeGreaterThan(0);
     // The suite pins AUDIT_ANCHOR_KEY, so this INTACT is the stronger claim.
     expect(result.anchored).toBe(true);
+  });
+
+  // events_verified counts every tenant's rows, and the re-hash is O(events) on
+  // a route with no read-side limit. REST GET /api/audit is platform-only for
+  // the first reason; this is gated for both.
+  it("forbids an ENTITY — parity with REST GET /api/audit", async () => {
+    await expect(verifyAuditChainTool(acmePrincipal)).rejects.toMatchObject({ code: "forbidden" });
   });
 });
 

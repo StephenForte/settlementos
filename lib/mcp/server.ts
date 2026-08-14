@@ -123,10 +123,10 @@ export function createSettlementMcpServer(principal: Principal): McpServer {
     {
       title: "Verify audit chain",
       description:
-        "Re-hash the append-only audit log from genesis and return INTACT/BROKEN with mode, anchored, and events_verified. An un-anchored INTACT is a weaker claim than a signed one.",
+        "Re-hash the append-only audit log from genesis and return INTACT/BROKEN with mode, anchored, and events_verified. Platform roles only. An un-anchored INTACT is a weaker claim than a signed one.",
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async () => runTool("verify_audit_chain", () => verifyAuditChainTool())
+    async () => runTool("verify_audit_chain", () => verifyAuditChainTool(principal))
   );
 
   return server;
