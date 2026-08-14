@@ -93,6 +93,7 @@ dev schema sync uses `prisma db push` inside setup; the deployed path is
 | `app/liquidity/` | Treasury dashboard. `page.tsx` is a server component (all chain/DB reads, per-network sections); `mmf-card.tsx` is the `"use client"` MMF card — park form, per-position Recall, Accrue demo control — which POSTs to the treasury routes and then `router.refresh()`es |
 | `contracts/` | Solidity 0.8.24: `MockERC20` (permissionless mint, by design), `PaymentSettlement` escrow, `TokenizedMMF` (operator-gated share fund for parked treasury liquidity; monotonic index, no cross-calls with escrow) |
 | `tests/` | Vitest suite: `unit/` (pure), `db/` (compliance, audit chain), `integration/` (executor E2E, contract, API). Fixture bootstrap in `global-setup.ts` + `helpers/` |
+| [lib/mcp/](lib/mcp/) + [app/api/mcp/route.ts](app/api/mcp/route.ts) | Read-only MCP server. The route authenticates with `authenticate()` (`x-api-key`, then the `sos_key` cookie) and serves Streamable HTTP; `lib/mcp/` is the tool half (list/get payments, entities, networks, treasury positions, balances, audit-chain verify). Tenant scoping is a Prisma `where`, the same scrubbers as the REST routes, no write tools. **`server-only`** |
 
 ## Invariants — do not break these
 
@@ -592,6 +593,16 @@ dev schema sync uses `prisma db push` inside setup; the deployed path is
   anything that reads them.
 - The cross-chain "bridge" is simulated: escrow + FX on the source chain, then a
   treasury-funded ERC-20 payout on the destination chain. Not lock-and-mint.
+- **MCP is not a second identity path.** `POST /api/mcp` calls `authenticate()`
+  like every other route — `x-api-key` then the `sos_key` cookie. There is no
+  `MCP_API_KEY`, and `Authorization: Bearer` is ignored. Clients that can only
+  send a Bearer token (Claude/ChatGPT connectors) will 401 until an OAuth
+  follow-up; Cursor and other clients that set custom headers work today. The
+  transport is `WebStandardStreamableHTTPServerTransport` (JSON, stateless): the
+  Node `StreamableHTTPServerTransport` wrapper pulls in Hono's
+  `getRequestListener`, which overwrites global `Response` and breaks every
+  other App Router route. Streamable HTTP also requires
+  `Accept: application/json, text/event-stream` on POST.
 
 ## Cursor Cloud specific instructions
 
