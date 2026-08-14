@@ -13,6 +13,8 @@ import {
 import {
   accountsFor,
   networkContracts,
+  priorityFeeFor,
+  publicClientFor,
   replicaLagRetries,
   tokenBalance,
   transactionOutcome,
@@ -377,5 +379,34 @@ describe("T1-2 — network-aware replica-lag retries", () => {
   it("retains replica-lag retries on live public testnets", () => {
     expect(replicaLagRetries("base-sepolia")).toBe(4);
     expect(replicaLagRetries("polygon-amoy")).toBe(4);
+  });
+});
+
+describe("J9 — network-keyed priority fee", () => {
+  it("returns a 1-wei tip on fortel2-* and undefined on every other network", () => {
+    expect(priorityFeeFor("fortel2-sepolia")).toBe(1n);
+    expect(priorityFeeFor("fortel2-local")).toBe(1n);
+    expect(priorityFeeFor("base-sepolia")).toBeUndefined();
+    expect(priorityFeeFor("polygon-amoy")).toBeUndefined();
+    expect(priorityFeeFor("base-local")).toBeUndefined();
+    expect(priorityFeeFor("polygon-local")).toBeUndefined();
+  });
+
+  it("the constructed fortel2 chain carries only that tip; polygon-amoy is untouched", () => {
+    // Wiring: a helper nobody calls would leave today's node-estimated tip in
+    // place. publicClientFor builds via viemChain, which also feeds walletFor
+    // and readClientFor — creating the client does not dial the RPC.
+    const feesOf = (networkId: string) => {
+      const chain = publicClientFor(networkId).chain;
+      expect(chain, `${networkId} client has a chain`).toBeDefined();
+      return chain!.fees;
+    };
+    expect(feesOf("fortel2-sepolia")).toEqual({ maxPriorityFeePerGas: 1n });
+    expect(feesOf("fortel2-local")).toEqual({ maxPriorityFeePerGas: 1n });
+    // Amoy's ~30 gwei floor: a near-zero tip here hangs rather than errors.
+    expect(feesOf("polygon-amoy")).toBeUndefined();
+    expect(feesOf("base-sepolia")).toBeUndefined();
+    expect(feesOf("base-local")).toBeUndefined();
+    expect(feesOf("polygon-local")).toBeUndefined();
   });
 });
