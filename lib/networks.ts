@@ -63,9 +63,10 @@ export const NETWORKS: Record<string, NetworkInfo> = {
   },
   // ForteL2 (OP Stack, Sepolia L1) — the long-term home settlement rail, run
   // outside this repo. `live: true` because it is a real external chain even
-  // though the sequencer RPC is usually loopback to the operator's Mac. No
-  // block explorer yet, so tx links stay null (raw hashes only). Defaults from
-  // ForteL2 deployments/rail-interface.json.
+  // though the sequencer RPC is usually loopback to the operator's Mac. Do
+  // not set explorerUrl (address routes would silently land on Base Sepolia);
+  // tx links come from NEXT_PUBLIC_FORTEL2_EXPLORER_URL in explorerTxUrl.
+  // Defaults from ForteL2 deployments/rail-interface.json.
   "fortel2-sepolia": {
     id: "fortel2-sepolia",
     label: "ForteL2 Sepolia",
@@ -100,8 +101,17 @@ export function networkInfo(id: string): NetworkInfo {
 }
 
 export function explorerTxUrl(networkId: string, txHash?: string | null): string | null {
+  if (!txHash) return null;
+  // ForteL2 has no public explorer. The purpose-built app uses
+  // `/{networkId}/tx/{hash}`, so it cannot share explorerUrl (that field
+  // also feeds explorerAddressUrl and the published networks API).
+  if (networkId === "fortel2-sepolia") {
+    const base = process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL;
+    if (!base) return null;
+    return `${base.replace(/\/+$/, "")}/fortel2-sepolia/tx/${txHash}`;
+  }
   const n = NETWORKS[networkId];
-  if (!n?.explorerUrl || !txHash) return null;
+  if (!n?.explorerUrl) return null;
   return `${n.explorerUrl}/tx/${txHash}`;
 }
 
