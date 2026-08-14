@@ -6,6 +6,12 @@
 > regulatory, or compliance advice, and not authoritative for any jurisdiction.  
 > An adopter is expected to **replace** this document with their own. Substitution
 > points use `[[ADOPTER: …]]` (see [README.md](README.md)).
+>
+> **Amendment 2026-08-13.** §10 added: ForteL2's confirmed L1-calldata
+> data-availability fact, framed as a question for counsel. The 2026-08-10
+> freeze, the not-advice framing, the `[[ADOPTER: …]]` convention, and the
+> instruction to replace this document are unchanged. This memo still draws no
+> legal conclusions.
 
 **Audience:** internal strategy, prospective regulated partners, and (in
 redacted form) informal regulator conversations.
@@ -137,7 +143,23 @@ monitoring hooks, a complete audit trail, an explicit lifecycle, and clear
 failure/refund logic. Each maps to an enforced mechanism, which is what makes the
 architecture "something a regulator can understand."
 
-## 10. Immediate next steps
+## 10. ForteL2 data availability — question for counsel
+
+**Fact (ForteL2, 2026-08-13):** ForteL2 posts L2 batches to Ethereum L1 as
+calldata, not blobs. Blob data is pruned from L1 after roughly 18 days;
+calldata is not. ForteL2 history is permanently re-derivable from L1. This is a
+property of that rail's data-availability path. It says nothing about Base
+Sepolia, about SettlementOS's Postgres database, or about the hash-chained
+audit log described in §2 and §9.
+
+**Question for counsel:** for a programme that settles on ForteL2, does a rail
+whose history is permanently re-derivable from L1 calldata change the analysis
+of record-retention, independent reconstruction, or audit-evidence obligations
+— and if so, what belongs in the programme of record versus what SettlementOS
+stores off-chain? See the [legal classification memo](03-legal-classification.md)
+§8 (data retention & privacy). This memo does not answer that question.
+
+## 11. Immediate next steps
 
 1. Confirm the **operating model** (SettlementOS-as-infrastructure to a licensed
    partner) with counsel ([[ADOPTER: counsel of record]]).

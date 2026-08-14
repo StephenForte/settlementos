@@ -322,6 +322,10 @@ proven 2026-08-12, ForteL2 D-0035). Canonical chain facts (chain IDs, RPCs,
 bridge addresses, reset policy) live in
 ForteL2's `deployments/rail-interface.json`.
 
+On 2026-08-13 ForteL2 switched to **span batches** (~12x L1 cost reduction).
+SettlementOS observes no change: same finality, same API. A different L1
+batching pattern is this switch, not an anomaly.
+
 ```bash
 # Write RPC. Local default: Mac sequencer loopback. On Render: Cloudflare
 # Access hostname. Never VITE_*; never commit the service token.
