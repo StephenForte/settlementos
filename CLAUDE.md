@@ -113,8 +113,8 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
     (`transactionOutcome`) before compensating or completing forward, unknown
     outcome stays PAYOUT_PENDING in the stuck view, `repairCompensation`
     refuses on confirmed/unknown, `replicaLagRetries` 0 on fortel2-*/local.
-  - Suite 398 → 438. T5 (hardening review) HELD until after the live 852
-    session; its brief is queued in the decisions log.
+  - Suite 398 → 438. T5 (hardening review) was held until after the live 852
+    session; it landed as PR #41 (see below).
 - ForteL2 live session (2026-08-07) — full results and every tx hash in
   `tasks/runbooks/fortel2-live-session-2026-08-07.md`:
   - **F4/US-F005 done live**: the 2026-07-24 deploy was intact, so T2's MMF
@@ -181,15 +181,50 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
   (901) keeps the same `fortel2-<environment>` convention. Do not rename either:
   the literal `fortel2-` prefix drives `replicaLagRetries()` (lib/chain.ts:329),
   the overlay filename, and the `FORTEL2_SEPOLIA_*` env stems.
-- NEXT: dispatch T5 (hardening review — its brief should fold in the live
-  results plus the four residuals in the decisions log). Also: optional F6
-  explorer address book — build it so the ForteL2 rows can be **re-keyed** after
-  the re-genesis rather than holding it until then (an earlier note here said
-  those addresses were "now final", which the re-genesis gate makes false; a
-  later one said hold, which assumed an audience — this is a one-user POC and no
-  one outside sees the rail before the wipe). Stephen's review of the Track B
-  regulatory drafts; US-F007
-  checkbox inconsistency in the PRD still needs Stephen's call.
+- T5 complete (2026-08-07, PR #41): hardening review of the ForteL2 surface
+  after the live 852 session (`tasks/fortel2-hardening-review-2026-08.md`,
+  T5-1…T5-12). Residual rulings R1–R4 (no auto-act on unknown destination
+  evidence; do not map a missing receipt to "absent"). Low-risk fixes landed
+  in-branch: destination hash kept in memory before the DB persist so a
+  persist throw still reconciles (T5-9), `stuckPayments` candidacy widened
+  to every PAYOUT_PENDING (T5-10), add-on treasury key bound to the overlay
+  address (T5-11), R4 regression that a missing receipt is `unknown`
+  (T5-12). Larger money-path items (compensation receipt-loss, execute-time
+  recall, R1 operator re-reconcile) went to T6/T7.
+- T6 complete (2026-08-07, PR #44): compensation attempt-hash reconciliation,
+  mirroring T4's destination-leg shape. `compensationTxHash` is persisted on
+  submit as an *attempt*; `transactionOutcome` is read before any re-send
+  (confirmed → COMPENSATED with no second transfer; unknown → refuse, stay
+  COMPENSATION_PENDING; reverted → a fresh transfer is correct). R1's
+  operator tool is `POST /api/payments/[id]/reconcile` →
+  `reconcileUnresolvedPayment`: re-reads chain evidence under the execution
+  lease and never broadcasts. Confirmed destination completes forward;
+  reverted destination opens COMPENSATION_PENDING for `/repair` to send.
+- T7 complete (2026-08-07, PR #46): execute-time auto-recall gated on the
+  measured free balance, not the frozen quote `recall_required` (T5-6).
+  Step 0 reads `availableLiquidity` and, when free is short, `parkedBalance`
+  (`lib/executor.ts:337`); recall only if parked > 0 in that asset, so a
+  wrong-asset destination falls through to the existing
+  insufficient-liquidity check rather than failing as Auto-recall. When
+  free already covers, the fund is not touched.
+- J9 complete (2026-08-13, PR #67, `6da310f`): `priorityFeeFor()` in
+  `lib/chain.ts` returns `1n` on `fortel2-*` (sequencer floor is 1 wei; the
+  node's GPO default was 1,000,000 wei and viem was using it) and
+  `undefined` elsewhere so Amoy / Base Sepolia keep estimating. Measured on
+  `pay_4bf481cdc9ea`.
+- PR #68 (2026-08-13, `5cfef8b`): ForteL2 calldata DA (batches posted to L1
+  as calldata, not blobs, so posted history is permanently re-derivable
+  from L1), span batches (shipped 2026-08-13, ~12× L1 cost reduction,
+  invisible to SettlementOS), and fee provenance recorded in the
+  regulatory memos §10, README, and AGENTS.md.
+- NEXT: optional F6 explorer address book — build it so the ForteL2 rows can
+  be **re-keyed** after the re-genesis rather than holding it until then (an
+  earlier note here said those addresses were "now final", which the
+  re-genesis gate makes false; a later one said hold, which assumed an
+  audience — this is a one-user POC and no one outside sees the rail before
+  the wipe). Optional J8 MCP server — nothing waits on it. Stephen's review
+  of the Track B regulatory drafts; the US-F007 checkbox inconsistency in
+  the PRD still needs Stephen's call.
 
 ## Base Sepolia (live)
 - Deployed 2026-07-07, verified with a real settled payment.
