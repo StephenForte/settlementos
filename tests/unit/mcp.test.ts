@@ -3,7 +3,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { ApiError } from "@/lib/api-errors";
 import { PaginationError } from "@/lib/pagination";
-import { runTool } from "@/lib/mcp/errors";
+import { ChainUnavailableError, runTool } from "@/lib/mcp/errors";
 import { pageFromArgs } from "@/lib/mcp/page";
 import { toolError, textJson } from "@/lib/mcp/json";
 
@@ -82,6 +82,22 @@ describe("toolError / textJson", () => {
     expect(JSON.parse(toolText(toolError("forbidden", "forbidden")))).toEqual({
       error_code: "forbidden",
       message: "forbidden",
+    });
+  });
+});
+
+describe("chain_unavailable", () => {
+  // REST GET /api/balances answers `chain_unavailable` (503) with setup
+  // instructions. `toolError` already admits that code; mapping it to
+  // `internal` would show an operator a generic failure instead of the
+  // dedicated "you have not run setup" signal.
+  it("maps ChainUnavailableError to its own code, not internal", async () => {
+    const result = await runTool("get_balances", async () => {
+      throw new ChainUnavailableError("Chains not set up. Run: npm run setup");
+    });
+    expect(JSON.parse(toolText(result))).toEqual({
+      error_code: "chain_unavailable",
+      message: "Chains not set up. Run: npm run setup",
     });
   });
 });

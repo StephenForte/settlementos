@@ -12,12 +12,20 @@ import { paymentScopeWhere } from "../session";
 import { currentIndexOf, positionDerivedValue } from "../treasury";
 import { walletOnNetwork } from "../wallets";
 import { scrubAuditDetail, scrubFailureReason } from "../../app/api/guard";
+import { ChainUnavailableError } from "./errors";
 import { pageFromArgs } from "./page";
 
 function requirePlatform(principal: Principal): void {
   if (!isPlatformRole(principal)) throw new ApiError("forbidden");
 }
 
+/**
+ * A tenant's cursor must resolve inside its own scope: Prisma positions a cursor
+ * by id regardless of `where`, so without this a foreign id would page while a
+ * nonexistent one returned empty — the existence oracle the 404-not-403 rule
+ * exists to deny. Callers must combine the id and the scope with `AND`, not a
+ * spread: a scope keyed on `id` (entities) would otherwise overwrite the cursor.
+ */
 async function assertTenantCursor(
   principal: Principal,
   cursor: string | null,
@@ -100,7 +108,10 @@ export async function listEntities(principal: Principal, args: { limit?: number;
   const scope = isPlatformRole(principal) ? {} : { id: principal.entityId };
 
   await assertTenantCursor(principal, page.cursor, (id) =>
-    prisma.entity.findFirst({ where: { id, ...scope }, select: { id: true } })
+    // AND, not a spread: the entity scope is `{ id: entityId }`, the one scope
+    // whose key collides with the cursor's own `id`. `{ id, ...scope }` would
+    // overwrite the cursor and always look up the caller's own row.
+    prisma.entity.findFirst({ where: { AND: [{ id }, scope] }, select: { id: true } })
   );
 
   const rows = await prisma.entity.findMany({
@@ -170,8 +181,7 @@ export async function getBalances(principal: Principal) {
   requirePlatform(principal);
 
   if (!isChainReady()) {
-    throw new ApiError(
-      "internal",
+    throw new ChainUnavailableError(
       "Chains not set up. Run: npm run chain, npm run chain:polygon, then npm run setup"
     );
   }

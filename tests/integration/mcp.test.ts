@@ -306,6 +306,41 @@ describe("platform-only tools", () => {
   });
 });
 
+describe("list_entities cursor scoping", () => {
+  // The tenant scope for entities is `{ id: entityId }` — the only scope whose
+  // key collides with the cursor's own `id`. Spreading it after the cursor id
+  // overwrites it, so the check silently validates the caller's own row: a
+  // nonexistent cursor then fails inside Prisma as an internal error while a
+  // real foreign id passes, which distinguishes whether that id exists.
+  it("rejects a foreign entity id and a nonexistent one identically", async () => {
+    const foreign = await prisma.entity.findFirst({
+      where: { externalId: "ent_tokyo_supplier" },
+      select: { id: true },
+    });
+    expect(foreign).not.toBeNull();
+    await expect(listEntities(acmePrincipal, { cursor: foreign!.id })).rejects.toMatchObject({
+      code: "invalid_request",
+    });
+    await expect(listEntities(acmePrincipal, { cursor: "ent_does_not_exist" })).rejects.toMatchObject({
+      code: "invalid_request",
+    });
+  });
+
+  it("keeps the cursor id in the where — a spread must not overwrite it", async () => {
+    const findFirst = vi.spyOn(prisma.entity, "findFirst");
+    await listEntities(acmePrincipal, { cursor: "ent_does_not_exist" }).catch(() => undefined);
+    expect(findFirst.mock.calls[0]?.[0]?.where).toEqual({
+      AND: [{ id: "ent_does_not_exist" }, { id: acmePrincipal.entityId }],
+    });
+  });
+
+  it("still accepts the caller's own id as a cursor", async () => {
+    await expect(listEntities(acmePrincipal, { cursor: acmePrincipal.entityId })).resolves.toEqual(
+      expect.objectContaining({ entities: expect.any(Array) })
+    );
+  });
+});
+
 describe("verify_audit_chain", () => {
   it("returns INTACT with mode, anchored, and events_verified — not a flattened verdict", async () => {
     const result = await verifyAuditChainTool();
