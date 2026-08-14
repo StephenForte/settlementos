@@ -63,12 +63,15 @@ export function fixtureEnv(databaseUrl: string): Record<string, string> {
     FORTEL2_SEPOLIA_RPC_URL: "http://127.0.0.1:9599",
     FORTEL2_SEPOLIA_READ_RPC_URL: "",
     FORTEL2_LOCAL_RPC_URL: "http://127.0.0.1:9599",
+    NEXT_PUBLIC_FORTEL2_EXPLORER_URL: "",
     // Access service token is Render-only. Pin off so a dev .env cannot attach
     // CF-Access-* headers to local Hardhat / public-testnet write clients.
     CF_ACCESS_CLIENT_ID: "",
     CF_ACCESS_CLIENT_SECRET: "",
-    // Compliance providers must never go live in tests — Vitest loads the dev
-    // .env into process.env, so pin these off; provider tests stub them back on.
+    // Compliance providers must never go live in tests. An exported shell
+    // variable is inherited by the vitest process, and `node --env-file=.env`
+    // invocations load .env explicitly, so pin these off; provider tests stub
+    // them back on.
     OPENSANCTIONS_API_KEY: "",
     CHAINALYSIS_ORACLE_RPC_URL: "",
     CHAINALYSIS_ORACLE_ADDRESS: "",

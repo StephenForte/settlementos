@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   LIVE_NETWORK_IDS,
   NETWORKS,
@@ -124,5 +124,56 @@ describe("explorer URL helpers", () => {
     expect(explorerTxUrl("base-sepolia", null)).toBeNull();
     expect(explorerTxUrl("base-sepolia", undefined)).toBeNull();
     expect(explorerTxUrl("nonexistent", TX)).toBeNull();
+  });
+
+  it("fixture pins NEXT_PUBLIC_FORTEL2_EXPLORER_URL off", () => {
+    expect(process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL).toBe("");
+  });
+
+  describe("ForteL2 explorer when NEXT_PUBLIC_FORTEL2_EXPLORER_URL is set", () => {
+    const BASE = "https://settlementos-explorer-ihgo.onrender.com";
+    const CANONICAL = `${BASE}/fortel2-sepolia/tx/${TX}`;
+    let previous: string | undefined;
+
+    beforeEach(() => {
+      previous = process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL;
+      process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL = BASE;
+    });
+
+    afterEach(() => {
+      if (previous === undefined) {
+        delete process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL;
+      } else {
+        process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL = previous;
+      }
+    });
+
+    it("builds the canonical ForteL2 explorer URL", () => {
+      expect(explorerTxUrl("fortel2-sepolia", TX)).toBe(CANONICAL);
+    });
+
+    it("strips a trailing slash from the configured base", () => {
+      process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL = `${BASE}/`;
+      expect(explorerTxUrl("fortel2-sepolia", TX)).toBe(CANONICAL);
+    });
+
+    it("still returns null for fortel2-local", () => {
+      expect(explorerTxUrl("fortel2-local", TX)).toBeNull();
+    });
+
+    it("leaves explorerAddressUrl null (explorerUrl stays unset)", () => {
+      expect(
+        explorerAddressUrl("fortel2-sepolia", "0x9d8b8b7c476ab02306046f3da719d380fa0456aa")
+      ).toBeNull();
+    });
+
+    it("still builds Basescan links for base-sepolia", () => {
+      expect(explorerTxUrl("base-sepolia", TX)).toBe(`https://sepolia.basescan.org/tx/${TX}`);
+    });
+
+    it("returns null for a missing hash", () => {
+      expect(explorerTxUrl("fortel2-sepolia", null)).toBeNull();
+      expect(explorerTxUrl("fortel2-sepolia", undefined)).toBeNull();
+    });
   });
 });
