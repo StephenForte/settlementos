@@ -1,11 +1,13 @@
 # Runbook: TokenizedMMF live on fortel2-sepolia
 
-Operator checklist for bringing overnight liquidity parking live on
-ForteL2 Sepolia (chainId **852**) once a reachable sequencer RPC exists.
-SettlementOS already deploys `TokenizedMMF` on every live network via
-`scripts/deploy-testnet.mjs` (F4 / US-F005); the live `fortel2-sepolia`
-overlay from 2026-07-24 predates that path and has **no** `TokenizedMMF`
-field — this runbook is how you close that gap.
+Operator checklist for TokenizedMMF on ForteL2 Sepolia (chainId **852**).
+F4 / US-F005 closed live on 2026-08-07: T2's MMF **add-on** wrote
+`TokenizedMMF` `0xaed29387417dad9ab1993332e2c2b99d35ffe7ff` into the
+existing overlay; escrow and tokens were untouched. A re-run against that
+overlay is a **no-op**. This runbook is how you confirm that state, how
+you run the add-on if an overlay is still pre-MMF, and how you avoid a
+full redeploy that would replace the live escrow and orphan every cited
+tx hash.
 
 This is ops work on the ForteL2 machine (or any host that can dial its
 RPC). Coding agents cannot execute it from a sandbox that only sees
@@ -31,33 +33,71 @@ script writes it (gitignored; holds generated dust-wallet keys).
 
 ## 2. Deploy step (current script behavior)
 
-**Today** (`scripts/deploy-testnet.mjs` as of F4 / PR #29): a full live-network
-deploy. There is no MMF-only add-on mode yet.
+`scripts/deploy-testnet.mjs` (T2 / PR #34) auto-detects a mode from the
+network's overlay. **Run `--preflight-only` first.** It prints the detected
+mode and planned actions without sending a transaction.
 
 ```bash
 # On a host that can reach the ForteL2 sequencer RPC:
+node --env-file=.env scripts/deploy-testnet.mjs fortel2-sepolia --preflight-only
+```
+
+| Overlay state | Mode | What the script does |
+|---|---|---|
+| No overlay | `full` | Deploys MockERC20 tokens + `PaymentSettlement` + `TokenizedMMF`. **New addresses.** |
+| Escrow + tokens present, no `TokenizedMMF` | `mmf_addon` | Deploys the fund, mints the 50,000 mockUSDC yield buffer, treasury MAX-approves mockUSDC, merges `TokenizedMMF` into the existing overlay. **Escrow and tokens untouched.** |
+| Overlay already carrying a fund | `noop` | No transactions. |
+
+The live `fortel2-sepolia` overlay has carried `TokenizedMMF`
+`0xaed29387417dad9ab1993332e2c2b99d35ffe7ff` since the 2026-08-07 add-on.
+A re-run against that overlay is **`noop`**. That is the expected result.
+Do not move the overlay aside and do not pass `--force-full-deploy` to
+"make it do something."
+
+If preflight reports `mmf_addon` (pre-F4 overlay: escrow + tokens, no fund),
+then run the add-on:
+
+```bash
 npm run deploy:fortel2-sepolia
 # → npm run compile && node --env-file=.env scripts/deploy-testnet.mjs fortel2-sepolia
 ```
 
-What the script does for the MMF path (same as base-sepolia / polygon-amoy):
+What `mmf_addon` does:
 
-1. Deploys `MockERC20` tokens + `PaymentSettlement` + **`TokenizedMMF(mockUSDC)`**.
-2. Approves the three mock assets on the escrow.
-3. Mints demo balances, **including a 50,000 mockUSDC yield buffer to the MMF
-   address** (`MMF_YIELD_BUFFER = 50_000n * 10n ** 6n`).
+1. Reuses the overlay's `PaymentSettlement` and mockUSDC.
+2. Deploys **`TokenizedMMF(mockUSDC)` only**.
+3. Mints a 50,000 mockUSDC yield buffer to the new fund
+   (`MMF_YIELD_BUFFER = 50_000n * 10n ** 6n`).
 4. Has the **treasury approve the fund** `MAX_UINT256` for mockUSDC
    (`subscribe` pulls via `transferFrom`).
-5. Writes `chain/deployments.fortel2-sepolia.json` with `contracts.TokenizedMMF`
-   and re-registers entity wallets for `fortel2-sepolia` in the DB.
+5. Merges `contracts.TokenizedMMF` into `chain/deployments.fortel2-sepolia.json`.
+   Other overlay entries are untouched.
 
-**Consequence of a full re-run on an existing F2 overlay:** you get **fresh**
-token + escrow + MMF contracts (new addresses). Reused treasury/entity wallet
-keys/addresses keep their gas dust, but any prior escrowed payments or
-settled demo state on the old contracts are orphaned. Prefer this path only
-when a clean redeploy is acceptable (or after a ForteL2 Phase 7 wipe).
+**Add-on idempotency is mode-level only** (decisions log T2-2). A run that
+dies between the fund deploy and the overlay merge leaves the overlay
+fund-less; a re-run re-detects `mmf_addon` and deploys a **second** fund.
+The helpers that look like per-step skips (`mmfYieldBufferSatisfied` /
+`treasuryMmfApprovalSatisfied`) check the *fresh* address, which is empty,
+so they never reuse the orphan. That orphan's minted 50k yield buffer is
+**unrecoverable**: `TokenizedMMF` has no rescue path (T5-8). Accepted for
+this mock-asset testnet. `--preflight-only` first shrinks the window; it
+does not close it.
 
-Confirm the overlay now carries the fund:
+**A full redeploy of fresh contracts requires moving the overlay aside
+first.** Auto-detect will not choose `full` while the overlay still carries
+escrow + tokens. After a ForteL2 re-genesis wipe the overlay is for the
+*old* chain and must be moved aside before a full deploy onto the new one.
+
+**When the overlay is lost but the contracts survived, use `--adopt`, not a
+bare deploy.** Auto-detect treats "no overlay" as `full` and would redeploy
+PaymentSettlement and tokens at new addresses. `--adopt` bytecode-verifies
+the addresses in `ADOPTABLE_NETWORKS` and regenerates only the wallets
+around them. `ADOPTABLE_NETWORKS` currently lists **only `base-sepolia`**;
+ForteL2 is not in it, so `--adopt fortel2-sepolia` refuses until an entry
+exists. A missing ForteL2 overlay would auto-detect `full`. Stop rather
+than run a bare `npm run deploy:fortel2-sepolia` in that case.
+
+Confirm the overlay carries the fund:
 
 ```bash
 node -e "const d=require('./chain/deployments.fortel2-sepolia.json'); console.log(d.networks['fortel2-sepolia'].contracts.TokenizedMMF)"
@@ -65,19 +105,6 @@ node -e "const d=require('./chain/deployments.fortel2-sepolia.json'); console.lo
 
 A non-empty address means `mmfAddress('fortel2-sepolia')` will resolve and
 treasury park/recall leave the `NO_FUND` path.
-
-### Once T2's add-on mode lands
-
-> **VARIANT — do not use until T2 (`fortel2/deploy-hardening`) has merged.**
->
-> T2 is adding an idempotent **MMF add-on** path so an existing
-> `fortel2-sepolia` overlay (escrow + tokens already live) can gain
-> `TokenizedMMF` + yield buffer + treasury approval **without** redeploying
-> the settlement contracts. When that lands, prefer the add-on / preflight
-> flags documented in T2's handback (expected shape: `--preflight-only` to
-> validate RPC/chain-id/balance, then an add-on re-run that only deploys the
-> fund and updates the overlay). Until then, use the full deploy above and
-> accept new escrow/token addresses.
 
 ---
 

@@ -152,6 +152,14 @@ property of that rail's data-availability path. It says nothing about Base
 Sepolia, about SettlementOS's Postgres database, or about the hash-chained
 audit log described in §2 and §9.
 
+The calldata property is of batches already posted to L1. It does not mean
+the live L2 those records currently point into survives: ForteL2 re-genesis
+(the unscheduled Phase 7 entry gate on this testnet POC) wipes L2 state,
+after which every ForteL2 address SettlementOS holds expires and the
+2026-08-07 live-session hashes stop resolving. Whether that distinction
+matters for record-retention or audit-evidence is the same question for
+counsel; this memo does not answer it.
+
 **Question for counsel:** for a programme that settles on ForteL2, does a rail
 whose history is permanently re-derivable from L1 calldata change the analysis
 of record-retention, independent reconstruction, or audit-evidence obligations
