@@ -554,6 +554,17 @@ dev schema sync uses `prisma db push` inside setup; the deployed path is
 - A test that drives `initiatePayment` **directly** (rather than through the executor)
   must approve the sender's tokens itself — no fixture wallet carries a standing
   allowance any more. See `approveAmount()` in tests/integration/contract.test.ts.
+- **ForteL2's 1-wei tip is pinned because the node suggested our own tip back
+  to us.** Measured on `pay_4bf481cdc9ea` (2026-08-13), with no fee configured
+  by SettlementOS: `eth_maxPriorityFeePerGas` returned 1,000,000 wei (op-geth
+  GPO default; no `--gpo.*` flags), `eth_gasPrice` 1,000,251 wei, L2
+  `baseFeePerGas` 251 wei, sequencer `--miner.gasprice` 1 (1 wei is the
+  accepted floor), and `effectiveGasPrice` on our settlements was exactly
+  1,000,251. viem asked the node and used the answer. `priorityFeeFor()`
+  therefore returns `1n` on `fortel2-*` rather than `0n` (zero risks rejection
+  at the sequencer floor) or leaving that 1,000,000-wei estimate in place.
+  ForteL2 has not changed the GPO default (deliberate, while they size the
+  spam question for future clients).
 - Polygon Amoy enforces a ~30 gwei minimum gas price (Base Sepolia is sub-gwei),
   so Amoy gas-dust targets in the deploy script are ~100× higher.
   `priorityFeeFor` is undefined on Amoy (and Base Sepolia) for the same reason:

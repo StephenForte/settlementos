@@ -6,6 +6,12 @@
 > regulatory, or compliance advice, and not authoritative for any jurisdiction.  
 > An adopter is expected to **replace** this document with their own. Substitution
 > points use `[[ADOPTER: …]]` (see [README.md](README.md)).
+>
+> **Amendment 2026-08-13.** §10 added. ForteL2 confirmed (2026-08-13) that it
+> posts L2 batches to Ethereum L1 as calldata, not blobs, so ForteL2 history is
+> permanently re-derivable from L1. The 2026-08-10 freeze, the not-advice
+> framing, the `[[ADOPTER: …]]` convention, and the instruction to replace this
+> document are unchanged.
 
 **Audience:** technical reviewers at prospective payment partners, banks, and
 fintechs; the technical annex to the regulator demo deck.
@@ -185,3 +191,15 @@ API.
 These are the honest edges of the POC. Track A made the *architecture* operable;
 closing these is the work between POC and a licensed, real-money pilot (see the
 pilot options memo).
+
+## 10. ForteL2 data availability (rail property)
+
+On 2026-08-13 ForteL2 confirmed they post L2 batch data to Ethereum L1 as
+**calldata**, not as EIP-4844 blob data. Blob data is pruned from L1 after
+roughly 18 days; calldata is not. ForteL2 history is therefore **permanently
+re-derivable from L1**: a counterparty can independently reconstruct that rail's
+settlement history from first principles at any future date.
+
+This is a property of ForteL2's L1 data-availability path. It is not a claim
+about Base Sepolia, about SettlementOS's Postgres database, or about the
+hash-chained audit log in this repository.
