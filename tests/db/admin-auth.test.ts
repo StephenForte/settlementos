@@ -54,4 +54,27 @@ describe("AdminCredential bootstrap (AD1)", () => {
     await expect(ensureAdminCredential()).resolves.toBeNull();
     expect(await prisma.adminCredential.count()).toBe(0);
   });
+
+  it("trims ADMIN_USERNAME before storing so a padded env value is reachable", async () => {
+    setAdminEnv({ ADMIN_USERNAME: "operator ", ADMIN_PASSWORD: "correct-horse" });
+    const row = await ensureAdminCredential();
+    expect(row).not.toBeNull();
+    expect(row!.username).toBe("operator");
+    await expect(verifyAdminLogin("operator", "correct-horse")).resolves.toBe(true);
+    await expect(verifyAdminLogin("operator ", "correct-horse")).resolves.toBe(false);
+  });
+
+  it("refuses to seed a whitespace-only ADMIN_USERNAME", async () => {
+    setAdminEnv({ ADMIN_USERNAME: "   ", ADMIN_PASSWORD: "correct-horse" });
+    await expect(ensureAdminCredential()).resolves.toBeNull();
+    expect(await prisma.adminCredential.count()).toBe(0);
+  });
+
+  it("round-trips a password that ends in a space (password is not trimmed)", async () => {
+    setAdminEnv({ ADMIN_USERNAME: "operator", ADMIN_PASSWORD: "pass with space " });
+    const row = await ensureAdminCredential();
+    expect(row).not.toBeNull();
+    await expect(verifyAdminLogin("operator", "pass with space ")).resolves.toBe(true);
+    await expect(verifyAdminLogin("operator", "pass with space")).resolves.toBe(false);
+  });
 });

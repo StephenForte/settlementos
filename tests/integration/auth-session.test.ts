@@ -92,6 +92,50 @@ describe("POST /api/auth/session", () => {
     expect(malformed.cookies.get(API_KEY_COOKIE)).toBeUndefined();
   });
 
+  it("seeds a padded ADMIN_USERNAME as trimmed and accepts the trimmed login", async () => {
+    setAdminEnv({
+      ADMIN_USERNAME: "operator ",
+      ADMIN_PASSWORD: "correct-horse",
+      ADMIN_API_KEY: API_KEYS.operator,
+    });
+
+    const res = await sessionPOST(sessionRequest({ username: "operator", password: "correct-horse" }));
+    expect(res.status).toBe(200);
+    expect((await prisma.adminCredential.findFirst())?.username).toBe("operator");
+  });
+
+  it("does not seed a row when ADMIN_USERNAME is whitespace-only, even after a login attempt", async () => {
+    setAdminEnv({
+      ADMIN_USERNAME: "   ",
+      ADMIN_PASSWORD: "correct-horse",
+      ADMIN_API_KEY: API_KEYS.operator,
+    });
+
+    const res = await sessionPOST(sessionRequest({ username: "anything", password: "whatever" }));
+    // No reachable credential — fail closed with no row, not a permanent unreachable one.
+    expect(await prisma.adminCredential.count()).toBe(0);
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({
+      error_code: "internal",
+      message: "admin session is not configured",
+    });
+  });
+
+  it("authenticates a password that ends in a space and rejects the trimmed form", async () => {
+    setAdminEnv({
+      ADMIN_USERNAME: "operator",
+      ADMIN_PASSWORD: "pass with space ",
+      ADMIN_API_KEY: API_KEYS.operator,
+    });
+
+    const exact = await sessionPOST(sessionRequest({ username: "operator", password: "pass with space " }));
+    expect(exact.status).toBe(200);
+
+    const trimmed = await sessionPOST(sessionRequest({ username: "operator", password: "pass with space" }));
+    expect(trimmed.status).toBe(401);
+    expect(await trimmed.text()).toBe('{"error_code":"unauthorized","message":"invalid credentials"}');
+  });
+
   it("fails with a 500 (not a 401) when ADMIN_API_KEY is unset or not an OPERATOR", async () => {
     setAdminEnv({
       ADMIN_USERNAME: "operator",

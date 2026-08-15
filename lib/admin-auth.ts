@@ -72,7 +72,8 @@ export async function ensureAdminCredential() {
   const existing = await prisma.adminCredential.findFirst();
   if (existing) return existing;
 
-  const username = process.env.ADMIN_USERNAME ?? "";
+  const username = (process.env.ADMIN_USERNAME ?? "").trim();
+  // Password is not trimmed — leading/trailing spaces are legitimate characters.
   const password = process.env.ADMIN_PASSWORD ?? "";
   if (!username || !password) return null;
 
