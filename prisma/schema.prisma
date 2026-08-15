@@ -212,3 +212,17 @@ model LiquidityReservation {
 
   payment Payment @relation(fields: [paymentId], references: [id])
 }
+
+// The single operator password for the admin UI. Seeded from ADMIN_USERNAME /
+// ADMIN_PASSWORD on first boot when no row exists; env is ignored once a row
+// is present (otherwise a changed password would revert on the next deploy).
+// Hash is scrypt with a per-row salt — never hashKey() (that is sha256, correct
+// only for high-entropy API keys).
+model AdminCredential {
+  id           String   @id @default("admin")
+  username     String   @unique
+  passwordHash String
+  salt         String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
