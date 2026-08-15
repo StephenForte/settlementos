@@ -84,6 +84,11 @@ export function fixtureEnv(databaseUrl: string): Record<string, string> {
     // happened to run after the busy ones. Pinned effectively off; the limiter's
     // own test lowers it and resets the windows itself.
     RATE_LIMIT_WRITES_PER_MINUTE: "1000000",
+    // Admin password bootstrap. Pin off so a developer .env cannot seed or
+    // mint a session during the suite; tests that need them set them explicitly.
+    ADMIN_USERNAME: "",
+    ADMIN_PASSWORD: "",
+    ADMIN_API_KEY: "",
   };
 }
 
