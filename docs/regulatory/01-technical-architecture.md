@@ -7,6 +7,11 @@
 > An adopter is expected to **replace** this document with their own. Substitution
 > points use `[[ADOPTER: …]]` (see [README.md](README.md)).
 >
+> **Amendment 2026-08-14.** §10 extended with an independent verification of
+> the calldata claim — the Sepolia batch-inbox and batcher addresses, the
+> transaction type actually observed, and what the property does and does not
+> let a reader do. Nothing else in this memo changes.
+>
 > **Amendment 2026-08-13.** §10 added. ForteL2 confirmed (2026-08-13) that it
 > posts L2 batches to Ethereum L1 as calldata, not blobs, so ForteL2 history is
 > permanently re-derivable from L1. The 2026-08-10 freeze, the not-advice
@@ -203,3 +208,45 @@ settlement history from first principles at any future date.
 This is a property of ForteL2's L1 data-availability path. It is not a claim
 about Base Sepolia, about SettlementOS's Postgres database, or about the
 hash-chained audit log in this repository.
+
+### Verified independently (2026-08-14)
+
+The calldata property above was ForteL2's statement. It was checked against
+Sepolia rather than accepted on report.
+
+**Method.** `batcherHash()` and `batchInbox()` were read from the ForteL2
+`SystemConfigProxy` on Sepolia (`0x8416cd475d75b558899d83f4cf0ffeb85d7bc361`),
+and the batcher's recent transactions were then listed.
+
+- **Batch inbox:** `0x007238ac625E3e5369739fA5b9CDbf61320B237c`
+- **Batcher EOA:** `0x3d54fd6353cd66d143fb94d178c9eeb1ae98a31d` — nonce **6,671**
+  when checked, i.e. that many batch transactions posted to L1 to date.
+
+The four most recent batches, all sent to the batch inbox:
+
+| L1 block | Timestamp (UTC) | Tx type | Calldata |
+|---|---|---|---|
+| 11490445 | 2026-08-14 23:40:00 | 2 | 623 bytes |
+| 11490419 | 2026-08-14 23:34:00 | 2 | 103 bytes |
+| 11490393 | 2026-08-14 23:28:48 | 2 | 115 bytes |
+| 11490368 | 2026-08-14 23:23:36 | 2 | 111 bytes |
+
+**Type 2 is EIP-1559 — plain calldata.** A blob-carrying batch would be type 3
+(EIP-4844) and would fall under the ~18-day pruning window. None of these do.
+Cadence was roughly one batch every five to six minutes, and the calldata sizes
+are span-batch compression at work: a whole five-minute window of L2 activity in
+a few hundred bytes.
+
+**What this establishes, and what it does not.** It establishes that batches are
+posted as calldata and therefore persist in L1 history for as long as Ethereum
+does. It does **not** make an individual L2 transaction hash findable on L1: a
+batch is compressed and holds every L2 transaction in its window, so a given
+settlement is present as bytes, not as a searchable hash. Recovering one means
+deriving the L2 chain from the posted batches. The property is archival, not a
+lookup path — day-to-day verification reads the L2 directly.
+
+**Operational dependency.** Batch posting costs the batcher L1 gas. Its balance
+was ~0.90 ETH when checked; if it empties, batch posting stops and L1 receives
+no further history, though everything already posted remains re-derivable. That
+is a ForteL2 operational concern rather than a SettlementOS one, but it bounds
+the durability claim above.

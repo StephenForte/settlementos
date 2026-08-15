@@ -7,6 +7,10 @@
 > An adopter is expected to **replace** this document with their own. Substitution
 > points use `[[ADOPTER: …]]` (see [README.md](README.md)).
 >
+> **Amendment 2026-08-14.** The §10 fact was independently verified against
+> Sepolia; see the technical memo §10 for addresses and method. The question for
+> counsel is unchanged.
+>
 > **Amendment 2026-08-13.** §10 added: ForteL2's confirmed L1-calldata
 > data-availability fact, framed as a question for counsel. The 2026-08-10
 > freeze, the not-advice framing, the `[[ADOPTER: …]]` convention, and the
@@ -151,6 +155,13 @@ calldata is not. ForteL2 history is permanently re-derivable from L1. This is a
 property of that rail's data-availability path. It says nothing about Base
 Sepolia, about SettlementOS's Postgres database, or about the hash-chained
 audit log described in §2 and §9.
+
+**Verified independently (2026-08-14).** The fact above was checked against
+Sepolia rather than accepted on report: ForteL2's batches arrive at batch inbox
+`0x007238ac625E3e5369739fA5b9CDbf61320B237c` as **type-2 (EIP-1559) calldata**
+transactions, not type-3 blob transactions, so the ~18-day blob pruning window
+does not apply to them. Addresses, method and the observed transactions are in
+the [technical architecture memo](01-technical-architecture.md) §10.
 
 The calldata property is of batches already posted to L1. It does not mean
 the live L2 those records currently point into survives: ForteL2 re-genesis
