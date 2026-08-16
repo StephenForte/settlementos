@@ -25,6 +25,7 @@ const NAV = [
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const principal = await currentPrincipal();
+  const nav = principal?.role === "OPERATOR" ? [...NAV, { href: "/admin", label: "Admin" }] : NAV;
 
   return (
     <html lang="en" className={`${inter.variable} ${geistMono.variable} h-full antialiased`}>
@@ -42,7 +43,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               </p>
             </div>
             <nav className="flex flex-col gap-1 text-sm">
-              {NAV.map((item) => (
+              {nav.map((item) => (
                 <Link
                   key={item.href}
                   href={item.href}
