@@ -72,6 +72,11 @@ export async function loadAdminWallets(): Promise<AdminWalletsData> {
       })),
     ];
 
+    // Identity only. Balance figures are attached on a copy after every
+    // read for the network succeeds — a mid-loop throw must not leave
+    // earlier wallets looking complete (or the failing wallet with gas
+    // and empty tokens) next to a network-wide RPC error. Same discard
+    // as GET /api/balances.
     const wallets: AdminWalletRow[] = holders.map((h) => ({
       label: h.label,
       role: h.role,
@@ -83,19 +88,26 @@ export async function loadAdminWallets(): Promise<AdminWalletsData> {
     }));
 
     try {
+      const withBalances: AdminWalletRow[] = [];
       for (const row of wallets) {
-        if (!row.address) continue;
+        if (!row.address) {
+          withBalances.push(row);
+          continue;
+        }
         const owner = row.address as `0x${string}`;
         const nativeRaw = await nativeBalance(networkId, owner, { viaReadRpc: true });
-        row.nativeBalance = fromBaseUnits(nativeRaw, 18);
         const tokens: { symbol: string; amount: string }[] = [];
         for (const [symbol, token] of Object.entries(net.contracts.tokens)) {
           const raw = await tokenBalance(networkId, token.address, owner, { viaReadRpc: true });
           tokens.push({ symbol, amount: fromBaseUnits(raw, token.decimals) });
         }
-        row.tokens = tokens;
+        withBalances.push({
+          ...row,
+          nativeBalance: fromBaseUnits(nativeRaw, 18),
+          tokens,
+        });
       }
-      networks.push({ networkId, label: info.label, error: null, wallets });
+      networks.push({ networkId, label: info.label, error: null, wallets: withBalances });
     } catch {
       networks.push({
         networkId,
