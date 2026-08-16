@@ -47,8 +47,8 @@ A5  seed + deploy wiring (env, secret file, runbook)   [cheap · after A1]
 |---|---|---|---|
 | **A1** | credential model, verify, session exchange, `/login` form, `/admin` shell | strongest · first | **DONE** — PR [#77](https://github.com/StephenForte/settlementos/pull/77), merged 2026-08-15. **AD1, AD2, AD3** resolved; AD3 took option 1 (`ADMIN_API_KEY` in env) |
 | **A2** | change-password page + route | strong · after A1 | **Reviewed, approved** — PR [#78](https://github.com/StephenForte/settlementos/pull/78). **AD4 resolved: ACCEPT** |
-| **A3** | `/admin/coins` | cheap · parallel | Read-only view over existing data |
-| **A4** | `/admin/wallets` | strong · parallel | Cheap-looking, but §6 trap 1 lives here |
+| **A3** | `/admin/coins` | cheap · parallel | **Merged** — PR [#79](https://github.com/StephenForte/settlementos/pull/79) |
+| **A4** | `/admin/wallets` | strong · parallel | **Reviewed, approved** — PR [#80](https://github.com/StephenForte/settlementos/pull/80). §6 trap 1 verified by real leak injection |
 | **A5** | `.env.example`, `render.yaml`, runbook | cheap · after A1 | No app code |
 
 A3 and A4 need only the existing OPERATOR gate, so they do **not** wait for A1 —
@@ -240,6 +240,51 @@ as well as writing by it, so a read cannot find one row while the write targets 
 `findFirst()` (any id) while the A2 route uses `findUnique({ id: "admin" })`. A row under
 a different id would authenticate at login but 500 on password change. Collapse to one
 accessor when that file is next open.
+
+### A3 — PR #79, merged 2026-08-15
+Base was stale, so the gate ran on the **merge onto current main**: **625 passed / 71 files**
+(620 + 5). Mutations confirmed the JPY-formatting, per-network-degradation and
+null-explorer-link tests all bite.
+
+**`formatAmount`'s `Number()` ceiling is now bounded:** mockJPY renders exactly up to
+1e15 and first misrenders at **1e16 + 1** (the 2^53 boundary). Demo balances sit eight
+orders of magnitude below it, and only the display is affected — no money math goes
+through that function. mockUSDC rendering `100,000.00` rather than `100,000.000001` is
+deliberate 2-dp display rounding, **not** precision loss.
+
+**Reviewer error worth keeping:** two of three mutations initially failed to bite, and
+both times the mutation was at fault, not the test — one hit a type annotation vitest
+never typechecks, the other flipped a ternary but left `href={null}` so React emitted no
+href to match. A reviewer stopping at "mutation passed, test is weak" would have filed
+two false findings against good tests.
+
+### A4 — PR #80, reviewed 2026-08-15
+Gate on the **merge onto current main**: **634 passed / 73 files** (625 + 9). Merge clean.
+
+**Trap 1 (private key to the browser) verified by injecting real leaks**, not by reading
+code. Leaking through `copyAddressProps` turned 2 tests red; spreading key-bearing data
+into the view-model row turned 1 red. Planting a key on the *intermediate* holder object
+correctly stayed green — there are **three independent barriers**: the explicit
+`const treasuryAddress: string = ….treasury.address` annotation (fails `tsc`), the
+`.map()` that re-selects named fields rather than spreading, and the leak-guard test
+itself. Exactly one field crosses to a client component: `address: string`.
+
+**Better than specified:** `walletOnNetwork()`'s `wallets[0]` fallback is deliberately
+*rejected* here. That fallback is right for payment flows and wrong for a display page,
+where it would print one network's address under another network's heading and read as
+fact. Not in the brief; caught and documented by the worker.
+
+**Non-blocking:** RPC degradation is network-granular, not wallet-granular — one failing
+wallet read marks the whole network unreachable, though addresses still render.
+
+### Planner errors in the A2–A4 dispatches, recorded so they are not repeated
+1. **The `app/admin/page.tsx` collision warning was wrong.** A1 had already added all
+   three admin links, so A3 correctly left the file alone and A4's one-line change
+   auto-merged. There was no conflict to warn about.
+2. **A3's allowlist was self-contradictory** — it named `page.tsx` only while requiring a
+   `"use client"` child for the copy control. When a task needs a client child, the
+   allowlist must say so. Same lesson as the explorer plan's "scope a component together
+   with its call sites".
 
 ## 6. Standing traps
 
