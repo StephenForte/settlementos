@@ -57,16 +57,20 @@ Setting `explorerUrl` also changes an API contract: it is published as `explorer
 by `app/api/networks/route.ts:13` and `lib/mcp/tools.ts:48`, where consumers reasonably
 read it as "a Basescan-shaped explorer".
 
-**Do this instead** — a ForteL2-specific base that only the tx helper consults:
+**Do this instead** — a ForteL2-specific base that only the tx helper consults.
+Unset falls back to the live explorer; empty string disables (tests).
 
 ```ts
 // lib/networks.ts
-const FORTEL2_EXPLORER_URL = process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL; // no trailing slash
+export const DEFAULT_FORTEL2_EXPLORER_URL = "https://settlementos-explorer-ihgo.onrender.com";
 
 export function explorerTxUrl(networkId: string, txHash?: string | null): string | null {
   if (!txHash) return null;
-  if (networkId === "fortel2-sepolia" && FORTEL2_EXPLORER_URL) {
-    return `${FORTEL2_EXPLORER_URL}/fortel2-sepolia/tx/${txHash}`;
+  if (networkId === "fortel2-sepolia") {
+    const raw = process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL;
+    if (raw === "") return null;
+    const base = (raw ?? DEFAULT_FORTEL2_EXPLORER_URL).replace(/\/+$/, "");
+    return `${base}/fortel2-sepolia/tx/${txHash}`;
   }
   const n = NETWORKS[networkId];
   if (!n?.explorerUrl) return null;
@@ -125,39 +129,19 @@ settle on one form.
 
 ---
 
-## 4. ⚠️ The deployment reality — read this before you point users at it
+## 4. The public replica — explorer tx pages are reachable
 
-The explorer is deployed at `https://settlementos-explorer-ihgo.onrender.com` and it is
-up (health endpoint returns `ok:true`). **But its ForteL2 RPC URL is
-`http://127.0.0.1:9545`, baked into the production JavaScript bundle at build time.**
-I confirmed this by grepping the live bundle (`/assets/index-*.js`) — the string is
-there.
+The explorer is deployed at `https://settlementos-explorer-ihgo.onrender.com`.
+ForteL2 reads go to the public replica `https://fortel2-replica-rpc.onrender.com`
+(`VITE_FORTEL2_SEPOLIA_READ_RPC_URL` / `FORTEL2_SEPOLIA_READ_RPC_URL`, inlined
+at Vite build for the browser; CORS `Access-Control-Allow-Origin: *`). Writes
+and SettlementOS `confirm()` stay on the Access write hostname — never point
+those at the replica.
 
-The consequence is not "the server can't reach the chain". It is stranger than that:
-
-> **The page runs in the reader's browser, so it asks the *reader's own machine* for
-> chain 852 — not the server, and not your Mac.**
-
-- On the ForteL2 host (your Mac, sequencer running): works perfectly.
-- Anyone else: connection refused → the page shows an RPC-unavailable banner with an
-  override form. Not a crash, but not useful either.
-- Over HTTPS this is also **mixed content**. Chrome/Firefox treat loopback as
-  trustworthy and allow it; **Safari is stricter and may block it outright.**
-
-**What this means for SettlementOS:** ForteL2 tx links are useful to *operators on the
-host* today, and are a dead end for everyone else. That is a deployment fact, not a code
-gap, and nothing in the SOS integration changes when it is fixed.
-
-**The fix, when someone does it** (explorer-side, decision D32): set
-`VITE_FORTEL2_SEPOLIA_READ_RPC_URL` to a public replica and **rebuild** — Vite inlines
-`import.meta.env`, so restarting the Node service serves the old URL. The replica also
-needs CORS (`--http.corsdomain`, `--http.vhosts`) and HTTPS. The explorer already puts
-`readRpcUrl` first in its URL list, so reads prefer the replica automatically with no
-code change.
-
-**Suggested posture:** gate the ForteL2 link on the env var above. Unset in
-environments where it would be a dead end, set where readers are on the host. That is
-one env var, no code branching.
+**What this means for SettlementOS:** ForteL2 escrow and settlement hashes
+should link into the explorer. `explorerTxUrl` defaults to that live URL;
+`NEXT_PUBLIC_FORTEL2_EXPLORER_URL=""` disables (tests). A value change on
+Render needs a rebuild (`NEXT_PUBLIC_*` is baked at `next build`).
 
 ---
 
@@ -220,7 +204,8 @@ Conventions worth knowing on the consuming side:
 1. A ForteL2 payment's tx cell is a working link; a Base payment's still goes to
    Basescan. Both asserted, ideally in the same test.
 2. A `fortel2-local` (chain 901) payment still renders a raw hash.
-3. With the env var unset, ForteL2 renders raw — no half-configured broken link.
+3. Empty `NEXT_PUBLIC_FORTEL2_EXPLORER_URL` still renders raw (tests). Unset uses
+   the live explorer default — no half-configured broken link.
 4. `explorerAddressUrl` behaviour is unchanged (or, if you extended it, it produces
    `/fortel2-sepolia/address/…` and was verified against a real address page).
 5. Click through one real settlement end-to-end on the host and confirm the decoded
