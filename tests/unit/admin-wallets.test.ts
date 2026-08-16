@@ -223,7 +223,7 @@ describe("/admin/wallets", () => {
     expect(polygonHtml).not.toContain("3915077");
     expect(polygonHtml).not.toContain("1.5");
     expect(polygonHtml).not.toContain("data-token=");
-    expect(polygonHtml).toMatch(/Gas \(POL\)[\s\S]*?—/);
+    expect(polygonHtml).toMatch(/Gas \(ETH\)[\s\S]*?—/);
 
     expect(baseHtml).not.toContain("RPC unreachable");
     expect(baseHtml).toMatch(/data-token="mockJPY">3915077</);
