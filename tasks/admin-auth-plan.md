@@ -45,8 +45,8 @@ A5  seed + deploy wiring (env, secret file, runbook)   [cheap · after A1]
 
 | ID | Owns | Model / order | Notes |
 |---|---|---|---|
-| **A1** | credential model, verify, session exchange, `/login` form, `/admin` shell | strongest · first | The authorization boundary. **AD1, AD2, AD3** |
-| **A2** | change-password page + route | strong · after A1 | Requires the current password. **AD4** optional |
+| **A1** | credential model, verify, session exchange, `/login` form, `/admin` shell | strongest · first | **DONE** — PR [#77](https://github.com/StephenForte/settlementos/pull/77), merged 2026-08-15. **AD1, AD2, AD3** resolved; AD3 took option 1 (`ADMIN_API_KEY` in env) |
+| **A2** | change-password page + route | strong · after A1 | **Reviewed, approved** — PR [#78](https://github.com/StephenForte/settlementos/pull/78). **AD4 resolved: ACCEPT** |
 | **A3** | `/admin/coins` | cheap · parallel | Read-only view over existing data |
 | **A4** | `/admin/wallets` | strong · parallel | Cheap-looking, but §6 trap 1 lives here |
 | **A5** | `.env.example`, `render.yaml`, runbook | cheap · after A1 | No app code |
@@ -174,17 +174,72 @@ The alternative shape — a second cookie and a second identity path — is **re
 not deferred: two ways to become a principal is how one of them ends up not getting a
 fix. The MCP gotcha in AGENTS.md ("MCP is not a second identity path") is the same rule.
 
-### AD4 — *(pre-assigned, optional)* what a password change does to live sessions
+### AD4 — a password change does NOT evict live sessions (ACCEPTED)
 
-*For A2. Retire unused if the worker hits no fork.*
+*Resolved by A2, 2026-08-15. Verified by the reviewer, not merely accepted.*
 
-Changing a password conventionally invalidates existing sessions. Here the session
-cookie holds an API key, not a password-derived token, so a change does **not**
-invalidate anything by default. Decide deliberately: accept it (documenting that the
-password gates *new* logins only), or rotate. Accepting is defensible for a one-user
-POC; silently leaving it undocumented is not.
+The `sos_key` cookie holds the `ADMIN_API_KEY` raw key, not a password-derived
+token, so updating the password hash cannot invalidate a session that already
+exists. Real eviction would mean rewriting the env / Render Secret File value,
+which the app cannot do, or minting a new `ApiKey` row — which would reintroduce
+storing a raw key and break AD3's "only hashes in the DB".
+
+**Accepted:** the password gates **new logins only**. An existing session stays
+valid for the remainder of its 7-day `maxAge`. The change-password page, its form,
+its success message, and the admin index all say so — the option this decision
+rules out is leaving it undocumented, not leaving it unfixed.
+
+**Measured, 2026-08-15:** a cookie minted before a password change still resolves
+to an OPERATOR principal after it. The accepted risk is a tested fact rather than
+an assumption with a decision number attached.
+
+**Consequence for a real deployment:** evicting sessions means rotating
+`ADMIN_API_KEY` — the env value *and* the corresponding `ApiKey` row — not calling
+this endpoint. Anyone treating "change the password" as an incident-response
+containment step should read that sentence twice.
 
 ---
+
+## 5a. Verification record
+
+What was checked and how, so a later reader does not have to re-derive it.
+
+### A1 — PR #77, merged 2026-08-15
+Gate re-run in an isolated clone: **606 → 612 passed**. Migration re-proven forward
+on populated data (seeded an `Entity`, applied `20260815000000_admin_credential`,
+row survived). Probes: an ENTITY or REVIEWER `ADMIN_API_KEY` cannot be minted into a
+session (500, no cookie); env does not override an existing credential row; an empty
+`ADMIN_PASSWORD` seeds nothing. Mutations confirmed each probe bites.
+
+**One finding recorded rather than fixed:** the empty-password protection is enforced
+in the *route*, not in `lib/admin-auth.ts` — removing the lib-level guard changes no
+behaviour. Two guards exist; only the route's is load-bearing for authentication.
+
+**Bugbot finding (username seed/login trim mismatch) — real, reproduced, fixed in
+`ff13d8b`.** A padded `ADMIN_USERNAME` seeded a username no submitted string could
+match (the route trims, so neither the padded nor the trimmed form authenticated),
+and AD1 made it permanent. Worse than reported: `ensureAdminCredential()` runs before
+verification, so *any* login attempt — including a stranger's failed one — writes the
+bad row. Fix trims at the seed boundary only; a row already written padded stays
+unreachable and recovery is deleting it (now documented in `.env.example`).
+
+### A2 — PR #78, reviewed 2026-08-15
+Gate re-run: **612 → 620 passed**. Probes: a session minted before a password change
+still authenticates after it (AD4, above); the audit chain stays `valid` with the new
+`admin.password_changed` action and neither password appears in the event; a wrong
+`current_password` leaves hash and salt byte-identical; REVIEWER, ENTITY and anonymous
+callers are all refused with the row untouched.
+
+**Atomicity proven, not accepted:** a throw injected inside the `$transaction` after
+the audit call rolled the password change back — 500, hash and salt unchanged.
+
+**Better than specified:** the route reads with `findUnique({ id: ADMIN_CREDENTIAL_ID })`
+as well as writing by it, so a read cannot find one row while the write targets another.
+
+**Open divergence (fail-closed, not urgent):** `lib/admin-auth.ts` locates the row with
+`findFirst()` (any id) while the A2 route uses `findUnique({ id: "admin" })`. A row under
+a different id would authenticate at login but 500 on password change. Collapse to one
+accessor when that file is next open.
 
 ## 6. Standing traps
 
