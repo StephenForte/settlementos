@@ -182,6 +182,53 @@ describe("/admin/wallets", () => {
     expect(base).toMatch(/data-token="mockJPY">3915077</);
   });
 
+  it("discards every balance figure when a later wallet read fails mid-network", async () => {
+    // Distinctive values so a leaked partial write is obvious: treasury
+    // on polygon-local finishes (2 POL + tokens) before ACME's token read throws.
+    const polyGas = 2_000_000_000_000_000_000n;
+    vi.mocked(nativeBalance).mockImplementation(async (networkId) => {
+      if (networkId === "polygon-local") return polyGas;
+      return 1_000_000_000_000_000_000n;
+    });
+    vi.mocked(tokenBalance).mockImplementation(async (networkId, token, owner) => {
+      if (networkId === "polygon-local" && owner.toLowerCase() === ACME_POLY.toLowerCase()) {
+        throw new Error("ECONNREFUSED");
+      }
+      if (token.toLowerCase() === JPY.toLowerCase()) return JPY_AMOUNT;
+      if (token.toLowerCase() === USDC.toLowerCase()) return 1_500_000n;
+      return 0n;
+    });
+
+    const data = await loadAdminWallets();
+    expect(data.ready).toBe(true);
+    if (!data.ready) return;
+
+    const polygon = data.networks.find((n) => n.networkId === "polygon-local");
+    expect(polygon?.error).toBe("RPC unreachable for polygon-local");
+    expect(polygon?.wallets.map((w) => w.address)).toEqual(
+      expect.arrayContaining([TREASURY_POLY, ACME_POLY])
+    );
+    for (const wallet of polygon!.wallets) {
+      expect(wallet.nativeBalance).toBeNull();
+      expect(wallet.tokens).toEqual([]);
+    }
+
+    const html = await renderWallets();
+    const polygonHtml = sectionHtml(html, "polygon-local");
+    const baseHtml = sectionHtml(html, "base-local");
+
+    expect(polygonHtml).toContain("RPC unreachable for polygon-local");
+    expect(polygonHtml).toContain(TREASURY_POLY);
+    expect(polygonHtml).toContain(ACME_POLY);
+    expect(polygonHtml).not.toContain("3915077");
+    expect(polygonHtml).not.toContain("1.5");
+    expect(polygonHtml).not.toContain("data-token=");
+    expect(polygonHtml).toMatch(/Gas \(POL\)[\s\S]*?—/);
+
+    expect(baseHtml).not.toContain("RPC unreachable");
+    expect(baseHtml).toMatch(/data-token="mockJPY">3915077</);
+  });
+
   it("leak guard: client props and rendered output contain no key material", async () => {
     const data = await loadAdminWallets();
     expect(data.ready).toBe(true);
