@@ -63,3 +63,9 @@ services:
         sync: false
       - key: CF_ACCESS_CLIENT_SECRET
         sync: false
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_API_KEY
+        sync: false

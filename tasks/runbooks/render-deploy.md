@@ -33,6 +33,9 @@ internal database URL only resolves for a service in the same region as
 | `FORTEL2_SEPOLIA_READ_RPC_URL` | no | Env (`http://fortel2-replica:10000`) | Balance/display reads. Never point at ente.ltd — replica has no Access. |
 | `CF_ACCESS_CLIENT_ID` | **yes** | Env var (`sync: false`) | ForteL2 write hostname rejects unauthenticated calls (403 Access HTML). Render only. |
 | `CF_ACCESS_CLIENT_SECRET` | **yes** | Env var (`sync: false`) | Pair with `CF_ACCESS_CLIENT_ID`. Never commit; never `VITE_*`. |
+| `ADMIN_USERNAME` | **yes** | Env var (`sync: false`) | Password login 500s until set. **Bootstrap only** — seeds `AdminCredential` on the first login after the table is empty; ignored forever after. Cannot finish wiring until after §1.5; see §1.6. |
+| `ADMIN_PASSWORD` | **yes** | Env var (`sync: false`) | Pair with `ADMIN_USERNAME`. Initial password only, not the live one. |
+| `ADMIN_API_KEY` | **yes** | Env var (`sync: false`) | Read on every successful password login (becomes the `sos_key` cookie). Must be the raw OPERATOR key whose hash is already in `ApiKey`. That key is printed **once** by the first `npm run seed:demo` — do not set this before §1.5. See §1.6. |
 | `TRUSTED_PROXY_HOPS` | no | Env (`1`) | Login IP rate-limit may key on a client-spoofable `X-Forwarded-For` entry. |
 | `NODE_VERSION` | no | Env (`22.23.1`) | Wrong Node → build/runtime mismatch with local/CI. |
 
@@ -65,6 +68,9 @@ Do these in order. Expected output is in italics after each step.
      (never paste into chat/logs).
    - `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` — Cloudflare Access
      service token for `fortel2-write` (policy `settlementos`). Never `VITE_*`.
+   - `ADMIN_USERNAME` / `ADMIN_PASSWORD` / `ADMIN_API_KEY` — **leave unset**.
+     `ADMIN_API_KEY` cannot be set correctly until `npm run seed:demo` has
+     printed the OPERATOR key (§1.5). Password login 500s until §1.6.
 5. Apply / create. *First build starts. It may fail until the Secret File exists
    — that is OK if the failure is "No deployments found"; continue to 1.3.*
 
@@ -83,6 +89,9 @@ Do these in order. Expected output is in italics after each step.
 Service → **Environment**. The **names** present must include at least:
 
 ```
+ADMIN_API_KEY
+ADMIN_PASSWORD
+ADMIN_USERNAME
 AUDIT_ANCHOR_KEY
 BASE_SEPOLIA_RPC_URL
 CF_ACCESS_CLIENT_ID
@@ -96,6 +105,12 @@ NODE_VERSION
 SETTLEMENTOS_CHAIN_DIR
 TRUSTED_PROXY_HOPS
 ```
+
+The three `ADMIN_*` **names** are declared in the blueprint (`sync: false`).
+Their **values** are set in §1.6, after §1.5 has printed the OPERATOR key —
+empty or missing values here are expected until then. On an already-running
+service a Blueprint update will not prompt for new `sync: false` keys; add
+the names in the Dashboard yourself if they are absent.
 
 Values for secrets must be set (Render shows them as present / locked — do not
 screenshot values). Compare **names and non-secret values** to `render.yaml`:
@@ -163,6 +178,98 @@ That flag prints every entity and column it is about to overwrite before writing
 If you see a setup wipe message, you ran the wrong command — stop. Only
 `npm run setup` wipes, and it must refuse this host.
 
+### 1.6 Wire admin password login (ordering is load-bearing)
+
+This extends §1.2 / §1.4 (Dashboard secrets) and §1.5 (the print-once
+OPERATOR key). It is its own subsection because `ADMIN_API_KEY` has a
+gotcha nothing else in this document has: the raw key is shown **once**,
+on the first `seed:demo` that creates the OPERATOR `ApiKey` row, and is
+never written to a Secret File or any retrievable store.
+
+`ADMIN_USERNAME` and `ADMIN_PASSWORD` matter **once** — they seed the
+single `AdminCredential` row on the first login after that table exists
+with no row, and are ignored forever after ([AD1](../admin-auth-plan.md)).
+`ADMIN_API_KEY` is different: it is read on **every** successful password
+login and becomes the `sos_key` cookie. It must be a raw key whose hash
+is already in `ApiKey` as role OPERATOR.
+
+**Ordering dependency:** `ADMIN_API_KEY` cannot be set correctly before
+§1.5 has run at least once. Setting it earlier can only be a guess; a
+wrong or empty value makes every password login 500 even when the
+username and password are right.
+
+Do these in order. Expected output is in italics after each step.
+
+1. Deploy the service (Blueprint apply / merge to `main`). *Build
+   succeeds and the app is up. `POST /api/auth/session` returns 500
+   `admin session is not configured` — expected; the three secrets are
+   not live yet. If Blueprint create prompted for `ADMIN_*`, they were
+   left unset in §1.2. The `AdminCredential` table already exists
+   (`preDeployCommand` applied the migration); it is empty.*
+
+2. Run `npm run seed:demo` in the Render Shell exactly as §1.5, and
+   **capture the printed OPERATOR key from that run's output**. *On a
+   first run that mints the key, the banner says `NEW API keys (save
+   these — they are not stored in the DB and will not be re-printed)`
+   and prints `OPERATOR  sos_…`. Copy that raw value offline
+   immediately. A re-run that finds the OPERATOR row already there
+   prints `OPERATOR key: already present` (`op.created && op.raw` in
+   `scripts/seed-demo.mjs`) and shows nothing. There is no recovery
+   path for a missed print — rotating means creating a new OPERATOR
+   `ApiKey` out of band (see §7), not re-running seed. If this service
+   was seeded before admin login existed, §1.5 already ran: do not
+   re-run seed hoping to see the key. Use the OPERATOR value saved
+   from that earlier run (the same key pasted at `/login`).*
+
+3. Service → **Environment** → add (or fill) the three `sync: false`
+   secrets. Values are never committed; do not paste them into chat or
+   logs.
+   - `ADMIN_USERNAME` — operator's choice (trimmed at seed; do not pad).
+   - `ADMIN_PASSWORD` — operator's choice. This is the **initial**
+     password only.
+   - `ADMIN_API_KEY` — the raw OPERATOR key captured in step 2, verbatim.
+   *Dashboard shows the three names as present / locked.*
+
+   On an already-running service a Blueprint update will **not** prompt
+   for new `sync: false` keys (Render ignores them on update so it
+   cannot blank existing secrets). Add the names in the Dashboard
+   yourself if they are missing.
+
+4. **Manual Deploy** or restart so the new env vars are in the running
+   process. *§2.2's name check now reports `ADMIN_USERNAME`,
+   `ADMIN_PASSWORD`, and `ADMIN_API_KEY` as `set(len=…)`, not `MISSING`.*
+
+5. First login attempt: `POST /api/auth/session` with the username and
+   password from step 3 (or sign in at `/login`). *This attempt seeds
+   the `AdminCredential` row from env. Get username and password right
+   — after this, env is ignored ([AD1](../admin-auth-plan.md)). A padded
+   or wrong seed is permanent until the row is deleted by hand (below).*
+
+**Working:** `POST /api/auth/session` with the chosen credentials
+returns **200** (and sets the `sos_key` cookie), not 500 and not 401.
+
+**500 vs 401 — do not treat these as one "login is broken" bucket.**
+The route distinguishes them on purpose
+([`app/api/auth/session/route.ts`](../../app/api/auth/session/route.ts)):
+
+| Status | Body | What it means |
+|---|---|---|
+| **500** | `admin session is not configured` | `ADMIN_API_KEY` is unset, or it does not resolve to an OPERATOR principal (wrong key, a REVIEWER/ENTITY key, or the hash is not in `ApiKey`). Also the expected state before step 3, when username/password are unset and no credential row exists yet. |
+| **401** | `invalid credentials` | A credential row **exists** and the submitted username/password do not match it. Changing `ADMIN_USERNAME` / `ADMIN_PASSWORD` in the Dashboard will not fix this ([AD1](../admin-auth-plan.md)). |
+
+**Replace the admin credential** (wrong username seeded, or starting
+fresh on a redeployed database): there is no UI and no script. Delete
+the `AdminCredential` row directly against the Render database (one
+row, id `admin`), then repeat step 5 so the next login re-seeds from
+the current `ADMIN_USERNAME` / `ADMIN_PASSWORD`. Do not change those
+env vars and expect the running password to follow.
+
+A password change at `/admin/password` does **not** evict existing
+sessions ([AD4](../admin-auth-plan.md)): the cookie holds
+`ADMIN_API_KEY`, not a password-derived token. Evicting sessions means
+rotating `ADMIN_API_KEY` (the env value **and** the corresponding
+`ApiKey` row), not changing the password.
+
 ---
 
 ## 2. Post-deploy verification (trap A — do not skip)
@@ -194,7 +301,8 @@ const need = [
   "SETTLEMENTOS_CHAIN_DIR","BASE_SEPOLIA_RPC_URL","TRUSTED_PROXY_HOPS",
   "NODE_VERSION","NODE_ENV",
   "FORTEL2_SEPOLIA_RPC_URL","FORTEL2_SEPOLIA_READ_RPC_URL",
-  "CF_ACCESS_CLIENT_ID","CF_ACCESS_CLIENT_SECRET"
+  "CF_ACCESS_CLIENT_ID","CF_ACCESS_CLIENT_SECRET",
+  "ADMIN_USERNAME","ADMIN_PASSWORD","ADMIN_API_KEY"
 ];
 for (const k of need) {
   const v = process.env[k];
@@ -209,7 +317,9 @@ console.log("FORTEL2_SEPOLIA_READ_RPC_URL_value=" + (process.env.FORTEL2_SEPOLIA
 ```
 
 *Every secret line must be `set(len=…)` not `MISSING`. Non-secret values must
-match `render.yaml`. A Blueprint that failed to sync often leaves
+match `render.yaml`. `ADMIN_USERNAME` / `ADMIN_PASSWORD` / `ADMIN_API_KEY`
+MISSING is expected until §1.6 is done — after that, all three must be
+`set`. A Blueprint that failed to sync often leaves
 `SETTLEMENTOS_CHAIN_DIR` MISSING while the Secret File still exists — the app
 can still find the overlay via the `/etc/secrets` fallback, but treat the
 missing env as proof the blueprint did not fully apply and fix Settings.*
@@ -341,7 +451,9 @@ Sign in with the OPERATOR key from seed, open the audit / integrity UI (or
 
 ## 5. Healthy demo smoke (Base Sepolia — slow is correct)
 
-1. Open `https://<service>.onrender.com/login`, paste OPERATOR key.
+1. Open `https://<service>.onrender.com/login`. Sign in with the
+   username/password from §1.6 (or paste the OPERATOR key — API-key
+   login still works).
 2. Create payment: ACME US → Tokyo Trading, `100000.00` USD→JPY (or a smaller
    amount you have liquidity for), **source and dest = Base Sepolia**.
 3. Quote → Execute. *Expect 8–10 seconds* (~2s blocks). Do not assume local
@@ -394,6 +506,7 @@ After every production deploy:
 - [ ] `RENDER_GIT_COMMIT` == intended `main` SHA
 - [ ] `node -v` == `v22.23.1`
 - [ ] Env **names** match §0 / `render.yaml` (secrets `set`, not `MISSING`)
+- [ ] `ADMIN_*` set per §1.6; `POST /api/auth/session` returns 200 (not 500 / 401)
 - [ ] `SETTLEMENTOS_CHAIN_DIR` value is `/etc/secrets`
 - [ ] `/etc/secrets/deployments.base-sepolia.json` exists; `/api/networks` → base-sepolia `available: true`
 - [ ] `npx prisma migrate status` → all applied
