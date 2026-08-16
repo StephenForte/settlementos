@@ -221,8 +221,30 @@ Conventions worth knowing on the consuming side:
   predates.
 - Explorer repo: `StephenForte/settlementos-explorer` — `docs/TX-VIEWER-PRD.md` (full
   spec), `docs/DECISIONS.md` D32 (public reach), D33 (bare `/tx/` default), D34 (link
-  precedence). Authoritative status is that repo's `docs/PLAN.md` §0 — re-read it rather
-  than trusting any checkbox here.
+  precedence), D38 (public sequencer-read first; ForteL2 not-found copy). Authoritative
+  status is that repo's `docs/PLAN.md` §0 — re-read it rather than trusting any
+  checkbox here.
+
+## 8. Explorer RPC: sequencer-read first, replica fallback
+
+SOS tx links are live. The explorer 404'd a just-settled hash when it talked **only**
+to the public replica (`fortel2-replica-rpc`), which derives from L1 and lags ~3
+minutes. Do **not** point the browser at `https://fortel2-write.ente.ltd` (Access 403;
+writes). The replica repo's `fortel2-sequencer-rpc` service is a filtered public read
+door onto the sequencer (Access headers stay server-side; `eth_sendRawTransaction`
+is dropped).
+
+On the explorer service, set both and **rebuild** (`VITE_*` is inlined):
+
+| Key | Value |
+|---|---|
+| `VITE_FORTEL2_SEPOLIA_RPC_URL` | `https://fortel2-sequencer-rpc.onrender.com` (public sequencer-read) |
+| `VITE_FORTEL2_SEPOLIA_READ_RPC_URL` | `https://fortel2-replica-rpc.onrender.com` (already set) |
+| `FORTEL2_SEPOLIA_RPC_URL` / `FORTEL2_SEPOLIA_READ_RPC_URL` | same pair for the Node MCP |
+
+SOS **server** reads stay on `http://fortel2-replica:10000`. SOS **writes** stay on
+`fortel2-write.ente.ltd` + `CF_ACCESS_*`. Never point those at the replica or at this
+public sequencer-read URL.
 - Explorer tasks that built this: F6u (tx page, #49), F6v (block page, #51),
   F6w (`get_transaction`, #53), F6x (`get_block`, #55). All merged 2026-08-14, each
   verified against the live chain-852 sequencer.
