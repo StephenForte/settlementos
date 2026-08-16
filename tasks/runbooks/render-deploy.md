@@ -30,7 +30,8 @@ internal database URL only resolves for a service in the same region as
 | `SETTLEMENTOS_CHAIN_DIR` | no | Env (`/etc/secrets`) | Without it, lib/chain still falls back to `/etc/secrets` for overlays; set it explicitly so path resolution matches the blueprint. |
 | `BASE_SEPOLIA_RPC_URL` | no (public default) | Env | Falls back to `https://sepolia.base.org`. Flaky public RPC → slow/failed reads. |
 | `FORTEL2_SEPOLIA_RPC_URL` | no (Access hostname) | Env (`https://fortel2-write.ente.ltd`) | ForteL2 writes 403 without this + the Access token. Never `VITE_*`. |
-| `FORTEL2_SEPOLIA_READ_RPC_URL` | no | Env (`http://fortel2-replica:10000`) | Balance/display reads. Never point at ente.ltd — replica has no Access. |
+| `FORTEL2_SEPOLIA_READ_RPC_URL` | no | Env (`http://fortel2-replica:10000`) | Balance/display reads. Never point at ente.ltd — replica has no Access. Public replica `https://fortel2-replica-rpc.onrender.com` is for the explorer/browser, not this server-side path. |
+| `NEXT_PUBLIC_FORTEL2_EXPLORER_URL` | no | Env (`https://settlementos-explorer-ihgo.onrender.com`) | ForteL2 escrow/settle hashes link into the explorer. Inlined at `next build` — a value change needs a rebuild. Empty string disables. |
 | `CF_ACCESS_CLIENT_ID` | **yes** | Env var (`sync: false`) | ForteL2 write hostname rejects unauthenticated calls (403 Access HTML). Render only. |
 | `CF_ACCESS_CLIENT_SECRET` | **yes** | Env var (`sync: false`) | Pair with `CF_ACCESS_CLIENT_ID`. Never commit; never `VITE_*`. |
 | `ADMIN_USERNAME` | **yes** | Env var (`sync: false`) | Password login 500s until set. **Bootstrap only** — seeds `AdminCredential` on the first login after the table is empty; ignored forever after. Cannot finish wiring until after §1.5; see §1.6. |
@@ -100,6 +101,7 @@ DATABASE_URL
 DEPLOYER_PRIVATE_KEY
 FORTEL2_SEPOLIA_RPC_URL
 FORTEL2_SEPOLIA_READ_RPC_URL
+NEXT_PUBLIC_FORTEL2_EXPLORER_URL
 NODE_ENV
 NODE_VERSION
 SETTLEMENTOS_CHAIN_DIR
@@ -123,6 +125,7 @@ screenshot values). Compare **names and non-secret values** to `render.yaml`:
 | `BASE_SEPOLIA_RPC_URL=https://sepolia.base.org` | same (or your private RPC) |
 | `FORTEL2_SEPOLIA_RPC_URL=https://fortel2-write.ente.ltd` | same |
 | `FORTEL2_SEPOLIA_READ_RPC_URL=http://fortel2-replica:10000` | same |
+| `NEXT_PUBLIC_FORTEL2_EXPLORER_URL=https://settlementos-explorer-ihgo.onrender.com` | same |
 | `numInstances: 1` | Settings → Scaling → 1 |
 | `buildCommand: npm ci --include=dev && …` | Settings → Build & Deploy |
 | `preDeployCommand: npx prisma migrate deploy` | Settings → Build & Deploy |
@@ -301,6 +304,7 @@ const need = [
   "SETTLEMENTOS_CHAIN_DIR","BASE_SEPOLIA_RPC_URL","TRUSTED_PROXY_HOPS",
   "NODE_VERSION","NODE_ENV",
   "FORTEL2_SEPOLIA_RPC_URL","FORTEL2_SEPOLIA_READ_RPC_URL",
+  "NEXT_PUBLIC_FORTEL2_EXPLORER_URL",
   "CF_ACCESS_CLIENT_ID","CF_ACCESS_CLIENT_SECRET",
   "ADMIN_USERNAME","ADMIN_PASSWORD","ADMIN_API_KEY"
 ];
@@ -313,6 +317,7 @@ console.log("TRUSTED_PROXY_HOPS_value=" + (process.env.TRUSTED_PROXY_HOPS || "<u
 console.log("NODE_VERSION_value=" + (process.env.NODE_VERSION || "<unset>"));
 console.log("FORTEL2_SEPOLIA_RPC_URL_value=" + (process.env.FORTEL2_SEPOLIA_RPC_URL || "<unset>"));
 console.log("FORTEL2_SEPOLIA_READ_RPC_URL_value=" + (process.env.FORTEL2_SEPOLIA_READ_RPC_URL || "<unset>"));
+console.log("NEXT_PUBLIC_FORTEL2_EXPLORER_URL_value=" + (process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL || "<unset>"));
 '
 ```
 

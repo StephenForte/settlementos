@@ -303,8 +303,10 @@ catch-up").
    **ForteL2 Sepolia → ForteL2 Sepolia**.
 2. Quote → Execute — the full lifecycle to **SETTLED**: escrow + settlement
    transactions in real ~2 s L2 blocks, ¥ ledger credit to the recipient.
-3. **The point to land:** there is no block explorer yet, so the payment detail
-   page shows **raw tx hashes** — prove them from the chain itself:
+3. **The point to land:** escrow and settlement hashes on the payment detail
+   page link into the [purpose-built explorer](https://settlementos-explorer-ihgo.onrender.com)
+   (`/fortel2-sepolia/tx/<hash>`), which reads the public replica. On the
+   sequencer host you can still prove them from the chain itself:
 
    ```bash
    cast receipt <escrow_tx_hash> --rpc-url http://127.0.0.1:9545

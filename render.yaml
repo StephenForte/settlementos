@@ -48,8 +48,15 @@ services:
         value: https://fortel2-write.ente.ltd
       # ForteL2 read replica (Private Service fortel2-replica:10000, Oregon).
       # Balance/display reads only — writes and confirm() stay on the write RPC.
+      # The public replica (https://fortel2-replica-rpc.onrender.com) is for
+      # browser/explorer reads, not this server-side path.
       - key: FORTEL2_SEPOLIA_READ_RPC_URL
         value: http://fortel2-replica:10000
+      # ForteL2 tx links into the purpose-built explorer (inlined at next build).
+      # Canonical path: {base}/fortel2-sepolia/tx/{hash}. Do not set explorerUrl
+      # on the ForteL2 registry entry (address routes would land on Base Sepolia).
+      - key: NEXT_PUBLIC_FORTEL2_EXPLORER_URL
+        value: https://settlementos-explorer-ihgo.onrender.com
       # Secrets — set once in the Dashboard (sync: false so Blueprint updates
       # do not blank them). Never commit values.
       - key: DATABASE_URL

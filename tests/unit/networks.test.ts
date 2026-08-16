@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
+  DEFAULT_FORTEL2_EXPLORER_URL,
   LIVE_NETWORK_IDS,
   NETWORKS,
   networkInfo,
@@ -114,7 +115,7 @@ describe("explorer URL helpers", () => {
     expect(explorerAddressUrl("polygon-local", "0x0")).toBeNull();
   });
 
-  it("returns null for ForteL2 (no explorer yet — hash-only display)", () => {
+  it("returns null for ForteL2 when the explorer env is pinned empty", () => {
     expect(explorerTxUrl("fortel2-sepolia", TX)).toBeNull();
     expect(explorerAddressUrl("fortel2-sepolia", "0x9d8b8b7c476ab02306046f3da719d380fa0456aa")).toBeNull();
     expect(explorerTxUrl("fortel2-local", TX)).toBeNull();
@@ -146,6 +147,13 @@ describe("explorer URL helpers", () => {
       } else {
         process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL = previous;
       }
+    });
+
+    it("defaults to the live explorer when the env var is unset", () => {
+      delete process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL;
+      expect(explorerTxUrl("fortel2-sepolia", TX)).toBe(
+        `${DEFAULT_FORTEL2_EXPLORER_URL}/fortel2-sepolia/tx/${TX}`
+      );
     });
 
     it("builds the canonical ForteL2 explorer URL", () => {

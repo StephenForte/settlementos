@@ -65,7 +65,7 @@ export const NETWORKS: Record<string, NetworkInfo> = {
   // outside this repo. `live: true` because it is a real external chain even
   // though the sequencer RPC is usually loopback to the operator's Mac. Do
   // not set explorerUrl (address routes would silently land on Base Sepolia);
-  // tx links come from NEXT_PUBLIC_FORTEL2_EXPLORER_URL in explorerTxUrl.
+  // tx links come from explorerTxUrl (default explorer, env override).
   // Defaults from ForteL2 deployments/rail-interface.json.
   "fortel2-sepolia": {
     id: "fortel2-sepolia",
@@ -100,15 +100,20 @@ export function networkInfo(id: string): NetworkInfo {
   return n;
 }
 
+/** Purpose-built explorer. Tx-only — never assign this to explorerUrl. */
+export const DEFAULT_FORTEL2_EXPLORER_URL = "https://settlementos-explorer-ihgo.onrender.com";
+
 export function explorerTxUrl(networkId: string, txHash?: string | null): string | null {
   if (!txHash) return null;
-  // ForteL2 has no public explorer. The purpose-built app uses
-  // `/{networkId}/tx/{hash}`, so it cannot share explorerUrl (that field
-  // also feeds explorerAddressUrl and the published networks API).
+  // The purpose-built app uses `/{networkId}/tx/{hash}`, so it cannot share
+  // explorerUrl (that field also feeds explorerAddressUrl and the published
+  // networks API — a ForteL2 address link would silently land on Base Sepolia).
   if (networkId === "fortel2-sepolia") {
-    const base = process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL;
-    if (!base) return null;
-    return `${base.replace(/\/+$/, "")}/fortel2-sepolia/tx/${txHash}`;
+    const raw = process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL;
+    // Empty string is an explicit off-switch (tests pin it). Unset → default.
+    if (raw === "") return null;
+    const base = (raw ?? DEFAULT_FORTEL2_EXPLORER_URL).replace(/\/+$/, "");
+    return `${base}/fortel2-sepolia/tx/${txHash}`;
   }
   const n = NETWORKS[networkId];
   if (!n?.explorerUrl) return null;

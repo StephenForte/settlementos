@@ -388,9 +388,11 @@ carries the fund makes the re-run a no-op. Dry-run any live deploy first with
 --preflight-only`, which validates the RPC, chain id, and deployer balance and
 prints the detected mode without sending a transaction. Older overlays that
 predate the MMF still settle — `mmfAddress()` returns `undefined` and the
-Liquidity page degrades to "no fund". ForteL2 has no block explorer yet, so payments there
-show raw tx hashes without links; verify with
-`cast receipt <hash> --rpc-url http://127.0.0.1:9545`. The Sepolia deployment
+Liquidity page degrades to "no fund". ForteL2 tx hashes link to the
+[purpose-built explorer](https://settlementos-explorer-ihgo.onrender.com)
+(`/{networkId}/tx/{hash}`); the explorer reads the public replica at
+`https://fortel2-replica-rpc.onrender.com`. `cast receipt <hash> --rpc-url
+http://127.0.0.1:9545` still works on the sequencer host. The Sepolia deployment
 is pinned through ForteL2's learning Phase 6 — a Phase 7 re-genesis requires a
 coordinated redeploy of the SettlementOS contracts.
 
