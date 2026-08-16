@@ -292,6 +292,20 @@ export async function tokenBalance(
   });
 }
 
+/**
+ * Native gas-token balance. Same client selection and error handling as
+ * `tokenBalance` — throws on RPC failure; callers degrade per network.
+ * `viaReadRpc: true` is the display-path opt (admin wallets, balances).
+ */
+export async function nativeBalance(
+  networkId: string,
+  address: `0x${string}`,
+  opts: { viaReadRpc?: boolean } = {}
+): Promise<bigint> {
+  const client = opts.viaReadRpc ? readClientFor(networkId) : publicClientFor(networkId);
+  return client.getBalance({ address });
+}
+
 export interface TxResult {
   hash: Hex;
   blockNumber: bigint;

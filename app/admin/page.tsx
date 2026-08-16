@@ -4,7 +4,7 @@ import { Card } from "@/components/ui";
 const LINKS = [
   { href: "/admin/password", label: "Change password", note: "Update the operator password (requires the current one). Existing sessions stay signed in." },
   { href: "/admin/coins", label: "Mock coins", note: "Treasury and token balances per network." },
-  { href: "/admin/wallets", label: "Wallets", note: "Entity and treasury addresses per network." },
+  { href: "/admin/wallets", label: "Wallets", note: "Treasury and entity addresses and balances per network." },
 ];
 
 export default function AdminIndexPage() {
