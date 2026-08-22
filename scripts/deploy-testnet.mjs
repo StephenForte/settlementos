@@ -103,9 +103,13 @@ export const NETWORK_CONFIGS = {
     minDeployerBalance: parseEther("0.005"),
     funding: [
       "  No faucet — bridge from Sepolia L1: send ETH from the deployer to the",
-      "  OptimismPortalProxy (0xb4679b1c65e5c07bac95988583c2d7a65108c624); the same",
+      "  OptimismPortalProxy (0xf8c7da6c009d5d05bb98f8cd8286b9b838a3b54e); the same",
       "  amount mints to the deployer on L2 852 once derivation catches up",
       "  (see ForteL2 deposit-eth-sepolia.sh / deployments/rail-interface.json).",
+      "  WARNING: the portal moved in ForteL2's 2026-08-22 re-genesis. The pre-wipe",
+      "  portal 0xb4679b1c... is STILL a live contract and STILL accepts ETH, but a",
+      "  deposit to it mints on a chain no one derives any more and is unrecoverable.",
+      "  Take the address from rail-interface.json (v7 or later), never from memory.",
     ],
   },
 };
