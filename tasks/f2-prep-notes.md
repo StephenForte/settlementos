@@ -1,5 +1,12 @@
 # F2 prep notes — deploy to ForteL2 Sepolia (852)
 
+> **SUPERSEDED for addresses — ForteL2 re-genesised chain 852 on 2026-08-22.**
+> Every ForteL2 address below is pre-wipe and dead, including the
+> OptimismPortalProxy. Do **not** deposit using an address from this file; the
+> old portal still accepts ETH and the deposit is unrecoverable. Current values:
+> ForteL2 `deployments/rail-interface.json` at v7 or later. Retained as a dated
+> record of the F2 prep, not as current guidance.
+
 Prep snapshot taken 2026-07-24, after F1 (network registry) merged in PR #21.
 The F2 session should verify balances again before spending.
 
