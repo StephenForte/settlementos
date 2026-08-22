@@ -13,7 +13,10 @@ separately in `tasks/f2-prep-notes.md`.
 
 - Route: L1→L2 deposit through the Sepolia Standard Bridge
   (`deposit-eth-sepolia.sh` patterns; OptimismPortalProxy
-  `0xb4679b1c65e5c07bac95988583c2d7a65108c624`), recipient = the SOS deployer
+  `0xf8c7da6c009d5d05bb98f8cd8286b9b838a3b54e` — **new since ForteL2's
+  2026-08-22 re-genesis; the pre-wipe portal `0xb4679b1c...` is still a live
+  contract that still accepts ETH, and a deposit to it is unrecoverable**),
+  recipient = the SOS deployer
   address above. Any funded L1 account can send it — the SOS deployer also
   holds 0.80 Sepolia L1 ETH of its own if self-depositing is easier (its key
   lives only in the SettlementOS `.env`).
