@@ -218,6 +218,17 @@ Sepolia rather than accepted on report.
 `SystemConfigProxy` on Sepolia (`0x8416cd475d75b558899d83f4cf0ffeb85d7bc361`),
 and the batcher's recent transactions were then listed.
 
+>
+> **Addendum, 2026-08-22.** ForteL2 performed a planned coordinated re-genesis of
+> chain 852 on this date. The verification recorded in this section stands as an
+> accurate record of what was observed on 2026-08-14, but it is **no longer
+> independently reproducible as written**: the `SystemConfigProxy` cited above was
+> replaced, and its successor is `0x7c799f23a427328831be0a8206a525a9bc886bde`.
+> The batcher EOA and the batch inbox below are unchanged — both survive a
+> re-genesis — so the batcher nonce remains a monotonic and still-valid figure.
+> A reader re-performing this check should read the current address from ForteL2's
+> `deployments/rail-interface.json` (v7 or later).
+
 - **Batch inbox:** `0x007238ac625E3e5369739fA5b9CDbf61320B237c`
 - **Batcher EOA:** `0x3d54fd6353cd66d143fb94d178c9eeb1ae98a31d` — nonce **6,671**
   when checked, i.e. that many batch transactions posted to L1 to date.
