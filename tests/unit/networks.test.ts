@@ -6,6 +6,8 @@ import {
   networkInfo,
   explorerTxUrl,
   explorerAddressUrl,
+  isSupersededByRegenesis,
+  FORTEL2_SEPOLIA_REGENESIS_AT,
   settlementRailCaption,
 } from "@/lib/networks";
 
@@ -182,6 +184,72 @@ describe("explorer URL helpers", () => {
     it("returns null for a missing hash", () => {
       expect(explorerTxUrl("fortel2-sepolia", null)).toBeNull();
       expect(explorerTxUrl("fortel2-sepolia", undefined)).toBeNull();
+    });
+  });
+});
+
+describe("2026-08-22 ForteL2 re-genesis", () => {
+  const BEFORE = new Date("2026-08-22T21:14:47Z"); // one second before genesis
+  const AT = FORTEL2_SEPOLIA_REGENESIS_AT;
+  const AFTER = new Date("2026-08-22T21:14:49Z");
+
+  it("treats only pre-genesis fortel2-sepolia transactions as superseded", () => {
+    expect(isSupersededByRegenesis("fortel2-sepolia", BEFORE)).toBe(true);
+    // The genesis instant itself is the new chain, so it is not superseded.
+    expect(isSupersededByRegenesis("fortel2-sepolia", AT)).toBe(false);
+    expect(isSupersededByRegenesis("fortel2-sepolia", AFTER)).toBe(false);
+  });
+
+  it("never supersedes another network, whatever the date", () => {
+    expect(isSupersededByRegenesis("base-sepolia", BEFORE)).toBe(false);
+    expect(isSupersededByRegenesis("polygon-amoy", BEFORE)).toBe(false);
+    expect(isSupersededByRegenesis("fortel2-local", BEFORE)).toBe(false);
+  });
+
+  it("does not guess when the timestamp is absent or unparseable", () => {
+    expect(isSupersededByRegenesis("fortel2-sepolia", null)).toBe(false);
+    expect(isSupersededByRegenesis("fortel2-sepolia", undefined)).toBe(false);
+    expect(isSupersededByRegenesis("fortel2-sepolia", "not-a-date")).toBe(false);
+  });
+
+  it("accepts an ISO string as well as a Date", () => {
+    expect(isSupersededByRegenesis("fortel2-sepolia", BEFORE.toISOString())).toBe(true);
+    expect(isSupersededByRegenesis("fortel2-sepolia", AFTER.toISOString())).toBe(false);
+  });
+
+  it("leaves other networks' links alone regardless of date", () => {
+    expect(explorerTxUrl("base-sepolia", TX, BEFORE)).toBe(`https://sepolia.basescan.org/tx/${TX}`);
+  });
+
+  // The suite fixture pins NEXT_PUBLIC_FORTEL2_EXPLORER_URL off, so link
+  // assertions need it restored — same pattern as the block above.
+  describe("with the ForteL2 explorer configured", () => {
+    let previous: string | undefined;
+
+    beforeEach(() => {
+      previous = process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL;
+      process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL = DEFAULT_FORTEL2_EXPLORER_URL;
+    });
+
+    afterEach(() => {
+      if (previous === undefined) {
+        delete process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL;
+      } else {
+        process.env.NEXT_PUBLIC_FORTEL2_EXPLORER_URL = previous;
+      }
+    });
+
+    it("suppresses the link for a pre-genesis tx and keeps it after", () => {
+      expect(explorerTxUrl("fortel2-sepolia", TX, BEFORE)).toBeNull();
+      expect(explorerTxUrl("fortel2-sepolia", TX, AFTER)).toBe(
+        `${DEFAULT_FORTEL2_EXPLORER_URL}/fortel2-sepolia/tx/${TX}`,
+      );
+    });
+
+    it("is unchanged when no timestamp is supplied (existing callers keep working)", () => {
+      expect(explorerTxUrl("fortel2-sepolia", TX)).toBe(
+        `${DEFAULT_FORTEL2_EXPLORER_URL}/fortel2-sepolia/tx/${TX}`,
+      );
     });
   });
 });

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { formatAmount } from "@/lib/assets";
-import { NETWORKS, explorerTxUrl, settlementRailCaption } from "@/lib/networks";
+import { NETWORKS, explorerTxUrl, isSupersededByRegenesis, settlementRailCaption } from "@/lib/networks";
 import { isChainReady, loadDeployments } from "@/lib/chain";
 import { usdEquivalent } from "@/lib/fx";
 import { formatMinorUnits, parseAmount } from "@/lib/money";
@@ -165,7 +165,7 @@ export default async function DashboardHome() {
                     <StatusBadge status={p.status} />
                   </td>
                   <td className="py-2.5 pr-4">
-                    <Hash value={p.txHash} href={explorerTxUrl(p.sourceNetwork, p.txHash)} />
+                    <Hash value={p.txHash} href={explorerTxUrl(p.sourceNetwork, p.txHash, p.createdAt)} note={isSupersededByRegenesis(p.sourceNetwork, p.createdAt) ? "chain re-genesised" : null} />
                   </td>
                   <td className="py-2.5 text-right">
                     <Link href={`/payments/${p.id}`} className="text-primary hover:underline">

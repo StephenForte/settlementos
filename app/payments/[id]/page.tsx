@@ -2,7 +2,7 @@
 
 import { Fragment, use, useCallback, useEffect, useState } from "react";
 import { Card, StatusBadge, Hash } from "@/components/ui";
-import { explorerTxUrl } from "@/lib/networks";
+import { explorerTxUrl, isSupersededByRegenesis } from "@/lib/networks";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -362,14 +362,19 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
           </dd>
           <dt className="text-body">Escrow tx</dt>
           <dd className="md:col-span-2">
-            <Hash value={payment.txHash} href={explorerTxUrl(payment.sourceNetwork, payment.txHash)} />
+            <Hash
+              value={payment.txHash}
+              href={explorerTxUrl(payment.sourceNetwork, payment.txHash, payment.createdAt)}
+              note={isSupersededByRegenesis(payment.sourceNetwork, payment.createdAt) ? "chain re-genesised" : null}
+            />
             {payment.txHash && <span className="ml-2 text-xs text-body">{payment.sourceNetwork}</span>}
           </dd>
           <dt className="text-body">Settlement tx</dt>
           <dd className="md:col-span-2">
             <Hash
               value={payment.settleTxHash}
-              href={explorerTxUrl(payment.sourceNetwork, payment.settleTxHash)}
+              href={explorerTxUrl(payment.sourceNetwork, payment.settleTxHash, payment.createdAt)}
+              note={isSupersededByRegenesis(payment.sourceNetwork, payment.createdAt) ? "chain re-genesised" : null}
             />
             {payment.settleTxHash && (
               <span className="ml-2 text-xs text-body">{payment.sourceNetwork}</span>
@@ -381,7 +386,12 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
               <dd className="md:col-span-2">
                 <Hash
                   value={payment.destinationTxHash}
-                  href={explorerTxUrl(payment.destinationNetwork, payment.destinationTxHash)}
+                  href={explorerTxUrl(payment.destinationNetwork, payment.destinationTxHash, payment.createdAt)}
+                  note={
+                    isSupersededByRegenesis(payment.destinationNetwork, payment.createdAt)
+                      ? "chain re-genesised"
+                      : null
+                  }
                 />
                 <span className="ml-2 text-xs text-status-cyan-fg">{payment.destinationNetwork}</span>
               </dd>

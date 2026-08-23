@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { formatAmount } from "@/lib/assets";
-import { explorerTxUrl } from "@/lib/networks";
+import { explorerTxUrl, isSupersededByRegenesis } from "@/lib/networks";
 import { stuckPayments } from "@/lib/executor";
 import { currentPrincipal } from "@/lib/session";
 import { Card } from "@/components/ui";
@@ -41,7 +41,10 @@ export default async function StuckPaymentsPage() {
     escrowState,
     failureReason: payment.failureReason,
     settleTxHash: payment.settleTxHash,
-    settleTxUrl: explorerTxUrl(payment.sourceNetwork, payment.settleTxHash),
+    settleTxUrl: explorerTxUrl(payment.sourceNetwork, payment.settleTxHash, payment.createdAt),
+    settleTxNote: isSupersededByRegenesis(payment.sourceNetwork, payment.createdAt)
+      ? "chain re-genesised"
+      : null,
     createdAt: payment.createdAt.toISOString(),
   }));
 

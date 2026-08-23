@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { formatAmount } from "@/lib/assets";
-import { explorerTxUrl } from "@/lib/networks";
+import { explorerTxUrl, isSupersededByRegenesis } from "@/lib/networks";
 import { DEFAULT_PAGE_LIMIT, parsePageRequest, toPage } from "@/lib/pagination";
 import { currentPrincipal, paymentScopeWhere } from "@/lib/session";
 import { AuthRequired } from "@/components/auth-required";
@@ -111,7 +111,7 @@ export default async function PaymentsPage({
                     <StatusBadge status={p.status} />
                   </td>
                   <td className="py-2.5 pr-4">
-                    <Hash value={p.txHash} href={explorerTxUrl(p.sourceNetwork, p.txHash)} />
+                    <Hash value={p.txHash} href={explorerTxUrl(p.sourceNetwork, p.txHash, p.createdAt)} note={isSupersededByRegenesis(p.sourceNetwork, p.createdAt) ? "chain re-genesised" : null} />
                   </td>
                   <td className="py-2.5 text-right">
                     <Link href={`/payments/${p.id}`} className="text-primary hover:underline">

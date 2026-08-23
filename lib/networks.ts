@@ -103,8 +103,38 @@ export function networkInfo(id: string): NetworkInfo {
 /** Purpose-built explorer. Tx-only — never assign this to explorerUrl. */
 export const DEFAULT_FORTEL2_EXPLORER_URL = "https://settlementos-explorer-ihgo.onrender.com";
 
-export function explorerTxUrl(networkId: string, txHash?: string | null): string | null {
+/**
+ * L2 genesis of the 2026-08-22 ForteL2 re-genesis, from the post-wipe
+ * rollup.json (`genesis.l2_time` = 1787433288). Chain 852 was wiped and
+ * redeployed, so every transaction recorded against fortel2-sepolia before
+ * this instant is on a chain that no longer exists: the hash resolves nowhere
+ * and an explorer lookup 404s. The payment records themselves stay — they are
+ * accurate history, and 120 of 146 audit-chain events hang off them — but they
+ * must not render as clickable links, because a dead link reads as a broken
+ * explorer rather than as a wiped chain.
+ */
+export const FORTEL2_SEPOLIA_REGENESIS_AT = new Date("2026-08-22T21:14:48Z");
+
+/** True when a fortel2-sepolia tx predates the re-genesis and is unresolvable. */
+export function isSupersededByRegenesis(
+  networkId: string,
+  occurredAt?: Date | string | null,
+): boolean {
+  if (networkId !== "fortel2-sepolia" || !occurredAt) return false;
+  const t = occurredAt instanceof Date ? occurredAt : new Date(occurredAt);
+  if (Number.isNaN(t.getTime())) return false;
+  return t < FORTEL2_SEPOLIA_REGENESIS_AT;
+}
+
+export function explorerTxUrl(
+  networkId: string,
+  txHash?: string | null,
+  occurredAt?: Date | string | null,
+): string | null {
   if (!txHash) return null;
+  // Pre-re-genesis fortel2-sepolia hashes resolve nowhere. Returning null makes
+  // Hash render plain text instead of a link that 404s.
+  if (isSupersededByRegenesis(networkId, occurredAt)) return null;
   // The purpose-built app uses `/{networkId}/tx/{hash}`, so it cannot share
   // explorerUrl (that field also feeds explorerAddressUrl and the published
   // networks API — a ForteL2 address link would silently land on Base Sepolia).
