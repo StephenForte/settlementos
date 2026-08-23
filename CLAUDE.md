@@ -207,6 +207,14 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
   wrong-asset destination falls through to the existing
   insufficient-liquidity check rather than failing as Auto-recall. When
   free already covers, the fund is not touched.
+- T8 complete (2026-08-22, PR #91): on-chain verification for non-adopt deploy paths
+  (`scripts/deploy-testnet.mjs`). After `decideDeployMode` + the adoptable-full
+  guard, and before `--preflight-only` returns, every overlay-recorded address
+  is bytecode-checked and every recorded token's `decimals()` is compared to
+  the overlay. Empty or wrong-identity aborts (names every offender + the
+  overlay path to move aside); does not auto-escalate to `full`;
+  `--force-full-deploy` does not bypass. `decideDeployMode` stays pure. Residual:
+  PaymentSettlement/TokenizedMMF identity is presence-only.
 - J9 complete (2026-08-13, PR #67, `6da310f`): `priorityFeeFor()` in
   `lib/chain.ts` returns `1n` on `fortel2-*` (sequencer floor is 1 wei; the
   node's GPO default was 1,000,000 wei and viem was using it) and

@@ -603,6 +603,17 @@ dev schema sync uses `prisma db push` inside setup; the deployed path is
   `getRequestListener`, which overwrites global `Response` and breaks every
   other App Router route. Streamable HTTP also requires
   `Accept: application/json, text/event-stream` on POST.
+- **A recorded overlay is not proof the contracts are still there, or still
+  those contracts.** `decideDeployMode()` is pure — it only reads the overlay
+  slice — so a post-re-genesis overlay still resolves `noop`/`mmf_addon` while
+  every recorded address is empty or, worse, a *different* token (same CREATE
+  slot, later deployer nonce → non-empty bytecode of the wrong type). Non-adopt
+  paths therefore bytecode-verify every recorded address and check each token's
+  on-chain `decimals()` against the overlay *before* `--preflight-only` returns.
+  Empty or wrong-identity → abort (do not auto-escalate to `full`); the remedy
+  is moving `chain/deployments.<network>.json` aside. `--force-full-deploy` does
+  not bypass this gate. `--adopt` already had the presence half; it does not
+  check decimals.
 
 ## Cursor Cloud specific instructions
 
