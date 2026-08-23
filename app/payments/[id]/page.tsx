@@ -362,14 +362,14 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
           </dd>
           <dt className="text-body">Escrow tx</dt>
           <dd className="md:col-span-2">
-            <Hash value={payment.txHash} href={explorerTxUrl(payment.sourceNetwork, payment.txHash)} />
+            <Hash value={payment.txHash} href={explorerTxUrl(payment.sourceNetwork, payment.txHash, payment.createdAt)} />
             {payment.txHash && <span className="ml-2 text-xs text-body">{payment.sourceNetwork}</span>}
           </dd>
           <dt className="text-body">Settlement tx</dt>
           <dd className="md:col-span-2">
             <Hash
               value={payment.settleTxHash}
-              href={explorerTxUrl(payment.sourceNetwork, payment.settleTxHash)}
+              href={explorerTxUrl(payment.sourceNetwork, payment.settleTxHash, payment.createdAt)}
             />
             {payment.settleTxHash && (
               <span className="ml-2 text-xs text-body">{payment.sourceNetwork}</span>
@@ -381,7 +381,7 @@ export default function PaymentDetailPage({ params }: { params: Promise<{ id: st
               <dd className="md:col-span-2">
                 <Hash
                   value={payment.destinationTxHash}
-                  href={explorerTxUrl(payment.destinationNetwork, payment.destinationTxHash)}
+                  href={explorerTxUrl(payment.destinationNetwork, payment.destinationTxHash, payment.createdAt)}
                 />
                 <span className="ml-2 text-xs text-status-cyan-fg">{payment.destinationNetwork}</span>
               </dd>
