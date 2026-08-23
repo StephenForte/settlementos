@@ -461,6 +461,20 @@ describe("adopt mode helpers (J1)", () => {
     expect(result.results.every((r) => r.bytes > 0)).toBe(true);
   });
 
+  it("evaluateAdoptBytecode passes for adopt call-site shape without expectedDecimals", () => {
+    // listAdoptContractAddresses() emits expectedDecimals for every token; main()'s
+    // adopt path drops it via destructure before evaluateAdoptBytecode — spreading
+    // ...entry would abort adopt on "decimals unreadable" for every token.
+    const result = evaluateAdoptBytecode(
+      [
+        { label: "mockUSDC", address: USDC, code: "0x" + "cd".repeat(50) },
+        { label: "mockJPY", address: JPY, code: "0x" + "ef".repeat(50) },
+      ],
+      BASE
+    );
+    expect(result.ok).toBe(true);
+  });
+
   it("decideAdoptPlan refuses unknown networks and existing overlays", () => {
     expect(
       decideAdoptPlan({
