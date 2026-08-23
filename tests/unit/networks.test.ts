@@ -8,6 +8,7 @@ import {
   explorerAddressUrl,
   isSupersededByRegenesis,
   isPaymentSupersededByRegenesis,
+  isSourceSupersededByRegenesis,
   excludeSupersededByRegenesisWhere,
   FORTEL2_SEPOLIA_REGENESIS_AT,
   settlementRailCaption,
@@ -217,6 +218,28 @@ describe("2026-08-22 ForteL2 re-genesis", () => {
   it("accepts an ISO string as well as a Date", () => {
     expect(isSupersededByRegenesis("fortel2-sepolia", BEFORE.toISOString())).toBe(true);
     expect(isSupersededByRegenesis("fortel2-sepolia", AFTER.toISOString())).toBe(false);
+  });
+
+  it("treats only a wiped source as superseded for stuck/repair", () => {
+    expect(
+      isSourceSupersededByRegenesis({
+        sourceNetwork: "fortel2-sepolia",
+        createdAt: BEFORE,
+      }),
+    ).toBe(true);
+    // Destination wiped, source live — escrow/compensation still work there.
+    expect(
+      isSourceSupersededByRegenesis({
+        sourceNetwork: "base-sepolia",
+        createdAt: BEFORE,
+      }),
+    ).toBe(false);
+    expect(
+      isSourceSupersededByRegenesis({
+        sourceNetwork: "fortel2-sepolia",
+        createdAt: AFTER,
+      }),
+    ).toBe(false);
   });
 
   it("treats a payment as superseded when either leg is the wiped chain", () => {

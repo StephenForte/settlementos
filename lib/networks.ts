@@ -128,6 +128,18 @@ export function isSupersededByRegenesis(
   return t < FORTEL2_SEPOLIA_REGENESIS_AT;
 }
 
+/**
+ * True when the source-chain tx predates the wipe. Escrow state and
+ * compensation both live on the source, so a live source with a wiped
+ * ForteL2 destination is still repairable — do not hide it from stuck views.
+ */
+export function isSourceSupersededByRegenesis(payment: {
+  sourceNetwork: string;
+  createdAt?: Date | string | null;
+}): boolean {
+  return isSupersededByRegenesis(payment.sourceNetwork, payment.createdAt);
+}
+
 /** True when either leg of a payment landed on the wiped ForteL2 chain. */
 export function isPaymentSupersededByRegenesis(payment: {
   sourceNetwork: string;
@@ -135,7 +147,7 @@ export function isPaymentSupersededByRegenesis(payment: {
   createdAt?: Date | string | null;
 }): boolean {
   return (
-    isSupersededByRegenesis(payment.sourceNetwork, payment.createdAt) ||
+    isSourceSupersededByRegenesis(payment) ||
     (!!payment.destinationNetwork &&
       isSupersededByRegenesis(payment.destinationNetwork, payment.createdAt))
   );

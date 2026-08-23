@@ -96,3 +96,28 @@ describe("GET /api/payments hides pre-re-genesis ForteL2 rows", () => {
     await expect(res.json()).resolves.toMatchObject({ error_code: "invalid_request" });
   });
 });
+
+describe("GET /api/payments?stuck=true hides only a wiped source", () => {
+  it("keeps a live-source row whose destination was wiped", async () => {
+    const liveSource = await seed({
+      sourceNetwork: "base-sepolia",
+      destinationNetwork: "fortel2-sepolia",
+      createdAt: BEFORE,
+    });
+    const wipedSource = await seed({
+      sourceNetwork: "fortel2-sepolia",
+      destinationNetwork: "base-sepolia",
+      createdAt: BEFORE,
+    });
+    await prisma.payment.updateMany({
+      where: { id: { in: [liveSource.id, wipedSource.id] } },
+      data: { status: "COMPENSATION_PENDING" },
+    });
+
+    const res = await paymentsGET(get("/api/payments?stuck=true"));
+    expect(res.status).toBe(200);
+    const ids = ((await res.json()).payments as { id: string }[]).map((p) => p.id);
+    expect(ids).toContain(liveSource.id);
+    expect(ids).not.toContain(wipedSource.id);
+  });
+});

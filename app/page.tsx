@@ -5,7 +5,7 @@ import {
   NETWORKS,
   excludeSupersededByRegenesisWhere,
   explorerTxUrl,
-  isPaymentSupersededByRegenesis,
+  isSourceSupersededByRegenesis,
   isSupersededByRegenesis,
   settlementRailCaption,
 } from "@/lib/networks";
@@ -50,9 +50,10 @@ export default async function DashboardHome() {
   });
   // The same read the repair view does, so the count and the list can never
   // disagree. Chain reads, so it degrades to zero rather than breaking the page.
-  // Pre-re-genesis ForteL2 rows stay out of the banner — that chain is gone.
+  // Hide only a wiped source — a live source with a wiped destination can
+  // still hold escrow or need compensation.
   const stuck = (await stuckPayments().catch(() => [])).filter(
-    (s) => !isPaymentSupersededByRegenesis(s.payment),
+    (s) => !isSourceSupersededByRegenesis(s.payment),
   );
 
   const settled = payments.filter((p) => p.status === "SETTLED");

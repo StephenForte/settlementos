@@ -5,7 +5,7 @@ import { audit } from "@/lib/audit";
 import { CURRENCY_TO_ASSET } from "@/lib/assets";
 import { canonicalAmount, MoneyError } from "@/lib/money";
 import { supportedCorridors, corridorCode } from "@/lib/fx";
-import { isPaymentSupersededByRegenesis, NETWORKS } from "@/lib/networks";
+import { isSourceSupersededByRegenesis, NETWORKS } from "@/lib/networks";
 import { visiblePaymentsWhere } from "@/lib/session";
 import { isChainReady, loadDeployments } from "@/lib/chain";
 import { stuckPayments } from "@/lib/executor";
@@ -86,7 +86,9 @@ export async function GET(req: NextRequest) {
  * to know about (see stuckPayments).
  */
 async function listStuckPayments(): Promise<NextResponse> {
-  const stuck = (await stuckPayments()).filter((s) => !isPaymentSupersededByRegenesis(s.payment));
+  // Source only: escrow and compensation run on the source chain. A wiped
+  // ForteL2 destination must not hide a still-repairable live-source row.
+  const stuck = (await stuckPayments()).filter((s) => !isSourceSupersededByRegenesis(s.payment));
   return NextResponse.json({
     payments: stuck.map(({ payment, escrowState }) => ({ ...payment, escrow_state: escrowState })),
   });
