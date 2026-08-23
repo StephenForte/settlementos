@@ -207,7 +207,7 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
   wrong-asset destination falls through to the existing
   insufficient-liquidity check rather than failing as Auto-recall. When
   free already covers, the fund is not touched.
-- T8 complete (2026-08-22): on-chain verification for non-adopt deploy paths
+- T8 complete (2026-08-22, PR #91): on-chain verification for non-adopt deploy paths
   (`scripts/deploy-testnet.mjs`). After `decideDeployMode` + the adoptable-full
   guard, and before `--preflight-only` returns, every overlay-recorded address
   is bytecode-checked and every recorded token's `decimals()` is compared to
