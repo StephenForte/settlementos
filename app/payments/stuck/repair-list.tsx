@@ -20,6 +20,7 @@ export interface StuckPaymentView {
   failureReason: string | null;
   settleTxHash: string | null;
   settleTxUrl: string | null;
+  settleTxNote: string | null;
   createdAt: string;
 }
 
@@ -95,7 +96,7 @@ export function RepairList({ payments }: { payments: StuckPaymentView[] }) {
                 {p.failureReason && <p className="text-xs text-body">{p.failureReason}</p>}
                 {p.settleTxHash && (
                   <div className="text-xs text-body">
-                    Settlement tx <Hash value={p.settleTxHash} href={p.settleTxUrl} />
+                    Settlement tx <Hash value={p.settleTxHash} href={p.settleTxUrl} note={p.settleTxNote} />
                   </div>
                 )}
               </div>
