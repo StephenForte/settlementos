@@ -70,7 +70,17 @@ export function Stat({ label, value, sub }: { label: string; value: string; sub?
   );
 }
 
-export function Hash({ value, href }: { value: string | null | undefined; href?: string | null }) {
+export function Hash({
+  value,
+  href,
+  note,
+}: {
+  value: string | null | undefined;
+  href?: string | null;
+  /** Shown beside the hash when it is deliberately not a link, so an
+   *  unclickable hash reads as explained rather than as a broken explorer. */
+  note?: string | null;
+}) {
   if (!value) return <span className="text-body">—</span>;
   const short = `${value.slice(0, 10)}…${value.slice(-8)}`;
   if (href) {
@@ -89,6 +99,9 @@ export function Hash({ value, href }: { value: string | null | undefined; href?:
   return (
     <span className="font-mono text-xs text-ink-mid" title={value}>
       {short}
+      {note ? (
+        <span className="ml-2 font-sans text-[10px] uppercase tracking-wide text-body">{note}</span>
+      ) : null}
     </span>
   );
 }
