@@ -111,7 +111,9 @@ export const DEFAULT_FORTEL2_EXPLORER_URL = "https://settlementos-explorer-ihgo.
  * and an explorer lookup 404s. The payment records themselves stay — they are
  * accurate history, and 120 of 146 audit-chain events hang off them — but they
  * must not render as clickable links, because a dead link reads as a broken
- * explorer rather than as a wiped chain.
+ * explorer rather than as a wiped chain. List and dashboard reads also hide
+ * them (`excludeSupersededByRegenesisWhere`); a direct id lookup and the
+ * audit log still surface the row.
  */
 export const FORTEL2_SEPOLIA_REGENESIS_AT = new Date("2026-08-22T21:14:48Z");
 
@@ -124,6 +126,49 @@ export function isSupersededByRegenesis(
   const t = occurredAt instanceof Date ? occurredAt : new Date(occurredAt);
   if (Number.isNaN(t.getTime())) return false;
   return t < FORTEL2_SEPOLIA_REGENESIS_AT;
+}
+
+/**
+ * True when the source-chain tx predates the wipe. Escrow state and
+ * compensation both live on the source, so a live source with a wiped
+ * ForteL2 destination is still repairable — do not hide it from stuck views.
+ */
+export function isSourceSupersededByRegenesis(payment: {
+  sourceNetwork: string;
+  createdAt?: Date | string | null;
+}): boolean {
+  return isSupersededByRegenesis(payment.sourceNetwork, payment.createdAt);
+}
+
+/** True when either leg of a payment landed on the wiped ForteL2 chain. */
+export function isPaymentSupersededByRegenesis(payment: {
+  sourceNetwork: string;
+  destinationNetwork?: string | null;
+  createdAt?: Date | string | null;
+}): boolean {
+  return (
+    isSourceSupersededByRegenesis(payment) ||
+    (!!payment.destinationNetwork &&
+      isSupersededByRegenesis(payment.destinationNetwork, payment.createdAt))
+  );
+}
+
+/**
+ * Prisma `where` that drops pre-re-genesis ForteL2 payments from collection
+ * reads. Compose with tenant scope via `AND` — never replace the scope, or a
+ * tenant filter would disappear. Detail-by-id and the audit chain stay unfiltered.
+ */
+export function excludeSupersededByRegenesisWhere() {
+  return {
+    NOT: {
+      AND: [
+        { createdAt: { lt: FORTEL2_SEPOLIA_REGENESIS_AT } },
+        {
+          OR: [{ sourceNetwork: "fortel2-sepolia" }, { destinationNetwork: "fortel2-sepolia" }],
+        },
+      ],
+    },
+  };
 }
 
 export function explorerTxUrl(

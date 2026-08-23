@@ -8,7 +8,7 @@ import { accountsFor, isChainReady, loadDeployments, tokenBalance } from "../cha
 import { prisma } from "../db";
 import { NETWORKS } from "../networks";
 import { toPage } from "../pagination";
-import { paymentScopeWhere } from "../session";
+import { paymentScopeWhere, visiblePaymentsWhere } from "../session";
 import { currentIndexOf, positionDerivedValue } from "../treasury";
 import { walletOnNetwork } from "../wallets";
 import { scrubAuditDetail, scrubFailureReason } from "../../app/api/guard";
@@ -53,18 +53,19 @@ export async function listNetworks() {
 
 /**
  * Payments the principal may see. Tenant scoping is the Prisma `where`, never a
- * post-filter — the same filter GET /api/payments uses (and paymentScopeWhere).
+ * post-filter — the same filter GET /api/payments uses (and visiblePaymentsWhere).
+ * Pre-re-genesis ForteL2 rows are excluded here; getPayment still returns them.
  */
 export async function listPayments(principal: Principal, args: { limit?: number; cursor?: string } = {}) {
   const page = pageFromArgs(args);
-  const scope = paymentScopeWhere(principal);
+  const where = visiblePaymentsWhere(principal);
 
   await assertTenantCursor(principal, page.cursor, (id) =>
-    prisma.payment.findFirst({ where: { id, ...scope }, select: { id: true } })
+    prisma.payment.findFirst({ where: { id, ...where }, select: { id: true } })
   );
 
   const rows = await prisma.payment.findMany({
-    where: scope,
+    where,
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     include: { sender: true, recipient: true },
     take: page.limit + 1,

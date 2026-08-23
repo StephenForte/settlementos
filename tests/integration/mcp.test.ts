@@ -22,6 +22,7 @@ import {
   listTreasuryPositions,
   verifyAuditChainTool,
 } from "@/lib/mcp/tools";
+import { excludeSupersededByRegenesisWhere } from "@/lib/networks";
 import { API_KEYS } from "../fixture";
 
 afterEach(() => vi.restoreAllMocks());
@@ -163,7 +164,10 @@ describe("list_payments tenant isolation", () => {
     expect(findMany).toHaveBeenCalled();
     const where = findMany.mock.calls[0]?.[0]?.where;
     expect(where).toEqual({
-      OR: [{ senderId: acmePrincipal.entityId }, { recipientId: acmePrincipal.entityId }],
+      AND: [
+        { OR: [{ senderId: acmePrincipal.entityId }, { recipientId: acmePrincipal.entityId }] },
+        excludeSupersededByRegenesisWhere(),
+      ],
     });
   });
 

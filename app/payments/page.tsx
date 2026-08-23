@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db";
 import { formatAmount } from "@/lib/assets";
 import { explorerTxUrl, isSupersededByRegenesis } from "@/lib/networks";
 import { DEFAULT_PAGE_LIMIT, parsePageRequest, toPage } from "@/lib/pagination";
-import { currentPrincipal, paymentScopeWhere } from "@/lib/session";
+import { currentPrincipal, visiblePaymentsWhere } from "@/lib/session";
 import { AuthRequired } from "@/components/auth-required";
 import { Card, StatusBadge, Hash } from "@/components/ui";
 
@@ -43,7 +43,7 @@ export default async function PaymentsPage({
   const page = pageFromSearch(await searchParams);
 
   const rows = await prisma.payment.findMany({
-    where: paymentScopeWhere(principal),
+    where: visiblePaymentsWhere(principal),
     include: { sender: true, recipient: true },
     // Tiebroken by id for the same reason GET /api/payments is: createdAt is not
     // unique, and an unstable sort makes a cursor walk skip or repeat rows.

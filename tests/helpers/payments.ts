@@ -14,6 +14,7 @@ export interface PaymentOpts {
   destinationCurrency?: string;
   sourceNetwork?: string;
   destinationNetwork?: string;
+  createdAt?: Date;
 }
 
 export async function createDraftPayment(opts: PaymentOpts = {}) {
@@ -25,6 +26,7 @@ export async function createDraftPayment(opts: PaymentOpts = {}) {
     destinationCurrency = "JPY",
     sourceNetwork = "base-local",
     destinationNetwork = "base-local",
+    createdAt,
   } = opts;
 
   const sender = await prisma.entity.findUniqueOrThrow({ where: { externalId: senderExternalId } });
@@ -44,6 +46,7 @@ export async function createDraftPayment(opts: PaymentOpts = {}) {
       destinationNetwork,
       purpose: "supplier_payment",
       referenceId: "TEST",
+      ...(createdAt ? { createdAt } : {}),
     },
   });
 }

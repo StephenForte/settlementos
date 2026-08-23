@@ -1,7 +1,14 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { formatAmount } from "@/lib/assets";
-import { NETWORKS, explorerTxUrl, isSupersededByRegenesis, settlementRailCaption } from "@/lib/networks";
+import {
+  NETWORKS,
+  excludeSupersededByRegenesisWhere,
+  explorerTxUrl,
+  isSourceSupersededByRegenesis,
+  isSupersededByRegenesis,
+  settlementRailCaption,
+} from "@/lib/networks";
 import { isChainReady, loadDeployments } from "@/lib/chain";
 import { usdEquivalent } from "@/lib/fx";
 import { formatMinorUnits, parseAmount } from "@/lib/money";
@@ -37,12 +44,17 @@ export default async function DashboardHome() {
   }
 
   const payments = await prisma.payment.findMany({
+    where: excludeSupersededByRegenesisWhere(),
     include: { sender: true, recipient: true },
     orderBy: { createdAt: "desc" },
   });
   // The same read the repair view does, so the count and the list can never
   // disagree. Chain reads, so it degrades to zero rather than breaking the page.
-  const stuck = await stuckPayments().catch(() => []);
+  // Hide only a wiped source — a live source with a wiped destination can
+  // still hold escrow or need compensation.
+  const stuck = (await stuckPayments().catch(() => [])).filter(
+    (s) => !isSourceSupersededByRegenesis(s.payment),
+  );
 
   const settled = payments.filter((p) => p.status === "SETTLED");
   const volumeUsd = settled.reduce((sum, p) => {
