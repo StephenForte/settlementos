@@ -1,7 +1,14 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { formatAmount } from "@/lib/assets";
-import { NETWORKS, explorerTxUrl, isSupersededByRegenesis, settlementRailCaption } from "@/lib/networks";
+import {
+  NETWORKS,
+  excludeSupersededByRegenesisWhere,
+  explorerTxUrl,
+  isPaymentSupersededByRegenesis,
+  isSupersededByRegenesis,
+  settlementRailCaption,
+} from "@/lib/networks";
 import { isChainReady, loadDeployments } from "@/lib/chain";
 import { usdEquivalent } from "@/lib/fx";
 import { formatMinorUnits, parseAmount } from "@/lib/money";
@@ -37,12 +44,16 @@ export default async function DashboardHome() {
   }
 
   const payments = await prisma.payment.findMany({
+    where: excludeSupersededByRegenesisWhere(),
     include: { sender: true, recipient: true },
     orderBy: { createdAt: "desc" },
   });
   // The same read the repair view does, so the count and the list can never
   // disagree. Chain reads, so it degrades to zero rather than breaking the page.
-  const stuck = await stuckPayments().catch(() => []);
+  // Pre-re-genesis ForteL2 rows stay out of the banner — that chain is gone.
+  const stuck = (await stuckPayments().catch(() => [])).filter(
+    (s) => !isPaymentSupersededByRegenesis(s.payment),
+  );
 
   const settled = payments.filter((p) => p.status === "SETTLED");
   const volumeUsd = settled.reduce((sum, p) => {

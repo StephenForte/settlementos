@@ -8,6 +8,7 @@
 import type { Prisma } from "@prisma/client";
 import { cookies } from "next/headers";
 import { API_KEY_COOKIE, isPlatformRole, principalForKey, type Principal } from "./auth";
+import { excludeSupersededByRegenesisWhere } from "./networks";
 
 /** Cookie lifetime — a demo session, re-authenticated by pasting the key again. */
 export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
@@ -45,4 +46,13 @@ export function paymentScopeWhere(principal: Principal): Prisma.PaymentWhereInpu
   return isPlatformRole(principal)
     ? {}
     : { OR: [{ senderId: principal.entityId }, { recipientId: principal.entityId }] };
+}
+
+/**
+ * Collection-read filter: tenant scope plus the post-re-genesis hide. Use this
+ * on lists and aggregates; detail-by-id keeps `paymentScopeWhere` alone so a
+ * deep link to a pre-wipe payment still resolves.
+ */
+export function visiblePaymentsWhere(principal: Principal): Prisma.PaymentWhereInput {
+  return { AND: [paymentScopeWhere(principal), excludeSupersededByRegenesisWhere()] };
 }

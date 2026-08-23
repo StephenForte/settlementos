@@ -5,7 +5,8 @@ import { audit } from "@/lib/audit";
 import { CURRENCY_TO_ASSET } from "@/lib/assets";
 import { canonicalAmount, MoneyError } from "@/lib/money";
 import { supportedCorridors, corridorCode } from "@/lib/fx";
-import { NETWORKS } from "@/lib/networks";
+import { isPaymentSupersededByRegenesis, NETWORKS } from "@/lib/networks";
+import { visiblePaymentsWhere } from "@/lib/session";
 import { isChainReady, loadDeployments } from "@/lib/chain";
 import { stuckPayments } from "@/lib/executor";
 import { toPage } from "@/lib/pagination";
@@ -38,20 +39,18 @@ export async function GET(req: NextRequest) {
   const page = parsePageOr400(req.nextUrl.searchParams);
   if (page instanceof NextResponse) return page;
 
-  const scope = isPlatformRole(principal)
-    ? {}
-    : { OR: [{ senderId: principal.entityId }, { recipientId: principal.entityId }] };
+  const where = visiblePaymentsWhere(principal);
 
   // Prisma resolves `cursor` by id independently of the `where`, so a tenant
   // passing another tenant's payment id as the cursor would get a normal page
   // while a nonexistent id returns empty — an existence oracle for payment ids,
   // the very thing the detail route's 404-not-403 refuses to be. Require a
-  // tenant's cursor to resolve inside its own scope first, so a foreign id and a
-  // nonexistent one both get the same 400. Platform roles see everything, so no
-  // oracle exists for them.
+  // tenant's cursor to resolve inside its own (visible) scope first, so a
+  // foreign id and a nonexistent one both get the same 400. Platform roles see
+  // everything post-re-genesis, so no oracle exists for them.
   if (page.cursor !== null && !isPlatformRole(principal)) {
     const inScope = await prisma.payment.findFirst({
-      where: { id: page.cursor, ...scope },
+      where: { id: page.cursor, ...where },
       select: { id: true },
     });
     if (!inScope) return invalidRequest("cursor is not valid");
@@ -59,9 +58,10 @@ export async function GET(req: NextRequest) {
 
   // A tenant sees only the payments it is party to; operators and reviewers see
   // all. Tenant scoping stays a `where` filter, never a post-filter — a page of
-  // rows a caller may not see would otherwise be silently short.
+  // rows a caller may not see would otherwise be silently short. Pre-re-genesis
+  // ForteL2 rows are excluded here too so the list matches the dashboard.
   const rows = await prisma.payment.findMany({
-    where: scope,
+    where,
     // Tiebroken by id: createdAt alone is not unique (two payments created in
     // the same millisecond are ordinary), and an unstable order makes a cursor
     // walk skip or repeat rows.
@@ -86,7 +86,7 @@ export async function GET(req: NextRequest) {
  * to know about (see stuckPayments).
  */
 async function listStuckPayments(): Promise<NextResponse> {
-  const stuck = await stuckPayments();
+  const stuck = (await stuckPayments()).filter((s) => !isPaymentSupersededByRegenesis(s.payment));
   return NextResponse.json({
     payments: stuck.map(({ payment, escrowState }) => ({ ...payment, escrow_state: escrowState })),
   });

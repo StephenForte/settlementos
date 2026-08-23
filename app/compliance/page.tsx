@@ -2,6 +2,7 @@ import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { verifyAuditChain, type AuditIntegrity } from "@/lib/audit";
 import { formatAmount } from "@/lib/assets";
+import { excludeSupersededByRegenesisWhere } from "@/lib/networks";
 import { isPlatformRole } from "@/lib/auth";
 import { currentPrincipal } from "@/lib/session";
 import { AuthRequired } from "@/components/auth-required";
@@ -32,11 +33,16 @@ export default async function CompliancePage() {
 
   const [queue, recentChecks, auditEvents, integrity] = await Promise.all([
     prisma.payment.findMany({
-      where: { status: "MANUAL_REVIEW" },
+      where: { AND: [{ status: "MANUAL_REVIEW" }, excludeSupersededByRegenesisWhere()] },
       include: { sender: true, recipient: true, complianceChecks: true },
       orderBy: { createdAt: "asc" },
     }),
-    prisma.complianceCheck.findMany({ orderBy: { createdAt: "desc" }, take: 20, include: { payment: true } }),
+    prisma.complianceCheck.findMany({
+      where: { payment: excludeSupersededByRegenesisWhere() },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+      include: { payment: true },
+    }),
     prisma.auditEvent.findMany({ orderBy: { id: "desc" }, take: 25 }),
     verifyAuditChain(),
   ]);

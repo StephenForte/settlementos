@@ -8,7 +8,7 @@ import {
   publicClientFor,
   tokenBalance,
 } from "@/lib/chain";
-import { explorerAddressUrl, networkInfo } from "@/lib/networks";
+import { excludeSupersededByRegenesisWhere, explorerAddressUrl, networkInfo } from "@/lib/networks";
 import { ASSETS, fromBaseUnits, type AssetSymbol } from "@/lib/assets";
 import { parseScaledUnits } from "@/lib/money";
 import {
@@ -201,19 +201,24 @@ export default async function LiquidityPage() {
 
   const pendingOut = await prisma.payment.findMany({
     where: {
-      status: {
-        in: [
-          "QUOTED",
-          "COMPLIANCE_PENDING",
-          "MANUAL_REVIEW",
-          "APPROVED",
-          "LIQUIDITY_RESERVED",
-          "SUBMITTED_ONCHAIN",
-          "CONFIRMED_ONCHAIN",
-          "FX_OR_SWAP_COMPLETED",
-          "PAYOUT_PENDING",
-        ],
-      },
+      AND: [
+        {
+          status: {
+            in: [
+              "QUOTED",
+              "COMPLIANCE_PENDING",
+              "MANUAL_REVIEW",
+              "APPROVED",
+              "LIQUIDITY_RESERVED",
+              "SUBMITTED_ONCHAIN",
+              "CONFIRMED_ONCHAIN",
+              "FX_OR_SWAP_COMPLETED",
+              "PAYOUT_PENDING",
+            ],
+          },
+        },
+        excludeSupersededByRegenesisWhere(),
+      ],
     },
     include: { recipient: true },
   });

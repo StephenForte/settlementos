@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { formatAmount } from "@/lib/assets";
-import { explorerTxUrl, isSupersededByRegenesis } from "@/lib/networks";
+import { explorerTxUrl, isPaymentSupersededByRegenesis, isSupersededByRegenesis } from "@/lib/networks";
 import { stuckPayments } from "@/lib/executor";
 import { currentPrincipal } from "@/lib/session";
 import { Card } from "@/components/ui";
@@ -29,7 +29,9 @@ export default async function StuckPaymentsPage() {
 
   // Degrades on its own per payment (escrowState: null), but a chain that is not
   // deployed at all throws — an empty list beats a 500 on the repair view.
-  const stuck = await stuckPayments().catch(() => []);
+  const stuck = (await stuckPayments().catch(() => [])).filter(
+    (s) => !isPaymentSupersededByRegenesis(s.payment),
+  );
   const payments: StuckPaymentView[] = stuck.map(({ payment, escrowState }) => ({
     id: payment.id,
     status: payment.status,

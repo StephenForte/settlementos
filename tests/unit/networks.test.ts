@@ -7,6 +7,8 @@ import {
   explorerTxUrl,
   explorerAddressUrl,
   isSupersededByRegenesis,
+  isPaymentSupersededByRegenesis,
+  excludeSupersededByRegenesisWhere,
   FORTEL2_SEPOLIA_REGENESIS_AT,
   settlementRailCaption,
 } from "@/lib/networks";
@@ -215,6 +217,50 @@ describe("2026-08-22 ForteL2 re-genesis", () => {
   it("accepts an ISO string as well as a Date", () => {
     expect(isSupersededByRegenesis("fortel2-sepolia", BEFORE.toISOString())).toBe(true);
     expect(isSupersededByRegenesis("fortel2-sepolia", AFTER.toISOString())).toBe(false);
+  });
+
+  it("treats a payment as superseded when either leg is the wiped chain", () => {
+    expect(
+      isPaymentSupersededByRegenesis({
+        sourceNetwork: "fortel2-sepolia",
+        destinationNetwork: "base-sepolia",
+        createdAt: BEFORE,
+      }),
+    ).toBe(true);
+    expect(
+      isPaymentSupersededByRegenesis({
+        sourceNetwork: "base-sepolia",
+        destinationNetwork: "fortel2-sepolia",
+        createdAt: BEFORE,
+      }),
+    ).toBe(true);
+    expect(
+      isPaymentSupersededByRegenesis({
+        sourceNetwork: "base-sepolia",
+        destinationNetwork: "base-sepolia",
+        createdAt: BEFORE,
+      }),
+    ).toBe(false);
+    expect(
+      isPaymentSupersededByRegenesis({
+        sourceNetwork: "fortel2-sepolia",
+        destinationNetwork: "fortel2-sepolia",
+        createdAt: AFTER,
+      }),
+    ).toBe(false);
+  });
+
+  it("shapes a Prisma where that drops only pre-wipe ForteL2 legs", () => {
+    expect(excludeSupersededByRegenesisWhere()).toEqual({
+      NOT: {
+        AND: [
+          { createdAt: { lt: FORTEL2_SEPOLIA_REGENESIS_AT } },
+          {
+            OR: [{ sourceNetwork: "fortel2-sepolia" }, { destinationNetwork: "fortel2-sepolia" }],
+          },
+        ],
+      },
+    });
   });
 
   it("leaves other networks' links alone regardless of date", () => {

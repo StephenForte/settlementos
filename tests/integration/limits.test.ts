@@ -17,6 +17,7 @@ import { API_KEY_HEADER } from "@/lib/auth";
 import { MAX_BODY_BYTES } from "@/app/api/limits";
 import { resetRateLimits } from "@/lib/rate-limit";
 import { MAX_PAGE_LIMIT } from "@/lib/pagination";
+import { excludeSupersededByRegenesisWhere } from "@/lib/networks";
 import { prisma } from "@/lib/db";
 import { API_KEYS } from "../fixture";
 import { createDraftPayment } from "../helpers/payments";
@@ -262,7 +263,10 @@ describe("GET /api/payments pagination", () => {
     // is exactly the case an untiebroken sort gets wrong.
     for (let i = 0; i < 5; i++) await createDraftPayment({ amount: "1.00" });
 
-    const expected = await prisma.payment.findMany({ select: { id: true } });
+    const expected = await prisma.payment.findMany({
+      where: excludeSupersededByRegenesisWhere(),
+      select: { id: true },
+    });
     const seen: string[] = [];
     let cursor: string | null = null;
 
