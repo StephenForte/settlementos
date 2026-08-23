@@ -15,7 +15,10 @@ import {
   readNetworkOverlay,
   decideDeployMode,
   listAdoptContractAddresses,
+  listOverlayContractEntries,
+  planNonAdoptExecution,
   evaluateAdoptBytecode,
+  evaluateOverlayOnchain,
   adoptNeedsMmf,
   decideAdoptPlan,
   diagnoseAdoptableOverlayFinding,
@@ -747,6 +750,169 @@ describe("assertAdoptableFullDeployAllowed (gates on resolved mode)", () => {
         networkOverlay: { contracts: { PaymentSettlement: SETTLEMENT } },
       })
     ).toMatch(/missing mockUSDC/);
+  });
+});
+
+describe("overlay on-chain verification (T8)", () => {
+  const CODE = "0x" + "ab".repeat(100);
+
+  function completeSlice() {
+    return {
+      chainId: 852,
+      contracts: {
+        PaymentSettlement: SETTLEMENT,
+        TokenizedMMF: MMF,
+        tokens: {
+          mockUSDC: { address: USDC, decimals: 6 },
+          mockJPY: { address: JPY, decimals: 0 },
+          mockSGD: { address: SGD, decimals: 6 },
+        },
+      },
+    };
+  }
+
+  function evidenceFor(
+    slice: ReturnType<typeof completeSlice>,
+    overrides: Record<string, { code?: string | null; onchainDecimals?: number | null }> = {}
+  ) {
+    return listOverlayContractEntries(slice).map((entry) => {
+      const over = overrides[entry.label] ?? {};
+      return {
+        ...entry,
+        code: over.code !== undefined ? over.code : CODE,
+        onchainDecimals:
+          over.onchainDecimals !== undefined
+            ? over.onchainDecimals
+            : entry.expectedDecimals,
+      };
+    });
+  }
+
+  it("extracts overlay contracts including token expectedDecimals", () => {
+    const listed = listOverlayContractEntries(completeSlice());
+    expect(listed.map((e) => e.label).sort()).toEqual(
+      ["PaymentSettlement", "TokenizedMMF", "mockJPY", "mockSGD", "mockUSDC"].sort()
+    );
+    expect(listed.find((e) => e.label === "mockJPY")?.expectedDecimals).toBe(0);
+    expect(listed.find((e) => e.label === "PaymentSettlement")?.expectedDecimals).toBeUndefined();
+    expect(listed.find((e) => e.label === "TokenizedMMF")?.expectedDecimals).toBeUndefined();
+    expect(listOverlayContractEntries(null)).toEqual([]);
+    expect(listOverlayContractEntries({})).toEqual([]);
+  });
+
+  it("aborts when a recorded TokenizedMMF holds empty code and names the address", () => {
+    const result = evaluateOverlayOnchain(
+      evidenceFor(completeSlice(), { TokenizedMMF: { code: "0x" } }),
+      FORTEL2
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toMatch(/TokenizedMMF/);
+      expect(result.message).toMatch(new RegExp(MMF, "i"));
+      expect(result.message).toMatch(/0 bytes/);
+      expect(result.message).toMatch(/Move chain\/deployments\.fortel2-sepolia\.json aside first/);
+      expect(result.message).toMatch(/--adopt to re-home the live contracts into a fresh overlay/);
+    }
+  });
+
+  it("aborts when on-chain decimals differ from the overlay (reassigned mockJPY)", () => {
+    // Recorded mockJPY is 0dp; post-wipe the address holds a 6dp token.
+    const result = evaluateOverlayOnchain(
+      evidenceFor(completeSlice(), { mockJPY: { onchainDecimals: 6 } }),
+      FORTEL2
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toMatch(/mockJPY/);
+      expect(result.message).toMatch(/on-chain decimals 6/);
+      expect(result.message).toMatch(/overlay recorded 0/);
+      expect(result.message).toMatch(new RegExp(JPY, "i"));
+    }
+  });
+
+  it("passes a fully consistent overlay and leaves the resolved mode unchanged", () => {
+    const slice = completeSlice();
+    expect(decideDeployMode(slice).mode).toBe("noop");
+    const result = evaluateOverlayOnchain(evidenceFor(slice), FORTEL2);
+    expect(result.ok).toBe(true);
+    expect(result.results.every((r) => r.findings.length === 0)).toBe(true);
+    expect(decideDeployMode(slice).mode).toBe("noop");
+  });
+
+  it("presence-checks contracts with no recorded decimals and does not identity-check them", () => {
+    const result = evaluateOverlayOnchain(
+      evidenceFor(completeSlice(), {
+        PaymentSettlement: { onchainDecimals: 99 },
+        TokenizedMMF: { onchainDecimals: 99 },
+      }),
+      FORTEL2
+    );
+    expect(result.ok).toBe(true);
+    const settlement = result.results.find((r) => r.label === "PaymentSettlement");
+    const mmf = result.results.find((r) => r.label === "TokenizedMMF");
+    expect(settlement?.expectedDecimals).toBeUndefined();
+    expect(mmf?.expectedDecimals).toBeUndefined();
+    expect(settlement?.bytes).toBeGreaterThan(0);
+    expect(mmf?.bytes).toBeGreaterThan(0);
+  });
+
+  it("no overlay produces no entries, no findings, and no abort", () => {
+    expect(listOverlayContractEntries(null)).toEqual([]);
+    const result = evaluateOverlayOnchain([], FORTEL2);
+    expect(result.ok).toBe(true);
+    expect(result.results).toEqual([]);
+    expect(planNonAdoptExecution({ networkOverlay: null, preflightOnly: false }).verifyOverlayOnchain).toBe(
+      false
+    );
+  });
+
+  it("abort message names every offending entry, not just the first", () => {
+    const result = evaluateOverlayOnchain(
+      evidenceFor(completeSlice(), {
+        TokenizedMMF: { code: "0x" },
+        mockJPY: { onchainDecimals: 6 },
+        mockSGD: { onchainDecimals: 0 },
+      }),
+      FORTEL2
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toMatch(/TokenizedMMF/);
+      expect(result.message).toMatch(new RegExp(MMF, "i"));
+      expect(result.message).toMatch(/mockJPY/);
+      expect(result.message).toMatch(/on-chain decimals 6, overlay recorded 0/);
+      expect(result.message).toMatch(/mockSGD/);
+      expect(result.message).toMatch(/on-chain decimals 0, overlay recorded 6/);
+    }
+  });
+
+  it("--preflight-only still evaluates the overlay on-chain gate", () => {
+    const slice = completeSlice();
+    const dry = planNonAdoptExecution({ networkOverlay: slice, preflightOnly: true });
+    const live = planNonAdoptExecution({ networkOverlay: slice, preflightOnly: false });
+    expect(dry.verifyOverlayOnchain).toBe(true);
+    expect(live.verifyOverlayOnchain).toBe(true);
+    expect(dry.sendTransactions).toBe(false);
+    expect(live.sendTransactions).toBe(true);
+    expect(
+      planNonAdoptExecution({ networkOverlay: null, preflightOnly: true }).verifyOverlayOnchain
+    ).toBe(false);
+  });
+
+  it("evaluateAdoptBytecode abort label is parameterised and defaults to Adopt aborted", () => {
+    const empty = [{ label: "mockJPY", address: JPY, code: "0x" }];
+    const adopt = evaluateAdoptBytecode(empty, BASE);
+    expect(adopt.ok).toBe(false);
+    if (!adopt.ok) {
+      expect(adopt.message).toMatch(/^Adopt aborted:/);
+      expect(adopt.message).toMatch(/Refuse to write an overlay pointing at empty addresses/);
+    }
+    const relabeled = evaluateAdoptBytecode(empty, BASE, "Overlay verification aborted");
+    expect(relabeled.ok).toBe(false);
+    if (!relabeled.ok) {
+      expect(relabeled.message).toMatch(/^Overlay verification aborted:/);
+      expect(relabeled.message).not.toMatch(/Adopt aborted/);
+    }
   });
 });
 

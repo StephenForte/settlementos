@@ -32,7 +32,12 @@
 //
 // --preflight-only runs RPC/chain-id/balance checks and prints the planned mode
 // and actions without sending any transactions. With --adopt it also fetches
-// bytecode for every registered address and aborts on empty code.
+// bytecode for every registered address and aborts on empty code. On non-adopt
+// paths with an existing overlay it also verifies every recorded contract has
+// bytecode and every recorded token's on-chain decimals() matches the overlay
+// (a stale overlay after a re-genesis is otherwise a confident no-op). A dry
+// run reports the same finding a live run would — the gate runs before this
+// flag's early return. --force-full-deploy does not bypass it.
 // A bare full deploy against a network in ADOPTABLE_NETWORKS with no overlay is
 // refused (those contracts are already live) — use --adopt, or type
 // --force-full-deploy deliberately if a genuine fresh deploy is intended.
@@ -314,10 +319,10 @@ export function decideDeployMode(networkOverlay) {
  * Flatten an adoptable-network registry entry into labeled addresses that must
  * hold bytecode (operator is an EOA — verified separately, not for code).
  * @param {AdoptableNetwork} adoptable
- * @returns {{ label: string, address: string }[]}
+ * @returns {{ label: string, address: string, expectedDecimals?: number }[]}
  */
 export function listAdoptContractAddresses(adoptable) {
-  /** @type {{ label: string, address: string }[]} */
+  /** @type {{ label: string, address: string, expectedDecimals?: number }[]} */
   const out = [];
   const contracts = adoptable?.contracts;
   if (!contracts) return out;
@@ -329,39 +334,174 @@ export function listAdoptContractAddresses(adoptable) {
   }
   const tokens = contracts.tokens ?? {};
   for (const [symbol, meta] of Object.entries(tokens)) {
-    if (meta?.address) out.push({ label: symbol, address: meta.address });
+    if (!meta?.address) continue;
+    /** @type {{ label: string, address: string, expectedDecimals?: number }} */
+    const entry = { label: symbol, address: meta.address };
+    if (typeof meta.decimals === "number") entry.expectedDecimals = meta.decimals;
+    out.push(entry);
   }
   return out;
 }
 
 /**
- * Pure bytecode gate: every registered contract address must return non-empty
- * code. Call this *before* writing an overlay or generating wallets.
- * @param {{ label: string, address: string, code: string | null | undefined }[]} entries
- * @param {string} networkId
- * @returns {{ ok: true, results: { label: string, address: string, bytes: number }[] } | { ok: false, message: string, results: { label: string, address: string, bytes: number }[] }}
+ * Flatten an overlay slice into labeled contract entries. Reuses
+ * listAdoptContractAddresses (it reads only `.contracts`, so an overlay slice
+ * is shape-compatible). Empty overlay / no recorded contracts → [].
+ *
+ * @param {Record<string, unknown> | null | undefined} networkOverlay
+ * @returns {{ label: string, address: string, expectedDecimals?: number }[]}
  */
-export function evaluateAdoptBytecode(entries, networkId) {
-  const results = entries.map(({ label, address, code }) => {
-    const bytes =
-      code && code !== "0x" && code !== "0x0" ? Math.floor((code.length - 2) / 2) : 0;
-    return { label, address, bytes };
+export function listOverlayContractEntries(networkOverlay) {
+  const contracts = networkOverlay?.contracts;
+  if (!contracts || typeof contracts !== "object") return [];
+  return listAdoptContractAddresses(/** @type {AdoptableNetwork} */ ({ contracts }));
+}
+
+/**
+ * Non-adopt `main()` plan after mode resolution. Overlay on-chain verification
+ * is independent of `--preflight-only`: a dry run must report the same finding
+ * a live run would. `sendTransactions` is the early-return half.
+ *
+ * @param {{
+ *   networkOverlay: Record<string, unknown> | null | undefined,
+ *   preflightOnly: boolean
+ * }} input
+ * @returns {{ verifyOverlayOnchain: boolean, sendTransactions: boolean }}
+ */
+export function planNonAdoptExecution({ networkOverlay, preflightOnly }) {
+  return {
+    verifyOverlayOnchain: listOverlayContractEntries(networkOverlay).length > 0,
+    sendTransactions: !preflightOnly,
+  };
+}
+
+/** Minimal ERC-20 decimals fragment — preflight must not depend on compiled artifacts. */
+export const ERC20_DECIMALS_ABI = /** @type {const} */ ([
+  {
+    type: "function",
+    name: "decimals",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8" }],
+  },
+]);
+
+/**
+ * @typedef {{
+ *   label: string,
+ *   address: string,
+ *   code?: string | null,
+ *   expectedDecimals?: number,
+ *   onchainDecimals?: number | bigint | null
+ * }} OnchainEntryEvidence
+ *
+ * @typedef {{
+ *   label: string,
+ *   address: string,
+ *   bytes: number,
+ *   expectedDecimals?: number,
+ *   onchainDecimals?: number | null,
+ *   findings: string[]
+ * }} OnchainEntryResult
+ */
+
+function bytecodeBytes(code) {
+  return code && code !== "0x" && code !== "0x0" ? Math.floor((code.length - 2) / 2) : 0;
+}
+
+/**
+ * Pure presence (+ optional decimals identity) gate. Parameterised abort label
+ * so adopt and overlay verification share the evaluator instead of copying it.
+ *
+ * @param {OnchainEntryEvidence[]} entries
+ * @param {string} networkId
+ * @param {{ abortLabel?: string, remedy?: string }} [opts]
+ * @returns {{ ok: true, results: OnchainEntryResult[] } | { ok: false, message: string, results: OnchainEntryResult[] }}
+ */
+export function evaluateOnchainEntries(entries, networkId, opts = {}) {
+  const abortLabel = opts.abortLabel ?? "Adopt aborted";
+  const remedy = opts.remedy ?? "Refuse to write an overlay pointing at empty addresses.";
+
+  const results = entries.map((entry) => {
+    const { label, address, code, expectedDecimals, onchainDecimals } = entry;
+    const bytes = bytecodeBytes(code);
+    /** @type {string[]} */
+    const findings = [];
+    if (bytes === 0) {
+      findings.push(`0 bytes (no code on ${networkId})`);
+    } else if (expectedDecimals !== undefined) {
+      const found =
+        onchainDecimals === undefined || onchainDecimals === null
+          ? null
+          : Number(onchainDecimals);
+      if (found === null || Number.isNaN(found)) {
+        findings.push(`decimals unreadable, overlay recorded ${expectedDecimals}`);
+      } else if (found !== expectedDecimals) {
+        findings.push(
+          `on-chain decimals ${found}, overlay recorded ${expectedDecimals}`
+        );
+      }
+    }
+    /** @type {OnchainEntryResult} */
+    const row = { label, address, bytes, findings };
+    if (expectedDecimals !== undefined) row.expectedDecimals = expectedDecimals;
+    if (onchainDecimals !== undefined) {
+      row.onchainDecimals =
+        onchainDecimals === null ? null : Number(onchainDecimals);
+    }
+    return row;
   });
-  const empty = results.filter((r) => r.bytes === 0);
-  if (empty.length > 0) {
-    const detail = empty
-      .map((r) => `  ${r.label} ${r.address} — 0 bytes (no code on ${networkId})`)
+
+  const bad = results.filter((r) => r.findings.length > 0);
+  if (bad.length > 0) {
+    const identityFailed = bad.some((r) => r.bytes > 0);
+    const headline = identityFailed
+      ? `${abortLabel}: one or more recorded contracts do not match on-chain state on ${networkId}.`
+      : `${abortLabel}: one or more addresses hold no bytecode on ${networkId}.`;
+    const detail = bad
+      .map((r) => `  ${r.label} ${r.address} — ${r.findings.join("; ")}`)
       .join("\n");
     return {
       ok: false,
-      message:
-        `Adopt aborted: one or more addresses hold no bytecode on ${networkId}.\n` +
-        detail +
-        "\nRefuse to write an overlay pointing at empty addresses.",
+      message: `${headline}\n${detail}\n${remedy}`,
       results,
     };
   }
   return { ok: true, results };
+}
+
+/**
+ * Pure bytecode gate: every registered contract address must return non-empty
+ * code. Call this *before* writing an overlay or generating wallets.
+ * Abort label is parameterised; default preserves the adopt-path message.
+ * @param {OnchainEntryEvidence[]} entries
+ * @param {string} networkId
+ * @param {string} [abortLabel]
+ * @returns {{ ok: true, results: OnchainEntryResult[] } | { ok: false, message: string, results: OnchainEntryResult[] }}
+ */
+export function evaluateAdoptBytecode(entries, networkId, abortLabel = "Adopt aborted") {
+  return evaluateOnchainEntries(entries, networkId, {
+    abortLabel,
+    remedy: "Refuse to write an overlay pointing at empty addresses.",
+  });
+}
+
+/**
+ * Overlay presence + token-identity gate for non-adopt paths. Same evaluator as
+ * adopt; abort text names the overlay file and the operator remedy.
+ *
+ * @param {OnchainEntryEvidence[]} entries
+ * @param {string} networkId
+ * @returns {{ ok: true, results: OnchainEntryResult[] } | { ok: false, message: string, results: OnchainEntryResult[] }}
+ */
+export function evaluateOverlayOnchain(entries, networkId) {
+  return evaluateOnchainEntries(entries, networkId, {
+    abortLabel: "Overlay verification aborted",
+    remedy:
+      `Move chain/deployments.${networkId}.json aside first, then re-run with --adopt ` +
+      `to re-home the live contracts into a fresh overlay, or pass ` +
+      `--force-full-deploy if you deliberately intend a destructive fresh deploy.`,
+  });
 }
 
 /**
@@ -849,6 +989,51 @@ async function main() {
 
     mode = decided.mode;
     reason = decided.reason;
+
+    // Presence + token identity against the overlay. Runs on --preflight-only
+    // too (planNonAdoptExecution does not skip it) so a dry run reports the
+    // same finding. --force-full-deploy does not bypass this: abort, don't
+    // auto-escalate to a full deploy.
+    const overlayExec = planNonAdoptExecution({ networkOverlay, preflightOnly });
+    if (overlayExec.verifyOverlayOnchain) {
+      const overlayEntries = listOverlayContractEntries(networkOverlay);
+      /** @type {OnchainEntryEvidence[]} */
+      const withEvidence = [];
+      for (const entry of overlayEntries) {
+        const address = /** @type {`0x${string}`} */ (entry.address);
+        const code = await publicClient.getBytecode({ address });
+        /** @type {number | null | undefined} */
+        let onchainDecimals;
+        if (entry.expectedDecimals !== undefined && bytecodeBytes(code) > 0) {
+          try {
+            const found = await publicClient.readContract({
+              address,
+              abi: ERC20_DECIMALS_ABI,
+              functionName: "decimals",
+            });
+            onchainDecimals = Number(found);
+          } catch {
+            onchainDecimals = null;
+          }
+        }
+        withEvidence.push({ ...entry, code, onchainDecimals });
+      }
+      const overlayCheck = evaluateOverlayOnchain(withEvidence, NETWORK_ID);
+      console.log("\nOn-chain overlay verification:");
+      for (const r of overlayCheck.results) {
+        const extras = [];
+        if (r.expectedDecimals !== undefined) {
+          extras.push(
+            `decimals ${r.onchainDecimals ?? "unreadable"} (overlay ${r.expectedDecimals})`
+          );
+        }
+        const status =
+          r.findings.length === 0 ? "ok" : r.bytes === 0 ? "EMPTY" : "MISMATCH";
+        const extra = extras.length ? ` — ${extras.join(", ")}` : "";
+        console.log(`  ${r.label} ${r.address} — ${r.bytes} bytes${extra} — ${status}`);
+      }
+      if (!overlayCheck.ok) fail(overlayCheck.message);
+    }
   }
 
   console.log(`\n${CFG.name} (${NETWORK_ID}) — ${reason}`);
