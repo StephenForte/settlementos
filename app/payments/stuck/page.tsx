@@ -41,7 +41,7 @@ export default async function StuckPaymentsPage() {
     escrowState,
     failureReason: payment.failureReason,
     settleTxHash: payment.settleTxHash,
-    settleTxUrl: explorerTxUrl(payment.sourceNetwork, payment.settleTxHash),
+    settleTxUrl: explorerTxUrl(payment.sourceNetwork, payment.settleTxHash, payment.createdAt),
     createdAt: payment.createdAt.toISOString(),
   }));
 
