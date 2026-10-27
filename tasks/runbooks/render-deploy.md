@@ -13,6 +13,14 @@ Postgres **16** (not Render's default 18) so it matches local
 tested against 16. Move all three together or none — do not bump Render alone.
 See AGENTS.md "Run & verify".
 
+**Node version pin (Render 26.12.1, local/CI 22):** Render runs Node
+`26.12.1` or newer via `NODE_VERSION`. That is the floor from the Node.js
+security release on 2026-10-21. Local development and CI stay on Node 22
+(`.node-version` is `22.23.1`; CI requests `22`). `NODE_VERSION` takes
+precedence over `.node-version` on Render. If the env var is missing, Render
+installs `.node-version` and the service is back on 22.23.1, which misses
+that release.
+
 **Region pin (`oregon`):** `render.yaml` sets `region: oregon` because the
 internal database URL only resolves for a service in the same region as
 `settlementos-db`. Do not omit the key and rely on Render's default.
@@ -38,7 +46,7 @@ internal database URL only resolves for a service in the same region as
 | `ADMIN_PASSWORD` | **yes** | Env var (`sync: false`) | Pair with `ADMIN_USERNAME`. Initial password only, not the live one. |
 | `ADMIN_API_KEY` | **yes** | Env var (`sync: false`) | Read on every successful password login (becomes the `sos_key` cookie). Must be the raw OPERATOR key whose hash is already in `ApiKey`. That key is printed **once** by the first `npm run seed:demo` — do not set this before §1.5. See §1.6. |
 | `TRUSTED_PROXY_HOPS` | no | Env (`1`) | Login IP rate-limit may key on a client-spoofable `X-Forwarded-For` entry. |
-| `NODE_VERSION` | no | Env (`22.23.1`) | Wrong Node → build/runtime mismatch with local/CI. |
+| `NODE_VERSION` | no | Env (`26.12.1`) | Render runtime. Must be 26.12.1 or newer (2026-10-21 Node security release). Local and CI stay on Node 22. If this is unset, Render falls back to `.node-version` (22.23.1). |
 
 Never commit `.env`, the overlay, a connection string, or any private key.
 
@@ -119,7 +127,7 @@ screenshot values). Compare **names and non-secret values** to `render.yaml`:
 
 | Blueprint says | Running service must show |
 |---|---|
-| `NODE_VERSION=22.23.1` | same |
+| `NODE_VERSION=26.12.1` | same (or newer) |
 | `SETTLEMENTOS_CHAIN_DIR=/etc/secrets` | same |
 | `TRUSTED_PROXY_HOPS=1` | same |
 | `BASE_SEPOLIA_RPC_URL=https://sepolia.base.org` | same (or your private RPC) |
@@ -292,8 +300,9 @@ node -e 'console.log(process.version)'
 auto-deploy did not pick up the commit you think is live (or you are on a
 preview). Redeploy that SHA explicitly.*
 
-*Compare `node` to `v22.23.1`. Mismatch ⇒ `NODE_VERSION` / `.node-version` did
-not apply — set `NODE_VERSION=22.23.1` in Dashboard and redeploy.*
+*Compare `node` to `v26.12.1` or newer. A 22.x printout means `NODE_VERSION`
+lost to `.node-version` — set `NODE_VERSION=26.12.1` in the Dashboard and
+redeploy. Local Node 22 is expected on a laptop; this check is the Render shell.*
 
 ### 2.2 Env var names (not values)
 
@@ -509,7 +518,7 @@ existing keys (idempotent keep).
 After every production deploy:
 
 - [ ] `RENDER_GIT_COMMIT` == intended `main` SHA
-- [ ] `node -v` == `v22.23.1`
+- [ ] `node -v` is `v26.12.1` or newer
 - [ ] Env **names** match §0 / `render.yaml` (secrets `set`, not `MISSING`)
 - [ ] `ADMIN_*` set per §1.6; `POST /api/auth/session` returns 200 (not 500 / 401)
 - [ ] `SETTLEMENTOS_CHAIN_DIR` value is `/etc/secrets`
