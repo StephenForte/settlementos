@@ -40,6 +40,14 @@ stay on the **same** major version. Migrations were authored and tested against
 16; bumping one host alone reintroduces skew. Move all three together or none.
 This is a pin rule, not an upgrade task.
 
+**Node version pin (split on purpose):** local and CI stay on Node 22
+(`.node-version` is `22.23.1`; CI's `node-version` is `22`). Render is ahead:
+`NODE_VERSION` in `render.yaml` is `26.12.1` or newer, the floor from the
+2026-10-21 Node.js security release. On Render that env var outranks
+`.node-version`. Deleting it installs the local pin and misses the release.
+`package.json` `engines.node` accepts both lines so `npm ci` on Render does
+not reject Node 26.
+
 **Tests**: `npm test` compiles contracts, boots two Hardhat nodes on test-only
 ports (19545/19546), creates an **ephemeral Postgres database** (migrate deploy
 into `?schema=settlementos`), seeds it, and drops the database on teardown. It
