@@ -19,8 +19,8 @@ simulated FX, no real funds.
 ## Run & verify
 
 ```bash
-# Prerequisite: local Postgres 16 accepting connections on 127.0.0.1:5432
-# (Homebrew `postgresql@16` or equivalent). Create an empty DB, then set
+# Prerequisite: local Postgres 18 accepting connections on 127.0.0.1:5432
+# (Homebrew `postgresql@18` or equivalent). Create an empty DB, then set
 # DATABASE_URL in .env — see .env.example (?schema=settlementos).
 npm run chain             # base-local    → :8545, chainId 31337
 npm run chain:polygon     # polygon-local → :8546, chainId 31338
@@ -33,12 +33,11 @@ npm test                      # full suite — needs local Postgres; builds its 
 npx tsc --noEmit && npm run lint
 ```
 
-**Postgres version pin (16):** local Homebrew/`postgresql@16`, CI's
-`postgres:16` service (`.github/workflows/ci.yml`), and the Render database
-(`settlementos-db`, deliberately created at 16 — not Render's default 18) must
-stay on the **same** major version. Migrations were authored and tested against
-16; bumping one host alone reintroduces skew. Move all three together or none.
-This is a pin rule, not an upgrade task.
+**Postgres version pin (18):** local Homebrew/`postgresql@18`, CI's
+`postgres:18` service (`.github/workflows/ci.yml`), and the Render database
+(`settlementos-db`) stay on the **same** major version. Moved from 16 to 18
+together on 2026-10-27. Bumping one host alone reintroduces skew. Move all
+three together or none.
 
 **Node version pin (split on purpose):** local and CI stay on Node 22
 (`.node-version` is `22.23.1`; CI's `node-version` is `22`). Render is ahead:
@@ -59,7 +58,7 @@ machine, FX, base units, explorer URLs, provider adapters with stubbed fetch),
 tamper detection + concurrency), `tests/integration/` (executor E2E on-chain,
 PaymentSettlement contract behavior, API route validation, MMF guardrails +
 escrow segregation). CI runs typecheck + lint + tests on every push/PR
-(`.github/workflows/ci.yml`, with a `postgres:16` service). **Add tests for new
+(`.github/workflows/ci.yml`, with a `postgres:18` service). **Add tests for new
 lifecycle, compliance, or chain behavior** — and still smoke-test UI-visible
 changes by hand via the flow in README "API". `npm run setup` resets DB + local
 chains at any time (refuses non-localhost `DATABASE_URL`); it re-registers
@@ -630,7 +629,7 @@ with a local Postgres `DATABASE_URL` (`?schema=settlementos` — see `.env.examp
 and runs `npx prisma generate`. Everything below is per-session service startup the
 agent does by hand — do not add it to the update script.
 
-- **Postgres is required.** Install/start Postgres **16** on loopback before `npm run
+- **Postgres is required.** Install/start Postgres **18** on loopback before `npm run
  setup` or `npm test` (same major as CI and Render — see the pin rule under Run &
  verify). Create an empty database (e.g. `settlementos_dev`) and set
  `DATABASE_URL="postgresql://USER@127.0.0.1:5432/settlementos_dev?schema=settlementos"`.

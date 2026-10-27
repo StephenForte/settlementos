@@ -252,7 +252,7 @@ implementation status and the JLTXX-inspired tokenized-MMF phase).
 - Provider is **Postgres** (`provider = "postgresql"`), not SQLite. Tables live in
   the `settlementos` schema via `DATABASE_URL=...?schema=settlementos` so a shared
   Render instance can keep chainbank in `public.*`.
-- Local prerequisite: Postgres 16+ on loopback. `npm test` creates/drops an
+- Local prerequisite: Postgres 18 on loopback. `npm test` creates/drops an
   ephemeral database; `npm run setup` refuses non-localhost URLs (wipe guard).
 - Deployed schema path: `npm run db:deploy` (`prisma migrate deploy`). Local reset
   still uses `prisma db push` inside `npm run setup`.

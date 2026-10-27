@@ -7,11 +7,10 @@ already adopted); the DB is Postgres on `?schema=settlementos`.
 **Not this:** `npm run setup` — that wipes the database and refuses any
 non-localhost `DATABASE_URL`. On Render the seed path is `npm run seed:demo`.
 
-**Postgres version pin (16):** the Render database was deliberately created at
-Postgres **16** (not Render's default 18) so it matches local
-`postgresql@16` and CI's `postgres:16` service. Migrations were authored and
-tested against 16. Move all three together or none — do not bump Render alone.
-See AGENTS.md "Run & verify".
+**Postgres version pin (18):** local Homebrew `postgresql@18`, CI's
+`postgres:18` service, and Render `settlementos-db` are Postgres **18**.
+Moved from 16 together on 2026-10-27. Move all three together or none —
+do not bump Render alone. See AGENTS.md "Run & verify".
 
 **Node version pin (Render 26.12.1, local/CI 22):** Render runs Node
 `26.12.1` or newer via `NODE_VERSION`. That is the floor from the Node.js
